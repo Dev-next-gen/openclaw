@@ -2156,7 +2156,7 @@ describe("update-cli", () => {
         },
         steps: [
           {
-            name: "candidate gateway canary",
+            name: "Checking Gateway startup",
             command: "openclaw gateway",
             cwd: "/candidate",
             durationMs: 1,
@@ -4046,7 +4046,7 @@ describe("update-cli", () => {
           status: "ok",
           steps: [
             {
-              name: "candidate migration continuation",
+              name: "Checking update recovery",
               command: "--check",
               cwd: options.root,
               durationMs: 0,
@@ -9067,7 +9067,7 @@ describe("update-cli", () => {
             : {}),
           steps: [
             {
-              name: "candidate gateway canary",
+              name: "Checking Gateway startup",
               command: "openclaw gateway",
               cwd: root,
               durationMs: 1,
@@ -9248,7 +9248,7 @@ describe("update-cli", () => {
         status: "ok",
         steps: [
           {
-            name: "candidate gateway canary",
+            name: "Checking Gateway startup",
             command: "openclaw gateway",
             cwd: options.root,
             durationMs: 1,
@@ -9279,7 +9279,7 @@ describe("update-cli", () => {
         },
         steps: [
           {
-            name: "candidate gateway canary",
+            name: "Checking Gateway startup",
             command: "openclaw gateway",
             cwd: root,
             durationMs: 1,

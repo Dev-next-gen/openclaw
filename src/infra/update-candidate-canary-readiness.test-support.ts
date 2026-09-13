@@ -13,7 +13,7 @@ export function expectCanaryReadinessWarning(
   status: number,
 ) {
   expect(step).toMatchObject({
-    name: "candidate gateway canary",
+    name: "Checking Gateway startup",
     advisory: {
       kind: "candidate-runtime-unavailable",
       message: expect.stringContaining(`failed: HTTP ${status}`),

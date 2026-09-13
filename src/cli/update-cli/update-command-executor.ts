@@ -531,16 +531,12 @@ export async function withUpdateCommandExecutor<T>(
         outcome = {
           error:
             "error" in outcome && outcome.error !== cause
-              ? new AggregateError(
-                  [outcome.error, cause],
-                  "Update and candidate settlement failed",
-                  {
-                    cause,
-                  },
-                )
+              ? new AggregateError([outcome.error, cause], "Update cleanup failed", {
+                  cause,
+                })
               : cause instanceof Error
                 ? cause
-                : new Error("Candidate settlement failed", { cause }),
+                : new Error("Update settlement failed", { cause }),
         };
       }
       active = false;

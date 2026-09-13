@@ -68,11 +68,11 @@ An interrupted update is not a successful update or a verified rollback.
 Unresolved effects remain visible in the update report. Unsupported pending
 checkpoint records block further mutable update work and remain unchanged.
 
-For targets that support candidate validation, the old Gateway keeps serving through `staging` and
-`validating`. The updater uses the candidate entrypoint for Doctor lint
+For versions that support checks before installation, the old Gateway keeps serving through `staging` and
+`validating`. The updater uses the new version to run health checks
 (`doctor --lint --json --severity-min error`), config validation, and read-only
 plugin resolution and compatibility planning. It also rehearses migrations and
-boots a canary with copied configuration and verified SQLite snapshots in an
+boots a test Gateway with copied configuration and verified SQLite snapshots in an
 isolated temporary state directory. The copied database registry points to the
 copied agent databases. Installed plugin payloads and their dependencies are also
 copied; the rehearsal install records point to those copies, and their OpenClaw
@@ -101,7 +101,7 @@ Candidate build and rehearsal processes resolve source-linked plugin SDKs from
 the candidate root, even when the serving source launcher passed its own checkout
 root. This keeps candidate assets and validation independent of the old checkout.
 
-Warning-severity Doctor findings do not block candidate or post-plugin readiness.
+Doctor warnings do not block update checks or readiness after plugin updates.
 The updater retains them in the run report shown by `openclaw update status`,
 including when an intentional open channel policy requires no configuration change.
 Error findings and failed check execution still refuse the update.
@@ -181,9 +181,9 @@ slow hardware, or the explicit per-step timeout. A transient readiness miss does
 not discard the previous generation's rollback eligibility. Native service and
 Gateway boot identities must still match through the final observation.
 
-The canary binds a free loopback port and must report `/startupz` as `started`,
+The test Gateway binds a free loopback port and must report `/startupz` as `started`,
 then `/readyz` as ready within the runtime validation allowance. Plugin-resolution
-errors attributed to a named plugin are recorded without rejecting the candidate.
+errors attributed to a named plugin are recorded without rejecting the update.
 An invalid plugin inventory, an unattributed registry error, or failure to meet
 the required core startup or readiness checks still fails validation. Failure
 records the phase, elapsed time, and bounded diagnostics. The updater attempts
@@ -192,8 +192,8 @@ not confirm both termination-request completion and child closure, it records a
 maintenance warning separately from the validation result. Readiness, child
 closure, and temporary-copy cleanup do not prove that every descendant stopped.
 Temporary-copy cleanup remains best effort. This reporting belongs to the invoking
-updater; candidate code cannot change an older updater's teardown behavior.
-The canary proves candidate core startup on copied state; live channel and provider
+updater; the new version cannot change an older updater's teardown behavior.
+The startup check proves the new version’s core startup on copied state; live channel and provider
 behavior are checked after activation.
 Targets that predate migration continuation record runtime validation as
 unavailable and use the current updater's existing finalization path. A present

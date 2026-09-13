@@ -550,7 +550,7 @@ describe("candidate executor delegation", () => {
       if (mismatched) {
         await expect(result).rejects.toThrow(/ownership|identity/);
       } else if (revoked) {
-        await expect(result).rejects.toThrow(/ownership|settlement/);
+        await expect(result).rejects.toThrow(/ownership|Unable to finish stopping the update process and its children/);
       } else {
         await expect(result).resolves.toBe("completed");
       }
@@ -817,7 +817,7 @@ describe("candidate executor delegation", () => {
             fs.writeFileSync(output, "exposed");
           });
         }),
-      ).rejects.toThrow("owns the candidate installation");
+      ).rejects.toThrow("owns the update installation");
       expect(fs.existsSync(output)).toBe(false);
       expect(store.current(foreign.lease)).toBe(true);
       expect(store.read(root)).toEqual({ kind: "absent" });

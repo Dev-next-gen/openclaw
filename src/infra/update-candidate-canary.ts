@@ -244,7 +244,7 @@ export async function validateUpdateCandidateCanary(params: {
   try {
     const entry = await resolveGatewayInstallEntrypoint(params.root);
     if (!entry) {
-      throw new Error("Candidate gateway entrypoint is missing");
+      throw new Error("The update is missing its Gateway executable");
     }
     const continuationEntry = path.join(
       params.root,
@@ -258,10 +258,9 @@ export async function validateUpdateCandidateCanary(params: {
       if (!hasErrnoCode(error, "ENOENT")) {
         throw error;
       }
-      const message =
-        "candidate predates the migration-continuation contract; finalization runs in the current binary";
+      const message = "This version uses the current updater to finish installation";
       const step: UpdateStepResult = {
-        name: "candidate migration continuation",
+        name: "Checking update recovery",
         command: "--check",
         cwd: params.root,
         durationMs: Date.now() - started,
@@ -280,7 +279,7 @@ export async function validateUpdateCandidateCanary(params: {
       allowGatewayServiceRepair: false,
     });
     if (!policy.fix) {
-      throw new Error("Candidate Doctor cannot enforce isolated service-repair ownership");
+      throw new Error("Cannot check migrations without changing the running service");
     }
     const snapshotStarted = Date.now();
     rehearsal ??= await prepareUpdateCandidateRehearsal({
@@ -296,8 +295,8 @@ export async function validateUpdateCandidateCanary(params: {
     // runtime validation budget after large snapshots finish.
     const snapshotDuration = Date.now() - snapshotStarted;
     const snapshotStep: UpdateStepResult = {
-      name: "candidate snapshot",
-      command: "candidate snapshot",
+      name: "Preparing update checks",
+      command: "Preparing update checks",
       cwd: params.root,
       durationMs: snapshotDuration,
       exitCode: 0,
@@ -315,27 +314,27 @@ export async function validateUpdateCandidateCanary(params: {
     const commands: Array<{ phase: CanaryPhase; name: string; args: string[]; entry?: string }> = [
       {
         phase: "doctor",
-        name: "candidate migration rehearsal",
+        name: "Checking data migrations",
         args: ["doctor", "--fix", "--non-interactive", "--no-workspace-suggestions"],
       },
       {
         phase: "lint",
-        name: "candidate doctor lint",
+        name: "Checking update health",
         args: ["doctor", "--lint", "--json", "--severity-min", "error"],
       },
       {
         phase: "config",
-        name: "candidate config validation",
+        name: "Checking configuration",
         args: ["config", "validate", "--json"],
       },
       {
         phase: "plugins",
-        name: "candidate plugin resolution",
+        name: "Checking plugins",
         args: ["plugins", "list", "--json"],
       },
       {
         phase: "runtime",
-        name: "candidate migration continuation",
+        name: "Checking update recovery",
         // After a schema bump only a fresh candidate may finalize the run;
         // prove its full recovery import graph before live state changes.
         entry: continuationEntry,
@@ -344,7 +343,7 @@ export async function validateUpdateCandidateCanary(params: {
     ];
     // Each fresh process may inspect the private state again, including the Gateway.
     const processBudget = resolveSqliteInspectionBudget(
-      "candidate validation",
+      "update validation",
       copiedStateDir,
       rehearsal.snapshotCapacity.sqliteBytes + (rehearsal.snapshotCapacity.pluginBytes ?? 0),
     ).timeoutMs;
@@ -360,7 +359,7 @@ export async function validateUpdateCandidateCanary(params: {
       params.assertCurrent?.();
       const milliseconds = workDeadline - Date.now();
       if (milliseconds <= 0) {
-        throw new Error("Candidate validation deadline exceeded");
+        throw new Error("Update validation deadline exceeded");
       }
       return milliseconds;
     };
@@ -424,7 +423,7 @@ export async function validateUpdateCandidateCanary(params: {
       let lintWarnings: string[] = [];
       if (code === 0 && phase === "lint") {
         if (running.outputExceeded()) {
-          throw new Error("Candidate Doctor lint output exceeded the inspection limit");
+          throw new Error("Update health check output exceeded the inspection limit");
         }
         const report = parseUpdateDoctorLintReport(running.stdout());
         lintWarnings = normalizeUpdatePostInstallDoctorWarnings(
@@ -489,7 +488,7 @@ export async function validateUpdateCandidateCanary(params: {
         doctorConfigWrites = isRecord(contract) && contract.doctorConfigWrites === "pid-start-v1";
         if (!candidateSchemaVersions) {
           code = 1;
-          capture("Candidate migration continuation did not report its schema contract");
+          capture("The update did not report its supported database versions");
         }
       }
       const step: UpdateStepResult = {
@@ -503,6 +502,7 @@ export async function validateUpdateCandidateCanary(params: {
           ? { stdoutTail: pluginObservations.join("\n") }
           : {}),
       };
+      const failureMessage = `Update ${phase === "lint" ? "health check" : phase} failed`;
       if (code !== 0 && !doctorAdvisory) {
         let findings = doctorReceipt?.status === "error" ? doctorReceipt.failureFacts : undefined;
         if (!findings?.length && phase === "lint" && !running.outputExceeded()) {
@@ -522,7 +522,7 @@ export async function validateUpdateCandidateCanary(params: {
                     phase === "doctor" || phase === "lint"
                       ? "doctor-failed"
                       : `candidate-${phase}-failed`,
-                  message: running.firstStderrLine() ?? `Candidate ${phase} failed`,
+                  message: running.firstStderrLine() ?? failureMessage,
                 },
                 env,
               ),
@@ -533,12 +533,12 @@ export async function validateUpdateCandidateCanary(params: {
       }
       steps.push(step);
       if (code !== 0 && !doctorAdvisory) {
-        throw new Error(`Candidate ${phase} failed${timedOut ? " (deadline exceeded)" : ""}`);
+        throw new Error(`${failureMessage}${timedOut ? " (deadline exceeded)" : ""}`);
       }
       params.onStep?.(step);
     }
     if (!candidateSchemaVersions) {
-      throw new Error("Candidate schema contract is unavailable");
+      throw new Error("The update did not report its supported database versions");
     }
     phase = "startup";
     remaining();
@@ -572,7 +572,7 @@ export async function validateUpdateCandidateCanary(params: {
         capture("Candidate stopped by the validation deadline; readiness remains unverified.");
       }
       const step: UpdateStepResult = {
-        name: "candidate gateway canary",
+        name: "Checking Gateway startup",
         command: "gateway run",
         cwd: params.root,
         durationMs: Date.now() - gatewayStart,
@@ -602,17 +602,20 @@ export async function validateUpdateCandidateCanary(params: {
     };
   } catch (error) {
     const durationMs = Date.now() - started;
+    const displayPhase = phase === "lint" ? "health" : phase;
     const failureLine = capture(
-      `${phase}: ${error instanceof Error ? error.message : String(error)} (${durationMs}ms)`,
+      `${displayPhase}: ${error instanceof Error ? error.message : String(error)} (${durationMs}ms)`,
     );
     let failed = steps.at(-1);
     if (!failed || failed.exitCode === 0 || failed.advisory) {
       failed = {
         name:
           phase === "startup" || phase === "readiness"
-            ? "candidate gateway canary"
-            : `candidate ${phase}`,
-        command: "candidate validation",
+            ? "Checking Gateway startup"
+            : phase === "snapshot"
+              ? "Preparing update checks"
+              : `Checking update ${displayPhase}`,
+        command: "Update checks",
         cwd: params.root,
         durationMs: Date.now() - started,
         exitCode: 1,
@@ -635,7 +638,7 @@ export async function validateUpdateCandidateCanary(params: {
     ];
     // Keep the aggregate log, but do not replay a complete fact as generated timing metadata.
     const repeatsFact = failed.failureFacts.some(
-      (fact) => failureLine === `${phase}: ${fact.message} (${durationMs}ms)`,
+      (fact) => failureLine === `${displayPhase}: ${fact.message} (${durationMs}ms)`,
     );
     failed.stderrTail = logTail.slice(0, repeatsFact ? -1 : undefined).join("\n");
     params.onStep?.(failed);
@@ -659,8 +662,8 @@ export async function validateUpdateCandidateCanary(params: {
           root: params.root,
           name:
             directory === rehearsal.stateDir
-              ? "candidate rehearsal cleanup"
-              : "candidate inventory cleanup",
+              ? "Removing temporary update files"
+              : "Removing temporary plugin inventory",
           onWarning: (step) => {
             steps.push(step);
             params.onStep?.(step);
