@@ -4,6 +4,7 @@ import { render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { i18n, t } from "../../i18n/index.ts";
 import type { HumanMention } from "../../lib/chat/chat-types.ts";
+import { steerableQueuedMessage } from "./chat-queue.ts";
 import { renderChatQueue } from "./components/chat-composer-queue.ts";
 
 afterEach(async () => {
@@ -14,6 +15,29 @@ afterEach(async () => {
 });
 
 describe("chat composer steering queue", () => {
+  it("keeps empty-Enter steering inert for custody-only display queues", () => {
+    const custody = {
+      id: "pending-input:external",
+      text: "Wait for the active turn",
+      createdAt: 1,
+      custody: { kind: "pending-input" as const, sourceClients: [] },
+    };
+
+    expect(steerableQueuedMessage([custody])).toBeUndefined();
+  });
+
+  it("skips custody when empty-Enter steering selects from a mixed display queue", () => {
+    const custody = {
+      id: "pending-input:external",
+      text: "Wait for the active turn",
+      createdAt: 1,
+      custody: { kind: "pending-input" as const, sourceClients: [] },
+    };
+    const local = { id: "local", text: "Change course", createdAt: 2 };
+
+    expect(steerableQueuedMessage([custody, local])).toBe(local);
+  });
+
   it("renders Gateway pending custody as a read-only sourced row", () => {
     const onQueueRemove = vi.fn();
     const container = renderQueue({

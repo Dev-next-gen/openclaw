@@ -122,10 +122,12 @@ describe("chat transcript invalidation", () => {
         rerender();
         await flushDeferredRowPrune();
         expect(ownName()?.textContent).toBe("Alex");
-        if (peerSource !== "session participants") {
+        if (peerSource === "history") {
           expect(container.querySelector(".chat-group--peer .chat-sender-name")?.textContent).toBe(
             "Riley",
           );
+        } else if (peerSource === "pending input") {
+          expect(container.textContent).not.toContain(peerMessage.content);
         }
 
         toggleTranscriptSearch(paneId, rerender);
