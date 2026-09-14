@@ -112,7 +112,7 @@ afterEach(() => {
 });
 
 describe("update candidate canary", () => {
-  readiness.registerCanaryReadinessBudgetTests(() => root);
+  readiness.registerCanaryReadinessBudgetTests(() => root, mocks.spawn);
   it("records a typed capacity refusal before notifying the snapshot failure", async () => {
     const capacity = vi.spyOn(diskSpace, "tryReadDiskSpace").mockImplementation((targetPath) => ({
       targetPath,
@@ -224,49 +224,6 @@ describe("update candidate canary", () => {
     } finally {
       clock.mockRestore();
     }
-  });
-
-  it.each([
-    ["lint", "candidate migration rehearsal", "candidate doctor lint"],
-    ["startup", "candidate migration continuation", "candidate gateway canary"],
-    ["config", undefined, "candidate config validation"],
-  ] as const)("attributes %s failures to their check", async (phase, previous, name) => {
-    let now = 2_000_000;
-    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
-    onTestFinished(() => clock.mockRestore());
-    const spawnNormally = mocks.spawn.getMockImplementation()!;
-    mocks.spawn.mockImplementation((command, args: string[], options) => {
-      const fails = phase === "config" && args.includes("validate");
-      if (!args.includes("--fix") && !fails) {
-        return spawnNormally(command, args, options);
-      }
-      const child = new FakeChild(nextPid++);
-      queueMicrotask(() => {
-        child.stderr.write(
-          fails ? "Configuration unavailable\n" : "Earlier check completed successfully\n",
-        );
-        now += fails ? 25 : 0;
-        child.emit("close", fails ? 1 : 0);
-      });
-      return child;
-    });
-    const result = await validateUpdateCandidateCanary({
-      ...canaryStateOptions(1_000),
-      onStep: (step) => {
-        now += step.name === previous ? 1_000 : phase === "config" ? 100 : 0;
-      },
-    });
-    const failed = result.steps.at(-1);
-    const durationMs = phase === "config" ? 25 : 0;
-    expect(result).toMatchObject({ status: "error", phase });
-    expect(result.durationMs).toBe(phase === "config" ? 425 : 1_000);
-    expect(failed).toMatchObject({ name, durationMs, exitCode: 1 });
-    expect(failed?.stderrTail).toContain(
-      phase === "config" ? "Configuration unavailable" : "deadline exceeded",
-    );
-    expect(failed?.stderrTail).toContain(`(${durationMs}ms)`);
-    expect(failed?.stderrTail).not.toContain("Earlier check");
-    expect(result.logTail.join("\n")).toContain("Earlier check completed successfully");
   });
 
   it("preserves the runtime validation budget after a snapshot exceeds five minutes", async () => {
