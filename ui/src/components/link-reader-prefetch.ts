@@ -1,14 +1,23 @@
 import { nothing } from "lit";
 import { AsyncDirective } from "lit/async-directive.js";
 import { directive, type ElementPart } from "lit/directive.js";
-import { prefetchGitHubLink } from "./github-link-hovercard-registration.ts";
-import { gitHubPreviewKey, parseGitHubLinkTarget } from "./github-link-target.ts";
+import {
+  prefetchLinkReader,
+  previewTargetForAnchor,
+} from "./link-reader-hovercard-registration.ts";
+import { LINK_READER_HOVERCARD_PROVIDER_TAG, linkReaderTargetKey } from "./link-reader-target.ts";
 
 const PREFETCH_LIMIT = 8;
 const PREFETCH_DELAY_MS = 150;
 
-class GitHubLinkPrefetchDirective extends AsyncDirective {
+class LinkReaderPrefetchDirective extends AsyncDirective {
   private root: HTMLElement | undefined;
+  private provider: Element | null = null;
+  private readonly handleCapabilities = () => {
+    this.release();
+    this.attempted.clear();
+    this.scheduleScan();
+  };
   private sessionKey: string | undefined;
   private active = false;
   private scanPending = false;
@@ -34,6 +43,17 @@ class GitHubLinkPrefetchDirective extends AsyncDirective {
       this.sessionKey = sessionKey;
     }
     this.root = part.element instanceof HTMLElement ? part.element : undefined;
+    const provider = this.root?.closest(LINK_READER_HOVERCARD_PROVIDER_TAG) ?? null;
+    if (provider !== this.provider) {
+      this.provider?.removeEventListener(
+        "link-reader-capabilities-changed",
+        this.handleCapabilities,
+      );
+      this.provider = provider;
+      this.provider?.addEventListener("link-reader-capabilities-changed", this.handleCapabilities);
+      this.release();
+      this.attempted.clear();
+    }
     this.active = active && connected;
     document.addEventListener("visibilitychange", this.handleVisibilityChange);
     this.handleVisibilityChange();
@@ -41,11 +61,13 @@ class GitHubLinkPrefetchDirective extends AsyncDirective {
   }
 
   protected override disconnected(): void {
+    this.provider?.removeEventListener("link-reader-capabilities-changed", this.handleCapabilities);
     document.removeEventListener("visibilitychange", this.handleVisibilityChange);
     this.release();
   }
 
   protected override reconnected(): void {
+    this.provider?.addEventListener("link-reader-capabilities-changed", this.handleCapabilities);
     document.addEventListener("visibilitychange", this.handleVisibilityChange);
     this.handleVisibilityChange();
   }
@@ -125,18 +147,18 @@ class GitHubLinkPrefetchDirective extends AsyncDirective {
       });
     }
     for (const [anchor, { key }] of this.observed) {
-      const target = parseGitHubLinkTarget(anchor.href);
-      if (!root.contains(anchor) || !target || gitHubPreviewKey(target) !== key) {
+      const target = previewTargetForAnchor(anchor);
+      if (!root.contains(anchor) || !target || linkReaderTargetKey(target) !== key) {
         this.observer.unobserve(anchor);
         this.observed.delete(anchor);
       }
     }
-    for (const anchor of root.querySelectorAll<HTMLAnchorElement>("a.markdown-github-link[href]")) {
-      const target = parseGitHubLinkTarget(anchor.href);
+    for (const anchor of root.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+      const target = previewTargetForAnchor(anchor);
       if (!target || this.observed.has(anchor)) {
         continue;
       }
-      const key = gitHubPreviewKey(target);
+      const key = linkReaderTargetKey(target);
       if (!this.attempted.has(key)) {
         this.observed.set(anchor, { key, visible: false });
         this.observer.observe(anchor);
@@ -173,7 +195,7 @@ class GitHubLinkPrefetchDirective extends AsyncDirective {
       const scope = this.scope;
       this.pendingKey = key;
       try {
-        await prefetchGitHubLink(anchor, scope.signal);
+        await prefetchLinkReader(anchor, scope.signal);
       } catch {
         // Hover still presents cached errors; speculative work never opens UI.
       } finally {
@@ -191,4 +213,4 @@ class GitHubLinkPrefetchDirective extends AsyncDirective {
   }
 }
 
-export const githubLinkPrefetch = directive(GitHubLinkPrefetchDirective);
+export const linkReaderPrefetch = directive(LinkReaderPrefetchDirective);

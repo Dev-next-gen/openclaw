@@ -1,16 +1,24 @@
 import { createHash } from "node:crypto";
-import { parseStrictNonNegativeInteger } from "@openclaw/normalization-core/number-coercion";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { getRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { readResponseWithLimit } from "../infra/http-body.js";
-import { pruneMapToMaxSize } from "../infra/map-size.js";
-import { parseRetryAfterHeaderSeconds } from "../infra/retry-after.js";
+import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
+import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
+import { parseRetryAfterHeaderSeconds } from "openclaw/plugin-sdk/retry-runtime";
 import {
-  assertSecretOwnerAvailable,
+  getRuntimeConfigSnapshot,
+  type OpenClawConfig,
+} from "openclaw/plugin-sdk/runtime-config-snapshot";
+import {
+  assertPluginCapabilitySecretAvailable,
   isTrustedSecretSurfaceUnavailableError,
   SecretSurfaceUnavailableError,
-} from "../secrets/runtime-degraded-state.js";
+} from "openclaw/plugin-sdk/secret-input-runtime";
+import {
+  asFiniteNumber,
+  isRecord,
+  parseStrictNonNegativeInteger,
+  readNonBlankString,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
+
+export { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 export const GITHUB_API_ORIGIN = "https://api.github.com";
 export const CONTROL_UI_GITHUB_CREDENTIAL_UNAVAILABLE_MESSAGE =
@@ -132,7 +140,7 @@ export function githubApiToken(
 ): string | undefined {
   const configured = config?.gateway?.controlUi?.github?.token;
   if (configured !== undefined) {
-    assertSecretOwnerAvailable("capability", "control-ui-github");
+    assertPluginCapabilitySecretAvailable("control-ui-github");
     const token = typeof configured === "string" ? configured.trim() : "";
     if (!token) {
       throw new SecretSurfaceUnavailableError({
@@ -174,6 +182,25 @@ export function resolveGitHubApiCredentialScope(env: NodeJS.ProcessEnv = process
 
 export function githubApiCredentialCacheScope(token: string | undefined): string {
   return token ? createHash("sha256").update(token).digest("hex") : "anonymous";
+}
+
+export function requiredString(record: Record<string, unknown>, key: string): string {
+  const value = readNonBlankString(record[key]);
+  if (value === undefined) {
+    throw new ControlUiGitHubError(502, `GitHub response omitted ${key}`);
+  }
+  return value;
+}
+
+export function readOptionalGitHubString(
+  record: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  return readNonBlankString(record[key]);
+}
+
+export function optionalNumber(record: Record<string, unknown>, key: string): number | undefined {
+  return asFiniteNumber(record[key]);
 }
 
 function githubApiResource(url: URL): string {

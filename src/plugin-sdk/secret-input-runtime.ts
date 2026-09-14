@@ -24,3 +24,9 @@ export {
 export function assertPluginCapabilitySecretAvailable(ownerId: string): void {
   assertSecretOwnerAvailable("capability", ownerId);
 }
+
+// Preserve typed fail-closed errors when a plugin owns the transport.
+export {
+  SecretSurfaceUnavailableError,
+  isTrustedSecretSurfaceUnavailableError,
+} from "../secrets/runtime-degraded-state.js";

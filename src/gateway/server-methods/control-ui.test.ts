@@ -1,5 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ControlUiGitHubError } from "../../../extensions/github/api.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import * as githubIdentity from "../../agents/github-tool-identity.js";
 import {
@@ -11,10 +12,12 @@ import {
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.js";
-import { SecretSurfaceUnavailableError } from "../../secrets/runtime-degraded-state.js";
+import {
+  SecretSurfaceUnavailableError,
+  setActiveDegradedSecretOwners,
+} from "../../secrets/runtime-degraded-state.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { ControlUiGitHubPreview, ControlUiSessionPreview } from "../control-ui-contract.js";
-import { ControlUiGitHubError } from "../control-ui-github-api.js";
 import { createControlUiHandlers } from "./control-ui.js";
 import { identifiedClient } from "./sessions-sharing.test-support.js";
 import type { RespondFn } from "./types.js";
@@ -42,6 +45,7 @@ function requestOptions(
 describe("controlUi.githubPreview", () => {
   afterEach(() => {
     clearRuntimeConfigSnapshot();
+    setActiveDegradedSecretOwners([]);
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
@@ -126,6 +130,68 @@ describe("controlUi.githubPreview", () => {
     );
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(identity.revalidate).toHaveBeenCalled();
+  });
+
+  it("revalidates configured credential availability before delivering a cached preview", async () => {
+    const cfg: OpenClawConfig = {
+      agents: { entries: { main: {} } },
+      gateway: { controlUi: { github: { token: "configured-preview-token" } } },
+    };
+    setRuntimeConfigSnapshot(cfg);
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = input instanceof Request ? input.url : input.toString();
+      return new Response(
+        JSON.stringify(
+          url.includes("/issues/")
+            ? {
+                title: "Cached preview",
+                state: "open",
+                created_at: "2026-09-01T08:00:00Z",
+                updated_at: "2026-09-01T09:00:00Z",
+                repository_url: "https://api.github.com/repos/openclaw/configured-degraded",
+                user: { login: "octocat" },
+              }
+            : { private: false },
+        ),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const handler = expectDefined(
+      createControlUiHandlers()["controlUi.githubPreview"],
+      "preview handler",
+    );
+    const respond = vi.fn<RespondFn>();
+    const options = requestOptions(
+      { kind: "issue", number: 70014, owner: "openclaw", repo: "configured-degraded" },
+      respond,
+      { context: { getRuntimeConfig: () => cfg } },
+    );
+    await handler(options);
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ title: "Cached preview" }),
+      undefined,
+    );
+    setActiveDegradedSecretOwners([
+      {
+        ownerKind: "capability",
+        ownerId: "control-ui-github",
+        state: "unavailable",
+        degradationState: "cold",
+        paths: ["gateway.controlUi.github.token"],
+        refKeys: ["store:default:PREVIEW_TOKEN"],
+        reason: "secret reference was not found",
+      },
+    ]);
+    respond.mockClear();
+    await handler(options);
+    expect(respond).toHaveBeenCalledWith(false, undefined, {
+      code: "UNAVAILABLE",
+      message:
+        "The configured Control UI GitHub credential is unavailable. Resolve gateway.controlUi.github.token and retry.",
+      retryable: false,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("keeps anonymous public previews without consulting unconfigured native identities", async () => {
@@ -263,6 +329,38 @@ describe("controlUi.githubPreview", () => {
       }
     },
   );
+
+  it("forwards an explicit refresh through the same identity adapter", async () => {
+    const preview: ControlUiGitHubPreview = {
+      kind: "issue",
+      owner: "openclaw",
+      repo: "openclaw",
+      number: 99817,
+      login: "octocat",
+      state: "open",
+      title: "Refreshed preview",
+      createdAt: "2026-09-01T08:00:00Z",
+      updatedAt: "2026-09-01T09:00:00Z",
+    };
+    const loadPreview = vi.fn().mockResolvedValue(preview);
+    const handler = expectDefined(
+      createControlUiHandlers(loadPreview)["controlUi.githubPreview"],
+      "preview handler",
+    );
+    const respond = vi.fn<RespondFn>();
+    const target = { kind: "issue", owner: "openclaw", repo: "openclaw", number: 99817 };
+    await handler(requestOptions({ ...target, refresh: true }, respond));
+    expect(loadPreview).toHaveBeenCalledExactlyOnceWith(target, undefined, undefined, true);
+    expect(respond).toHaveBeenCalledWith(true, preview, undefined);
+    loadPreview.mockClear();
+    respond.mockClear();
+    await handler(requestOptions({ ...target, refresh: "true" }, respond));
+    expect(loadPreview).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(false, undefined, {
+      code: "INVALID_REQUEST",
+      message: "invalid controlUi.githubPreview params",
+    });
+  });
 
   it("rejects malformed targets before loading GitHub", async () => {
     const loadPreview = vi.fn();

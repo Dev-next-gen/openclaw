@@ -2,11 +2,17 @@
 import { html, nothing, render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { prefetchGitHubLink } from "./github-link-hovercard-registration.ts";
-import { githubLinkPrefetch } from "./github-link-prefetch.ts";
+import { prefetchLinkReader } from "./link-reader-hovercard-registration.ts";
+import { linkReaderPrefetch } from "./link-reader-prefetch.ts";
 
-vi.mock("./github-link-hovercard-registration.ts", () => ({
-  prefetchGitHubLink: vi.fn().mockResolvedValue(undefined),
+vi.mock("./link-reader-hovercard-registration.ts", () => ({
+  prefetchLinkReader: vi.fn().mockResolvedValue(undefined),
+  previewTargetForAnchor: (anchor: HTMLAnchorElement) => {
+    const url = new URL(anchor.href);
+    return /^\/openclaw\/openclaw\/issues\/[0-9]+$/.test(url.pathname)
+      ? { href: url.href, reader: { pluginId: "forge", id: "items" } }
+      : null;
+  },
 }));
 
 class VisibilityObserver {
@@ -37,7 +43,7 @@ let container: HTMLDivElement;
 
 async function show(links = [href(1)], session = "first", active = true, connected = true) {
   render(
-    html`<div ${githubLinkPrefetch(session, active, connected)}>
+    html`<div ${linkReaderPrefetch(session, active, connected)}>
       ${links.map((url) => html`<a class="markdown-github-link" href=${url}>Item</a>`)}
     </div>`,
     container,
@@ -50,7 +56,7 @@ function observer() {
   return VisibilityObserver.instances.at(-1)!;
 }
 
-const prefetch = vi.mocked(prefetchGitHubLink);
+const prefetch = vi.mocked(prefetchLinkReader);
 
 describe("GitHub preview warming", () => {
   beforeEach(() => {

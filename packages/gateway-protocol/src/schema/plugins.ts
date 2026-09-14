@@ -14,6 +14,21 @@ import { NonEmptyString } from "./primitives.js";
 /** Arbitrary plugin-owned JSON payload carried opaquely through the gateway. */
 export const PluginJsonValueSchema = Type.Unknown();
 
+export const ControlUiLinkReaderMetadataSchema = closedObject({
+  hosts: Type.Array(Type.String({ minLength: 1, maxLength: 253 }), { minItems: 1, maxItems: 16 }),
+  pathPattern: Type.String({ minLength: 2, maxLength: 1024 }),
+  detailMethod: Type.String({ minLength: 1, maxLength: 128 }),
+  previewMethod: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+});
+
+export const ControlUiLinkReaderDescriptorSchema = closedObject({
+  pluginId: NonEmptyString,
+  id: NonEmptyString,
+  label: NonEmptyString,
+  icon: Type.Optional(Type.String()),
+  linkReader: ControlUiLinkReaderMetadataSchema,
+});
+
 /** Descriptor for one plugin-provided control UI action or surface. */
 export const PluginControlUiDescriptorSchema = closedObject({
   id: NonEmptyString,
@@ -26,7 +41,9 @@ export const PluginControlUiDescriptorSchema = closedObject({
     Type.Literal("settings"),
     Type.Literal("tab"),
     Type.Literal("widget"),
+    Type.Literal("link-reader"),
   ]),
+  linkReader: Type.Optional(ControlUiLinkReaderMetadataSchema),
   label: NonEmptyString,
   description: Type.Optional(Type.String()),
   icon: Type.Optional(Type.String()),
@@ -69,6 +86,7 @@ export const PluginsUiDescriptorsResultSchema = closedObject({
   methods: Type.Optional(Type.Array(NonEmptyString)),
   controlUiTabs: Type.Optional(Type.Array(ControlUiPluginTabSchema)),
   controlUiWidgetKinds: Type.Optional(Type.Array(ControlUiPluginWidgetKindSchema)),
+  controlUiLinkReaders: Type.Optional(Type.Array(ControlUiLinkReaderDescriptorSchema)),
   pluginSurfaceUrls: Type.Optional(Type.Record(NonEmptyString, NonEmptyString)),
 });
 

@@ -4,14 +4,6 @@ import {
   normalizeLowercaseStringOrEmpty,
   readNonBlankString,
 } from "@openclaw/normalization-core/string-coerce";
-import type { GatewayAuthConfig } from "../config/types.gateway.js";
-import { pruneMapToMaxSize } from "../infra/map-size.js";
-import { createLazyPromise, getOrCreatePromise } from "../shared/lazy-promise.js";
-import { resolveCachedGitHubIdentity } from "../state/user-profile-github-identity.js";
-import { classifyTailscaleLogin } from "../state/user-profiles-tailscale-login.js";
-import { syncGitHubIdentity } from "../state/user-profiles.js";
-import { normalizeGitHubLogin } from "../utils/github-login.js";
-import type { GatewayAuthResult } from "./auth.js";
 import {
   ControlUiGitHubError,
   discardResponse,
@@ -24,7 +16,15 @@ import {
   readBoundedResponse,
   readGitHubJsonResponse,
   withOptionalGitHubAuth,
-} from "./control-ui-github-api.js";
+} from "../../extensions/github/api.js";
+import type { GatewayAuthConfig } from "../config/types.gateway.js";
+import { pruneMapToMaxSize } from "../infra/map-size.js";
+import { createLazyPromise, getOrCreatePromise } from "../shared/lazy-promise.js";
+import { resolveCachedGitHubIdentity } from "../state/user-profile-github-identity.js";
+import { classifyTailscaleLogin } from "../state/user-profiles-tailscale-login.js";
+import { syncGitHubIdentity } from "../state/user-profiles.js";
+import { normalizeGitHubLogin } from "../utils/github-login.js";
+import type { GatewayAuthResult } from "./auth.js";
 
 const CLOUDFLARE_ACCESS_USER_HEADER = "cf-access-authenticated-user-email";
 const CLOUDFLARE_ACCESS_ASSERTION_HEADER = "cf-access-jwt-assertion";

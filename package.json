@@ -433,6 +433,10 @@
       "types": "./dist/plugin-sdk/core.d.ts",
       "default": "./dist/plugin-sdk/core.js"
     },
+    "./plugin-sdk/control-ui-link-reader": {
+      "types": "./dist/plugin-sdk/control-ui-link-reader.d.ts",
+      "default": "./dist/plugin-sdk/control-ui-link-reader.js"
+    },
     "./plugin-sdk/provider-setup": {
       "default": "./dist/plugin-sdk/provider-setup.js"
     },

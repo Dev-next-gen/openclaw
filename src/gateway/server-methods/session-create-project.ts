@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
+import { githubApiToken } from "../../../extensions/github/api.js";
 import {
   ErrorCodes,
   errorShape,
@@ -14,7 +15,6 @@ import { materializeProjectClone, refreshProjectClone } from "../../projects/pro
 import { parseProjectGitUrl } from "../../projects/project-git-url.js";
 import { resolveProjectDirectory } from "../../projects/project-registry.js";
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
-import { githubApiToken } from "../control-ui-github-api.js";
 import {
   generateWorktreeSessionTitle,
   hasExplicitSessionName,

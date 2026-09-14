@@ -1,19 +1,7 @@
+import { clearRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
-import { GitHubIdentityError } from "../agents/github-tool-identity.js";
-import {
-  clearRuntimeConfigSnapshot,
-  setRuntimeConfigSnapshot,
-} from "../config/runtime-snapshot.js";
-import {
-  setActiveDegradedSecretOwners,
-  SecretSurfaceUnavailableError,
-} from "../secrets/runtime-degraded-state.js";
-import { ControlUiGitHubError } from "./control-ui-github-api.js";
-import {
-  loadControlUiGitHubPreview,
-  parseControlUiGitHubPreviewTarget,
-} from "./control-ui-github-preview.js";
+import { ControlUiGitHubError } from "./github-api.js";
+import { loadControlUiGitHubPreview, parseControlUiGitHubPreviewTarget } from "./preview.js";
 
 // List endpoints such as /pulls/{n}/commits return arrays, not objects.
 function githubJson(body: unknown, status = 200): Response {
@@ -113,14 +101,12 @@ describe("parseControlUiGitHubPreviewTarget", () => {
 describe("loadControlUiGitHubPreview", () => {
   beforeEach(() => {
     clearRuntimeConfigSnapshot();
-    setActiveDegradedSecretOwners([]);
     vi.stubEnv("GH_TOKEN", "");
     vi.stubEnv("GITHUB_TOKEN", "");
   });
 
   afterEach(() => {
     clearRuntimeConfigSnapshot();
-    setActiveDegradedSecretOwners([]);
     vi.unstubAllEnvs();
   });
 
@@ -150,7 +136,9 @@ describe("loadControlUiGitHubPreview", () => {
     expect(second.login).toBe("second-account");
     expect(fetchMock).toHaveBeenCalledTimes(6);
 
-    secondIdentity.revalidate.mockRejectedValue(new GitHubIdentityError("changed"));
+    secondIdentity.revalidate.mockRejectedValue(
+      Object.assign(new Error("identity changed"), { reason: "changed" }),
+    );
     await expect(
       loadControlUiGitHubPreview(target, secondIdentity, fetchMock),
     ).rejects.toMatchObject({ reason: "changed" });
@@ -170,7 +158,7 @@ describe("loadControlUiGitHubPreview", () => {
       let changed = false;
       const assertSelected = () => {
         if (changed) {
-          throw new GitHubIdentityError("changed");
+          throw Object.assign(new Error("identity changed"), { reason: "changed" });
         }
       };
       const identity = managedIdentity(`inflight-preview-identity-${stage}`, assertSelected);
@@ -205,12 +193,12 @@ describe("loadControlUiGitHubPreview", () => {
   );
 
   it("keeps concurrent readers and later cache hits independent of a disconnected caller", async () => {
-    const started = createDeferred();
-    const repository = createDeferred<Response>();
+    const started = Promise.withResolvers<void>();
+    const repository = Promise.withResolvers<Response>();
     let connected = true;
     const identity = managedIdentity("shared-preview-identity", () => {
       if (!connected) {
-        throw new GitHubIdentityError("changed");
+        throw Object.assign(new Error("identity changed"), { reason: "changed" });
       }
     });
     const follower = managedIdentity("shared-preview-identity");
@@ -438,43 +426,6 @@ describe("loadControlUiGitHubPreview", () => {
     expect(first.login).toBe("token-a");
     expect(second.login).toBe("token-b");
     expect(fetchMock).toHaveBeenCalledTimes(6);
-  });
-
-  it("revalidates configured credential availability before serving a cached preview", async () => {
-    setRuntimeConfigSnapshot({
-      gateway: { controlUi: { github: { token: "configured-preview-token" } } },
-    });
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockImplementation(async (input) =>
-        requestUrl(input).includes("/issues/")
-          ? githubJson(previewPayload({ user: { login: "cached-preview" } }))
-          : githubJson({ private: false }),
-      );
-    const target = {
-      kind: "issue" as const,
-      number: 70014,
-      owner: "openclaw",
-      repo: "configured-degraded",
-    };
-
-    await loadControlUiGitHubPreview(target, undefined, fetchMock);
-    setActiveDegradedSecretOwners([
-      {
-        ownerKind: "capability",
-        ownerId: "control-ui-github",
-        state: "unavailable",
-        degradationState: "cold",
-        paths: ["gateway.controlUi.github.token"],
-        refKeys: ["store:default:PREVIEW_TOKEN"],
-        reason: "secret reference was not found",
-      },
-    ]);
-
-    await expect(loadControlUiGitHubPreview(target, undefined, fetchMock)).rejects.toThrow(
-      SecretSurfaceUnavailableError,
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it.each([
@@ -780,6 +731,36 @@ describe("loadControlUiGitHubPreview", () => {
       ),
     ).rejects.toMatchObject({ statusCode: 404 } satisfies Partial<ControlUiGitHubError>);
     expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not let a failed older request replace an explicit refresh", async () => {
+    const started = Promise.withResolvers<void>();
+    const older = Promise.withResolvers<Response>();
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () => {
+      if (fetchMock.mock.calls.length === 1) {
+        started.resolve();
+        return older.promise;
+      }
+      return githubJson(previewPayload({ title: "Refreshed preview", user: { login: "octocat" } }));
+    });
+    const target = {
+      kind: "issue" as const,
+      number: 70015,
+      owner: "openclaw",
+      repo: "refresh-order",
+    };
+    const pending = loadControlUiGitHubPreview(target, undefined, fetchMock);
+    const rejected = expect(pending).rejects.toMatchObject({ statusCode: 404 });
+    await started.promise;
+    await expect(
+      loadControlUiGitHubPreview(target, undefined, fetchMock, true),
+    ).resolves.toMatchObject({ title: "Refreshed preview" });
+    older.resolve(githubJson({}, 404));
+    await rejected;
+    await expect(loadControlUiGitHubPreview(target, undefined, fetchMock)).resolves.toMatchObject({
+      title: "Refreshed preview",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("maps missing GitHub items to a safe not-found error", async () => {

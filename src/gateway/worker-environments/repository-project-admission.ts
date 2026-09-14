@@ -3,6 +3,14 @@ import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { stableStringify } from "@openclaw/normalization-core/stable-stringify";
 import {
+  discardResponse,
+  fetchGitHubApi,
+  GITHUB_API_ORIGIN,
+  GitHubGraphQLUnavailableError,
+  readGitHubGraphQLResponse,
+  readGitHubJsonResponse,
+} from "../../../extensions/github/api.js";
+import {
   captureAgentLifecycleBinding,
   matchesAgentLifecycleBinding,
 } from "../../agents/agent-lifecycle-registry.js";
@@ -13,14 +21,6 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { parseProjectGitUrl } from "../../projects/project-git-url.js";
 import { getActiveSecretsRuntimeConfigSnapshot } from "../../secrets/runtime-state.js";
-import {
-  discardResponse,
-  fetchGitHubApi,
-  GITHUB_API_ORIGIN,
-  GitHubGraphQLUnavailableError,
-  readGitHubGraphQLResponse,
-  readGitHubJsonResponse,
-} from "../control-ui-github-api.js";
 import { requestCurrentGitHubOAuthRefresh } from "../github-oauth-lifecycle.js";
 import {
   readRepositoryWorkerProjectSnapshot,

@@ -1,6 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
-import { SecretSurfaceUnavailableError } from "../secrets/runtime-degraded-state.js";
 import {
   CONTROL_UI_GITHUB_CREDENTIAL_UNAVAILABLE_MESSAGE,
   ControlUiGitHubError,
@@ -9,7 +7,9 @@ import {
   formatControlUiGitHubPreviewError,
   readGitHubGraphQLResponse,
   readGitHubJsonResponse,
-} from "./control-ui-github-api.js";
+} from "../../extensions/github/api.js";
+import { createDeferred } from "../../test/helpers/promise.js";
+import { SecretSurfaceUnavailableError } from "../secrets/runtime-degraded-state.js";
 
 describe("Control UI GitHub failures", () => {
   afterEach(() => vi.restoreAllMocks());

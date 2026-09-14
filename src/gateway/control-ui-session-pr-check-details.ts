@@ -1,5 +1,3 @@
-import { createRetainedCache } from "../infra/retained-cache.js";
-import type { ControlUiSessionPullRequestCheckDetails } from "./control-ui-contract.js";
 import {
   ControlUiGitHubError,
   fetchGitHubApi,
@@ -7,7 +5,9 @@ import {
   withOptionalGitHubAuth,
   formatControlUiGitHubPreviewError,
   resolveGitHubApiCredentialScope,
-} from "./control-ui-github-api.js";
+} from "../../extensions/github/api.js";
+import { createRetainedCache } from "../infra/retained-cache.js";
+import type { ControlUiSessionPullRequestCheckDetails } from "./control-ui-contract.js";
 import {
   fetchSessionPullRequestCheckDetails,
   sessionPullRequestRepositoryApiUrl,

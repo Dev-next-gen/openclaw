@@ -1,98 +1,60 @@
 /* @vitest-environment jsdom */
-
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
-import { i18n } from "../i18n/index.ts";
-import { GitHubLinkHovercardProvider } from "./github-link-hovercard.runtime.ts";
+import { TEST_LINK_READER, testLinkPreview } from "../test-helpers/link-reader.ts";
 import { LazyHovercardBootstrap } from "./lazy-hovercard-registration.ts";
-
-// Mirrors CLOSE_DELAY_MS in the runtime, like the 250ms open delay used below.
-const GITHUB_HOVERCARD_CLOSE_DELAY_MS = 120;
-
-const GITHUB_LINK_HOVERCARD_ELEMENT_NAME = `test-openclaw-github-link-hovercard-provider-${crypto.randomUUID()}`;
-
-customElements.define(
-  GITHUB_LINK_HOVERCARD_ELEMENT_NAME,
-  class extends GitHubLinkHovercardProvider {},
-);
-
-type GitHubLinkHovercardProviderElement = HTMLElement & {
-  client: GatewayBrowserClient | null;
-  agentId?: string;
-};
-
-function createLink(href: string, label = "GitHub item") {
-  const provider = document.createElement(
-    GITHUB_LINK_HOVERCARD_ELEMENT_NAME,
-  ) as GitHubLinkHovercardProviderElement;
+import { LinkReaderHovercardProvider } from "./link-reader-hovercard.ts";
+const ELEMENT_NAME = "test-link-reader-interaction-" + crypto.randomUUID();
+customElements.define(ELEMENT_NAME, class extends LinkReaderHovercardProvider {});
+const ISSUE_HREF = "https://github.com/openclaw/openclaw/issues/99815";
+function createLink(href: string, label = "Item") {
+  const provider = document.createElement(ELEMENT_NAME) as LinkReaderHovercardProvider;
+  provider.readers = [TEST_LINK_READER];
   const anchor = document.createElement("a");
   anchor.href = href;
   anchor.textContent = label;
   provider.append(anchor);
   document.body.append(provider);
-  return { anchor, provider };
+  return { provider, anchor };
 }
-
-const ISSUE_HREF = "https://github.com/openclaw/openclaw/issues/99815";
-
 function issuePreviewResponse(overrides: Record<string, unknown> = {}) {
   return {
-    comments: 2,
-    createdAt: "2026-07-05T08:00:00Z",
-    kind: "issue",
-    login: "octocat",
-    number: 99815,
-    owner: "openclaw",
-    repo: "openclaw",
-    state: "open",
-    title: "Keep hover previews reachable",
-    updatedAt: "2026-07-05T09:55:00Z",
+    ...testLinkPreview(),
     ...overrides,
+    ...(typeof overrides.comments !== "number"
+      ? {}
+      : { metadata: [{ label: "Comments", value: String(overrides.comments) }] }),
   };
 }
-
-function createIssueLink(response: Record<string, unknown> = issuePreviewResponse()) {
-  const link = createLink(ISSUE_HREF, "#99815");
+function createIssueLink(response = issuePreviewResponse()) {
+  const link = createLink(ISSUE_HREF);
   const request = vi.fn().mockResolvedValue(response);
   link.provider.client = { request } as unknown as GatewayBrowserClient;
   return { ...link, request };
 }
-
-function titleLinkInCard(): HTMLAnchorElement | null {
-  return document.querySelector<HTMLAnchorElement>("a.github-link-hovercard__title");
-}
-
-function cardLinks(): HTMLAnchorElement[] {
-  return [...document.querySelectorAll<HTMLAnchorElement>(".github-link-hovercard a[href]")];
-}
-
-async function hover(anchor: HTMLAnchorElement): Promise<void> {
+const hovercard = () => document.querySelector<HTMLElement>(".link-reader-hovercard");
+const titleLinkInCard = () =>
+  document.querySelector<HTMLAnchorElement>("a.link-reader-hovercard__title");
+const cardLinks = () => [
+  ...document.querySelectorAll<HTMLAnchorElement>(".link-reader-hovercard a[href]"),
+];
+async function hover(anchor: HTMLAnchorElement) {
   anchor.dispatchEvent(new MouseEvent("pointerover", { bubbles: true, composed: true }));
   await vi.advanceTimersByTimeAsync(250);
 }
-
-function leave(anchor: HTMLAnchorElement, relatedTarget: EventTarget = document.body): void {
+function leave(anchor: HTMLAnchorElement, relatedTarget: EventTarget = document.body) {
   anchor.dispatchEvent(
-    new MouseEvent("pointerout", {
-      bubbles: true,
-      composed: true,
-      relatedTarget,
-    }),
+    new MouseEvent("pointerout", { bubbles: true, composed: true, relatedTarget }),
   );
 }
-
-function hovercard(): HTMLElement | null {
-  return document.querySelector<HTMLElement>(".github-link-hovercard");
-}
-
-function observeHovercardMounts(): string[] {
+function observeHovercardMounts() {
   const titles: string[] = [];
   const observer = new MutationObserver((records) => {
     for (const record of records) {
       for (const node of record.addedNodes) {
-        if (node instanceof Element && node.matches(".github-link-hovercard")) {
-          titles.push(node.querySelector(".github-link-hovercard__title")?.textContent ?? "");
+        if (node instanceof Element && node.matches(".link-reader-hovercard")) {
+          titles.push(node.querySelector(".link-reader-hovercard__title")?.textContent ?? "");
         }
       }
     }
@@ -101,250 +63,16 @@ function observeHovercardMounts(): string[] {
   onTestFinished(() => observer.disconnect());
   return titles;
 }
-
-describe("openclaw-github-link-hovercard-provider", () => {
+describe("generic preview portal lifecycle", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-05T10:00:00Z"));
   });
-
-  afterEach(async () => {
-    await i18n.setLocale("en");
+  afterEach(() => {
     document.body.replaceChildren();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
-
-  it("stacks co-author faces after the author and counts the rest", async () => {
-    const avatar =
-      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlY9Z8AAAAASUVORK5CYII=";
-    const request = vi.fn().mockResolvedValue({
-      additions: 71,
-      avatarDataUrl: avatar,
-      changedFiles: 8,
-      coAuthorCount: 5,
-      coAuthors: [
-        { login: "steipete", avatarDataUrl: avatar },
-        { login: "ada", avatarDataUrl: avatar },
-        { login: "mira", avatarDataUrl: avatar },
-      ],
-      createdAt: "2026-07-04T05:03:47Z",
-      deletions: 109,
-      kind: "pull",
-      login: "roboclaw-bot",
-      mergedAt: "2026-07-04T09:53:52Z",
-      number: 131440,
-      owner: "OpenClaw",
-      repo: "OpenClaw",
-      state: "closed",
-      title: "fix(ui): open people cards from one row",
-      updatedAt: "2026-07-05T09:55:00Z",
-    });
-    const { anchor, provider } = createLink(
-      "https://github.com/openclaw/openclaw/pull/131440",
-      "#131440",
-    );
-    provider.client = { request } as unknown as GatewayBrowserClient;
-
-    await hover(anchor);
-
-    const stack = document.querySelector<HTMLElement>(".github-link-hovercard__coauthors");
-    expect(stack?.querySelectorAll("img")).toHaveLength(3);
-    // Two co-authors beyond the three fetched faces.
-    expect(stack?.querySelector(".github-link-hovercard__coauthors-more")?.textContent).toBe("+2");
-    expect(stack?.getAttribute("title")).toBe("Co-authored by steipete, ada, mira");
-    // Faces are decorative; the group is the only thing assistive tech can read.
-    expect(stack?.getAttribute("role")).toBe("img");
-    expect(stack?.getAttribute("aria-label")).toBe("Co-authored by steipete, ada, mira");
-    expect([...(stack?.querySelectorAll("img") ?? [])].every((img) => img.alt === "")).toBe(true);
-    // The stack sits after the author, never inside the metrics.
-    expect(stack?.previousElementSibling?.classList.contains("github-link-hovercard__author")).toBe(
-      true,
-    );
-  });
-
-  it("counts a co-author whose avatar failed to inline into the overflow", async () => {
-    const avatar =
-      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlY9Z8AAAAASUVORK5CYII=";
-    const request = vi.fn().mockResolvedValue({
-      createdAt: "2026-07-04T05:03:47Z",
-      coAuthorCount: 5,
-      coAuthors: [
-        { login: "steipete", avatarDataUrl: avatar },
-        { login: "ada", avatarDataUrl: avatar },
-        // Avatar inlining is optional and can fail for one person.
-        { login: "mira" },
-      ],
-      kind: "pull",
-      login: "roboclaw-bot",
-      number: 131442,
-      owner: "OpenClaw",
-      repo: "OpenClaw",
-      state: "open",
-      title: "fix(ui): one row",
-      updatedAt: "2026-07-05T09:55:00Z",
-    });
-    const { anchor, provider } = createLink(
-      "https://github.com/openclaw/openclaw/pull/131442",
-      "#131442",
-    );
-    provider.client = { request } as unknown as GatewayBrowserClient;
-
-    await hover(anchor);
-
-    const stack = document.querySelector<HTMLElement>(".github-link-hovercard__coauthors");
-    expect(stack?.querySelectorAll("img")).toHaveLength(2);
-    // Two faces plus "+3" accounts for all five; "+2" would drop the faceless one.
-    expect(stack?.querySelector(".github-link-hovercard__coauthors-more")?.textContent).toBe("+3");
-  });
-
-  it("omits the co-author stack when a pull request has none", async () => {
-    const request = vi.fn().mockResolvedValue({
-      createdAt: "2026-07-04T05:03:47Z",
-      kind: "pull",
-      login: "roboclaw-bot",
-      number: 131441,
-      owner: "OpenClaw",
-      repo: "OpenClaw",
-      state: "open",
-      title: "fix(ui): one row",
-      updatedAt: "2026-07-05T09:55:00Z",
-    });
-    const { anchor, provider } = createLink(
-      "https://github.com/openclaw/openclaw/pull/131441",
-      "#131441",
-    );
-    provider.client = { request } as unknown as GatewayBrowserClient;
-
-    await hover(anchor);
-
-    expect(document.querySelector(".github-link-hovercard__coauthors")).toBeNull();
-  });
-
-  it("renders and caches pull request details without changing the link", async () => {
-    const request = vi.fn().mockResolvedValue({
-      additions: 101,
-      avatarDataUrl:
-        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlY9Z8AAAAASUVORK5CYII=",
-      changedFiles: 3,
-      closedAt: "2026-07-04T09:53:52Z",
-      createdAt: "2026-07-04T05:03:47Z",
-      deletions: 12,
-      draft: false,
-      kind: "pull",
-      login: "steipete",
-      mergedAt: "2026-07-04T09:53:52Z",
-      number: 99816,
-      owner: "OpenClaw",
-      repo: "OpenClaw",
-      state: "closed",
-      title: "fix(agents): derive conversation scope from trusted group facts",
-      updatedAt: "2026-07-05T09:55:00Z",
-    });
-    const href = "https://github.com/openclaw/openclaw/pull/99816";
-    const { anchor, provider } = createLink(
-      "HTTPS://GITHUB.COM:443/openclaw/openclaw/pull/99816",
-      "#99816",
-    );
-    provider.client = { request } as unknown as GatewayBrowserClient;
-
-    await hover(anchor);
-
-    const card = document.querySelector<HTMLElement>(".github-link-hovercard");
-    expect(card?.textContent).toContain("Merged");
-    expect(card?.textContent).toContain("openclaw/openclaw #99816");
-    expect(card?.textContent).toContain(
-      "fix(agents): derive conversation scope from trusted group facts",
-    );
-    expect(card?.textContent).toContain("steipete");
-    expect(card?.textContent).toContain("+101");
-    expect(card?.textContent).toContain("−12");
-    expect(card?.textContent).not.toContain("3 files");
-    expect(card?.textContent).toContain("5m ago");
-    expect(anchor.href).toBe(href);
-    // A card that owns a link is an interactive popover, never an ARIA tooltip.
-    expect(card?.getAttribute("role")).toBe("dialog");
-    expect(card?.getAttribute("aria-label")).toContain(
-      "fix(agents): derive conversation scope from trusted group facts",
-    );
-    expect(anchor.getAttribute("aria-haspopup")).toBe("dialog");
-    expect(anchor.getAttribute("aria-expanded")).toBe("true");
-    expect(anchor.getAttribute("aria-controls")).toBe(card?.id);
-    // Title, repo reference, and author are real links, which is what makes the
-    // card a popover rather than a tooltip.
-    const cardLink = (selector: string) =>
-      card?.querySelector<HTMLAnchorElement>(`.github-link-hovercard__${selector}`);
-    expect(cardLink("title")?.getAttribute("href")).toBe(href);
-    expect(cardLink("repo")?.getAttribute("href")).toBe(href);
-    expect(cardLink("author")?.getAttribute("href")).toBe("https://github.com/steipete");
-    expect(card?.querySelector(".github-link-hovercard__metric--files")).toBeNull();
-    for (const selector of ["title", "repo", "author"]) {
-      expect(cardLink(selector)?.target).toBe("_blank");
-      expect(cardLink(selector)?.rel.split(/\s+/)).toEqual(
-        expect.arrayContaining(["noopener", "noreferrer"]),
-      );
-    }
-    const diffMetrics = card?.querySelector(".github-link-hovercard__metrics--diff");
-    expect(diffMetrics?.children).toHaveLength(2);
-    expect([...(diffMetrics?.children ?? [])].every((metric) => metric.tagName === "SPAN")).toBe(
-      true,
-    );
-    expect(request).toHaveBeenCalledWith(
-      "controlUi.githubPreview",
-      {
-        kind: "pull",
-        number: 99816,
-        owner: "openclaw",
-        repo: "openclaw",
-      },
-      { signal: expect.any(AbortSignal) },
-    );
-
-    leave(anchor);
-    await vi.advanceTimersByTimeAsync(GITHUB_HOVERCARD_CLOSE_DELAY_MS);
-    expect(hovercard()).toBeNull();
-    await hover(anchor);
-    expect(request).toHaveBeenCalledTimes(1);
-  });
-
-  it.each(
-    ["pull", "issue"].flatMap((kind) => ["base", "comment"].map((first) => ({ kind, first }))),
-  )(
-    "keeps cached $kind preview links on the current anchor ($first first)",
-    async ({ kind, first }) => {
-      const surface = kind === "pull" ? "pull" : "issues";
-      const baseHref = `https://github.com/openclaw/openclaw/${surface}/99815`;
-      const commentHref = `${baseHref}#issuecomment-123`;
-      const variantHref = `https://github.com/OpenClaw/OpenClaw/${surface}/99815/?view=activity#issuecomment-456`;
-      const { anchor, provider } = createLink(baseHref);
-      const request = vi.fn().mockResolvedValue(issuePreviewResponse({ kind }));
-      provider.client = { request } as unknown as GatewayBrowserClient;
-      const comment = document.createElement("a");
-      comment.href = commentHref;
-      comment.textContent = "Comment permalink";
-      const variant = document.createElement("a");
-      variant.href = variantHref;
-      variant.textContent = "Alternate permalink";
-      provider.append(comment, variant);
-      const sequence =
-        first === "base" ? [anchor, comment, variant, anchor] : [comment, anchor, variant, anchor];
-
-      for (const current of sequence) {
-        await hover(current);
-        expect(titleLinkInCard()?.href).toBe(current.href);
-        expect(
-          hovercard()?.querySelector<HTMLAnchorElement>(".github-link-hovercard__repo")?.href,
-        ).toBe(current.href);
-        expect(
-          hovercard()?.querySelector<HTMLAnchorElement>(".github-link-hovercard__author")?.href,
-        ).toBe("https://github.com/octocat");
-        expect(request).toHaveBeenCalledTimes(1);
-        leave(current);
-        await vi.advanceTimersByTimeAsync(GITHUB_HOVERCARD_CLOSE_DELAY_MS);
-      }
-    },
-  );
-
   it.each(["immediate rejection", "late rejection", "late success"])(
     "reopens an abandoned request without poisoning its replacement cache: %s",
     async (settlement) => {
@@ -372,7 +100,7 @@ describe("openclaw-github-link-hovercard-provider", () => {
       await hover(anchor);
       expect(hovercard()).toBeNull();
       leave(anchor);
-      await vi.advanceTimersByTimeAsync(GITHUB_HOVERCARD_CLOSE_DELAY_MS);
+      await vi.advanceTimersByTimeAsync(120);
       expect(requestSignal?.aborted).toBe(true);
       await hover(anchor);
       expect(request).toHaveBeenCalledTimes(2);
@@ -386,7 +114,7 @@ describe("openclaw-github-link-hovercard-provider", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(hovercard()?.textContent).toContain("Keep hover previews reachable");
       leave(anchor);
-      await vi.advanceTimersByTimeAsync(GITHUB_HOVERCARD_CLOSE_DELAY_MS);
+      await vi.advanceTimersByTimeAsync(120);
       await hover(anchor);
       expect(request).toHaveBeenCalledTimes(2);
       expect(hovercard()?.textContent).toContain("Keep hover previews reachable");
@@ -572,7 +300,7 @@ describe("openclaw-github-link-hovercard-provider", () => {
       expect(mountedCards).toEqual(["Keep hover previews reachable"]);
       expect(titleLinkInCard()?.href).toBe(replacement.href);
       expect(
-        hovercard()?.querySelector<HTMLAnchorElement>(".github-link-hovercard__repo")?.href,
+        hovercard()?.querySelector<HTMLAnchorElement>(".link-reader-hovercard__subtitle")?.href,
       ).toBe(replacement.href);
       expect(anchor.hasAttribute("aria-controls")).toBe(false);
     },
@@ -600,7 +328,7 @@ describe("openclaw-github-link-hovercard-provider", () => {
 
       expect(request).toHaveBeenCalledTimes(1);
       expect(request.mock.calls[0]?.[1]).toMatchObject({ agentId: "row-agent" });
-      expect(document.querySelectorAll(".github-link-hovercard")).toHaveLength(1);
+      expect(document.querySelectorAll(".link-reader-hovercard")).toHaveLength(1);
       expect(titleLinkInCard()?.textContent).toBe("Keep hover previews reachable");
       inner.anchor.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
       expect(hovercard()).toBeNull();
@@ -608,7 +336,7 @@ describe("openclaw-github-link-hovercard-provider", () => {
       await hover(outer.anchor);
       expect(request).toHaveBeenCalledTimes(2);
       expect(request.mock.calls[1]?.[1]).toMatchObject({ agentId: "selected-agent" });
-      expect(document.querySelectorAll(".github-link-hovercard")).toHaveLength(1);
+      expect(document.querySelectorAll(".link-reader-hovercard")).toHaveLength(1);
     },
   );
 
@@ -643,7 +371,7 @@ describe("openclaw-github-link-hovercard-provider", () => {
     expect(request).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(hovercard()?.dataset.loading).toBe("true");
-    expect(hovercard()?.getAttribute("aria-label")).toBe("Loading GitHub details…");
+    expect(hovercard()?.getAttribute("aria-label")).toBe("Loading preview…");
     failure.reject(new Error("Not Found"));
     await vi.advanceTimersByTimeAsync(0);
     expect(hovercard()).toBeNull();
@@ -695,7 +423,7 @@ describe("openclaw-github-link-hovercard-provider", () => {
       expect(request).toHaveBeenCalledTimes(2);
       expect(request.mock.calls[1]?.[1]).toMatchObject({
         ...(change === "agent" ? { agentId: "other" } : {}),
-        number: 99815,
+        url: ISSUE_HREF,
       });
       expect(titleLinkInCard()).toBeNull();
       if (change === "agent round trip") {
@@ -804,16 +532,16 @@ describe("openclaw-github-link-hovercard-provider", () => {
 
     // Crossing the gap between the link and the card leaves both unhovered.
     leave(anchor, card as EventTarget);
-    await vi.advanceTimersByTimeAsync(GITHUB_HOVERCARD_CLOSE_DELAY_MS - 1);
+    await vi.advanceTimersByTimeAsync(120 - 1);
     expect(hovercard()).toBe(card);
 
     card?.dispatchEvent(new MouseEvent("pointerenter"));
-    await vi.advanceTimersByTimeAsync(GITHUB_HOVERCARD_CLOSE_DELAY_MS * 10);
+    await vi.advanceTimersByTimeAsync(120 * 10);
     expect(hovercard()).toBe(card);
 
     card?.dispatchEvent(new MouseEvent("pointerleave"));
     expect(hovercard()).toBe(card);
-    await vi.advanceTimersByTimeAsync(GITHUB_HOVERCARD_CLOSE_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(120);
     expect(hovercard()).toBeNull();
     expect(anchor.hasAttribute("aria-expanded")).toBe(false);
     expect(anchor.hasAttribute("aria-controls")).toBe(false);
@@ -842,7 +570,7 @@ describe("openclaw-github-link-hovercard-provider", () => {
     titleLink?.dispatchEvent(new FocusEvent("focusin", { bubbles: true, composed: true }));
 
     card?.dispatchEvent(new MouseEvent("pointerleave"));
-    await vi.advanceTimersByTimeAsync(GITHUB_HOVERCARD_CLOSE_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(120);
     expect(hovercard()).toBeNull();
   });
 
@@ -852,10 +580,10 @@ describe("openclaw-github-link-hovercard-provider", () => {
     anchor.dispatchEvent(new FocusEvent("focusin", { bubbles: true, composed: true }));
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(hovercard()?.textContent).toContain("4 comments");
+    expect(hovercard()?.textContent).toContain("Comments: 4");
     expect(hovercard()?.textContent).toContain("Open");
     // Issues have no files-changed view, so their metric stays plain text.
-    expect(hovercard()?.querySelector(".github-link-hovercard__metric--files")).toBeNull();
+    expect(hovercard()?.querySelector(".link-reader-hovercard__metric--files")).toBeNull();
     anchor.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(hovercard()).toBeNull();
   });
@@ -873,7 +601,7 @@ describe("openclaw-github-link-hovercard-provider", () => {
     expect(document.activeElement).toBe(cardLinks()[0]);
 
     // Inside the run of card links Tab belongs to the browser, not to the card.
-    const middle = cardLinks()[1];
+    const middle = cardLinks()[0];
     middle?.focus();
     const insideTab = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab" });
     middle?.dispatchEvent(insideTab);
@@ -887,7 +615,7 @@ describe("openclaw-github-link-hovercard-provider", () => {
     edge?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Tab", shiftKey }));
     expect(hovercard()).toBeNull();
     expect(document.activeElement).toBe(anchor);
-    await vi.advanceTimersByTimeAsync(GITHUB_HOVERCARD_CLOSE_DELAY_MS * 2);
+    await vi.advanceTimersByTimeAsync(120 * 2);
     expect(hovercard()).toBeNull();
   });
 
@@ -915,7 +643,7 @@ describe("openclaw-github-link-hovercard-provider", () => {
     expect(document.activeElement).toBe(cardLinks()[0]);
 
     outside.focus();
-    await vi.advanceTimersByTimeAsync(GITHUB_HOVERCARD_CLOSE_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(120);
     expect(hovercard()).toBeNull();
     expect(anchor.hasAttribute("aria-expanded")).toBe(false);
   });
@@ -927,7 +655,7 @@ describe("openclaw-github-link-hovercard-provider", () => {
 
     await hover(unsupportedLink.anchor);
     expect(request).not.toHaveBeenCalled();
-    expect(document.querySelector(".github-link-hovercard")).toBeNull();
+    expect(document.querySelector(".link-reader-hovercard")).toBeNull();
 
     const missingLink = createLink("https://github.com/openclaw/openclaw/issues/999999", "missing");
     missingLink.provider.client = { request } as unknown as GatewayBrowserClient;
@@ -969,11 +697,11 @@ describe("openclaw-github-link-hovercard-provider", () => {
   it("uses the latest dependencies assigned before its lazy definition finishes", async () => {
     const tag = `test-github-lazy-upgrade-${crypto.randomUUID()}`;
     const loaded = createDeferred<CustomElementConstructor>();
-    const bootstrap = new LazyHovercardBootstrap<GitHubLinkHovercardProvider>({
+    const bootstrap = new LazyHovercardBootstrap<LinkReaderHovercardProvider>({
       tag,
       load: () => loaded.promise,
     });
-    const provider = document.createElement(tag) as GitHubLinkHovercardProvider;
+    const provider = document.createElement(tag) as LinkReaderHovercardProvider;
     const anchor = document.createElement("a");
     anchor.href = ISSUE_HREF;
     provider.append(anchor);
@@ -981,12 +709,13 @@ describe("openclaw-github-link-hovercard-provider", () => {
     const staleRequest = vi.fn();
     provider.client = { request: staleRequest } as unknown as GatewayBrowserClient;
     provider.agentId = "first-agent";
+    provider.readers = [TEST_LINK_READER];
 
     const definition = bootstrap.define();
     const request = vi.fn().mockResolvedValue(issuePreviewResponse());
     provider.client = { request } as unknown as GatewayBrowserClient;
     provider.agentId = "second-agent";
-    loaded.resolve(class extends GitHubLinkHovercardProvider {});
+    loaded.resolve(class extends LinkReaderHovercardProvider {});
     await definition;
     await provider.updateComplete;
     await hover(anchor);
@@ -1016,7 +745,7 @@ describe("openclaw-github-link-hovercard-provider", () => {
     await hover(anchor);
 
     expect(request).not.toHaveBeenCalled();
-    expect(document.querySelector(".github-link-hovercard")).toBeNull();
+    expect(document.querySelector(".link-reader-hovercard")).toBeNull();
   });
 
   it("leaves no popup state on the link when hover ends before opening", async () => {
@@ -1063,55 +792,12 @@ describe("openclaw-github-link-hovercard-provider", () => {
     provider.append(route);
 
     await hover(anchor);
-    expect(document.querySelector(".github-link-hovercard")).not.toBeNull();
+    expect(document.querySelector(".link-reader-hovercard")).not.toBeNull();
 
     route.replaceChildren(document.createElement("p"));
     await Promise.resolve();
 
-    expect(document.querySelector(".github-link-hovercard")).toBeNull();
+    expect(document.querySelector(".link-reader-hovercard")).toBeNull();
     expect(anchor.hasAttribute("aria-expanded")).toBe(false);
-  });
-
-  it("rerenders an open preview when the locale changes", async () => {
-    const { anchor, provider, request } = createIssueLink(issuePreviewResponse({ comments: 1 }));
-    await hover(anchor);
-    leave(anchor);
-    await vi.advanceTimersByTimeAsync(GITHUB_HOVERCARD_CLOSE_DELAY_MS);
-    const comment = document.createElement("a");
-    comment.href = `${ISSUE_HREF}#issuecomment-123`;
-    provider.append(comment);
-    await hover(comment);
-
-    i18n.registerTranslation("pt-BR", {
-      githubPreview: {
-        loading: "Carregando detalhes do GitHub…",
-        unavailable: "Prévia do GitHub indisponível",
-        states: {
-          merged: "Mesclado",
-          draft: "Rascunho",
-          open: "Aberto",
-          closed: "Fechado",
-          notPlanned: "Não planejado",
-        },
-        file: "{count} arquivo",
-        files: "{count} arquivos",
-        comment: "{count} comentário",
-        comments: "{count} comentários",
-        pullRequest: "pull request",
-        issue: "issue",
-        ariaLabel: "{state} {kind} {repo} #{number}: {title}, por {author}",
-      },
-    });
-    await i18n.setLocale("pt-BR");
-
-    const card = document.querySelector<HTMLElement>(".github-link-hovercard");
-    expect(card?.textContent).toContain("Aberto");
-    expect(card?.textContent).toContain("1 comentário");
-    expect(card?.getAttribute("aria-label")).toContain("por octocat");
-    expect(titleLinkInCard()?.href).toBe(comment.href);
-    expect(card?.querySelector<HTMLAnchorElement>(".github-link-hovercard__repo")?.href).toBe(
-      comment.href,
-    );
-    expect(request).toHaveBeenCalledTimes(1);
   });
 });

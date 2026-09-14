@@ -490,6 +490,7 @@ export type ControlUiMockGatewayScenario = {
     pluginId: string;
     slug?: string;
   }>;
+  controlUiLinkReaders?: unknown[];
   controlUiWidgetKinds?: Array<{
     kind: string;
     label: string;
@@ -1193,6 +1194,7 @@ function normalizeScenario(
     basePath,
     controlUiTabs: scenario.controlUiTabs ?? [],
     controlUiWidgetKinds: scenario.controlUiWidgetKinds ?? [],
+    controlUiLinkReaders: scenario.controlUiLinkReaders ?? [],
     allowedSessionVisibilities: scenario.allowedSessionVisibilities ?? [
       "shared",
       "read-only",
@@ -2353,6 +2355,7 @@ function installControlUiMockGateway(
             ...(scenario.omitFeatureMethods ? {} : { methods: scenario.featureMethods }),
           },
           controlUiTabs: scenario.controlUiTabs,
+          controlUiLinkReaders: scenario.controlUiLinkReaders ?? [],
           controlUiWidgetKinds: scenario.controlUiWidgetKinds,
           protocol: protocolVersion,
           server: {

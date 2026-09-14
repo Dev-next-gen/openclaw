@@ -1,6 +1,6 @@
-/* @vitest-environment jsdom */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+/* @vitest-environment jsdom */
+import { installTestLinkReader } from "../test-helpers/link-reader.ts";
 import { createPortaledHovercard, PortaledHovercardController } from "./portaled-hovercard.ts";
 import { installTitleTooltips } from "./tooltip-title.ts";
 
@@ -805,7 +805,9 @@ describe("title tooltips", () => {
   it.each(["link", "subtree"])(
     "claims preview ownership when an active %s moves into a provider",
     async (moved) => {
-      const provider = document.createElement("openclaw-github-link-hovercard-provider");
+      const provider = installTestLinkReader(
+        document.createElement("openclaw-link-reader-hovercard-provider"),
+      );
       const wrapper = document.createElement("div");
       const link = document.createElement("a");
       link.href = "https://github.com/openclaw/openclaw/pull/99816";
@@ -871,7 +873,9 @@ describe("title tooltips", () => {
   it("keeps inherited titles scoped when moving between a GitHub link and an ordinary control", async () => {
     const parent = document.createElement("div");
     parent.title = "Shared context hint";
-    const provider = document.createElement("openclaw-github-link-hovercard-provider");
+    const provider = installTestLinkReader(
+      document.createElement("openclaw-link-reader-hovercard-provider"),
+    );
     const link = document.createElement("a");
     link.href = "https://github.com/openclaw/openclaw/pull/99816";
     link.textContent = "#99816";
@@ -896,7 +900,9 @@ describe("title tooltips", () => {
   });
 
   it("yields a nested title when its link becomes preview eligible and restores ordinary hints on reentry", async () => {
-    const provider = document.createElement("openclaw-github-link-hovercard-provider");
+    const provider = installTestLinkReader(
+      document.createElement("openclaw-link-reader-hovercard-provider"),
+    );
     const link = document.createElement("a");
     link.href = "https://example.com/item";
     const label = document.createElement("span");

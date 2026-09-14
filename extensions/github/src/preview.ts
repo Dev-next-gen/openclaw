@@ -1,12 +1,9 @@
-import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { readNonBlankString } from "@openclaw/normalization-core/string-coerce";
+import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
 import {
-  GitHubIdentityError,
-  type prepareGitHubReadIdentity,
-} from "../agents/github-tool-identity.js";
-import { pruneMapToMaxSize } from "../infra/map-size.js";
-import type { ControlUiGitHubPreview } from "./control-ui-contract.js";
+  asFiniteNumber,
+  isRecord,
+  readNonBlankString,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   ControlUiGitHubError,
   discardResponse,
@@ -15,9 +12,12 @@ import {
   GITHUB_REQUEST_TIMEOUT_MS,
   readBoundedResponse,
   readGitHubJsonResponse,
+  requiredString,
   resolveGitHubApiCredentialScope,
   withOptionalGitHubAuth,
-} from "./control-ui-github-api.js";
+} from "./github-api.js";
+import type { ControlUiGitHubPreview } from "./preview-contract.js";
+import { parseGitHubItemTarget, type GitHubItemTarget } from "./targets.js";
 
 const GITHUB_AVATAR_HOST = "avatars.githubusercontent.com";
 const GITHUB_AVATAR_MAX_BYTES = 256 * 1024;
@@ -35,16 +35,15 @@ const ANONYMOUS_SUCCESS_CACHE_MS = 60 * 60_000;
 const FAILURE_CACHE_MS = 30_000;
 const CACHE_LIMIT = 200;
 
-type GitHubLinkKind = "issue" | "pull";
+export type ControlUiGitHubPreviewTarget = GitHubItemTarget;
 
-export type ControlUiGitHubPreviewTarget = {
-  kind: GitHubLinkKind;
-  number: number;
-  owner: string;
-  repo: string;
+/** Host-prepared read identity; the plugin never discovers or selects managed credentials. */
+export type ControlUiGitHubPreviewIdentity = {
+  token: string | undefined;
+  cacheScope: string;
+  revalidate: () => Promise<void>;
+  assertSelected: () => void;
 };
-
-export type ControlUiGitHubPreviewIdentity = Awaited<ReturnType<typeof prepareGitHubReadIdentity>>;
 
 type CacheEntry<T> = {
   expiresAt: number;
@@ -53,54 +52,21 @@ type CacheEntry<T> = {
 
 const previewCache = new Map<string, CacheEntry<ControlUiGitHubPreview>>();
 
-function isValidOwner(value: string): boolean {
-  return /^(?=.{1,39}$)[a-z\d](?:[a-z\d-]*[a-z\d])?$/iu.test(value);
-}
+export const parseControlUiGitHubPreviewTarget = parseGitHubItemTarget;
 
-function isValidRepo(value: string): boolean {
-  if (value.length < 1 || value.length > 100) {
-    return false;
+export async function assertPublicGitHubRepository(
+  repositoryUrl: string,
+  fetchImpl: typeof fetch,
+  token?: string,
+  identity?: ControlUiGitHubPreviewIdentity,
+): Promise<void> {
+  // Stop before item reads so shared credentials cannot probe private item numbers.
+  const repository = await readGitHubJsonResponse(
+    await fetchGitHubApi(repositoryUrl, fetchImpl, token, undefined, identity),
+  );
+  if (!isRecord(repository) || repository.private !== false) {
+    throw new ControlUiGitHubError(404, "GitHub repository is not public");
   }
-  const lower = value.toLowerCase();
-  // GitHub accepts dot/underscore/hyphen edge names, including consecutive
-  // periods; only reject standalone path-confusion segments before visibility.
-  if (!/^[a-z\d._-]+$/iu.test(value) || lower === "." || lower === "..") {
-    return false;
-  }
-  return !lower.endsWith(".git") && !lower.endsWith(".atom");
-}
-
-export function parseControlUiGitHubPreviewTarget(
-  value: unknown,
-): ControlUiGitHubPreviewTarget | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const kind = value.kind;
-  const owner = typeof value.owner === "string" ? value.owner.trim() : "";
-  const repo = typeof value.repo === "string" ? value.repo.trim() : "";
-  const number = value.number;
-  if (
-    (kind !== "issue" && kind !== "pull") ||
-    (value.agentId !== undefined && (typeof value.agentId !== "string" || !value.agentId.trim())) ||
-    !isValidOwner(owner) ||
-    !isValidRepo(repo) ||
-    typeof number !== "number" ||
-    !Number.isSafeInteger(number) ||
-    number < 1 ||
-    number > 9_999_999_999
-  ) {
-    return null;
-  }
-  return { kind, number, owner, repo };
-}
-
-function requiredString(record: Record<string, unknown>, key: string): string {
-  const value = readNonBlankString(record[key]);
-  if (value === undefined) {
-    throw new ControlUiGitHubError(502, `GitHub response omitted ${key}`);
-  }
-  return value;
 }
 
 function redirectedRepositoryApiUrl(target: ControlUiGitHubPreviewTarget, url: URL): string | null {
@@ -142,7 +108,7 @@ function previewRepositoryApiUrl(
   return requiredString(repository, "url");
 }
 
-function parseGitHubResponse(
+export function parseControlUiGitHubPreviewResponse(
   target: ControlUiGitHubPreviewTarget,
   value: Record<string, unknown>,
 ): { preview: ControlUiGitHubPreview; avatarUrl?: string } {
@@ -285,14 +251,8 @@ async function fetchPreview(
 ): Promise<ControlUiGitHubPreview> {
   const request = (url: string, beforeRedirect?: (url: URL) => Promise<void>) =>
     fetchGitHubApi(url, fetchImpl, token, beforeRedirect, identity);
-  const assertPublicRepository = async (url: string) => {
-    // Private and missing repositories stop before any item fetch, so
-    // operator.read callers cannot probe private item numbers.
-    const repository = await readGitHubJsonResponse(await request(url));
-    if (!isRecord(repository) || repository.private !== false) {
-      throw new ControlUiGitHubError(404, "GitHub repository is not public");
-    }
-  };
+  const assertPublicRepository = (url: string) =>
+    assertPublicGitHubRepository(url, fetchImpl, token, identity);
   const repositoryUrl = `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}`;
   const itemUrl = `${repositoryUrl}/${target.kind === "pull" ? "pulls" : "issues"}/${target.number}`;
   if (token) {
@@ -318,7 +278,7 @@ async function fetchPreview(
   if (token) {
     await assertPublicRepository(previewRepositoryApiUrl(target, parsed));
   }
-  const { preview, avatarUrl } = parseGitHubResponse(target, parsed);
+  const { preview, avatarUrl } = parseControlUiGitHubPreviewResponse(target, parsed);
   // Both extra fetches run only after the public-repository assertions above,
   // so neither can widen what this token is allowed to read.
   const [avatarDataUrl, coAuthorFacts] = await Promise.all([
@@ -357,6 +317,7 @@ export async function loadControlUiGitHubPreview(
   target: ControlUiGitHubPreviewTarget,
   identity?: ControlUiGitHubPreviewIdentity,
   fetchImpl: typeof fetch = fetch,
+  refresh = false,
 ): Promise<ControlUiGitHubPreview> {
   await identity?.revalidate();
   identity?.assertSelected();
@@ -364,7 +325,7 @@ export async function loadControlUiGitHubPreview(
   const key = cacheKey(target, cacheScope);
   const now = Date.now();
   let entry = previewCache.get(key);
-  if (entry && entry.expiresAt <= now) {
+  if (entry && (refresh || entry.expiresAt <= now)) {
     previewCache.delete(key);
     entry = undefined;
   }
@@ -382,7 +343,7 @@ export async function loadControlUiGitHubPreview(
       expiresAt: now + successCacheMs,
       promise: request.then(
         (preview) => {
-          if (identity) {
+          if (identity && !previewCache.has(key)) {
             cachePreview(key, pending);
           }
           return preview;
@@ -390,9 +351,13 @@ export async function loadControlUiGitHubPreview(
         (error: unknown) => {
           // Lifecycle failures belong to this caller; only upstream failures
           // may suppress later requests from other readers of the credential.
-          if (!(error instanceof GitHubIdentityError)) {
-            pending.expiresAt = Date.now() + FAILURE_CACHE_MS;
-            cachePreview(key, pending);
+          if (previewCache.get(key) === (identity ? undefined : pending)) {
+            if (error instanceof ControlUiGitHubError) {
+              pending.expiresAt = Date.now() + FAILURE_CACHE_MS;
+              cachePreview(key, pending);
+            } else {
+              previewCache.delete(key);
+            }
           }
           throw error;
         },

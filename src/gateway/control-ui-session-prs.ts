@@ -5,6 +5,12 @@ import {
   normalizeOptionalString,
   readNonBlankString,
 } from "@openclaw/normalization-core/string-coerce";
+import {
+  ControlUiGitHubError,
+  fetchGitHubJson,
+  GITHUB_API_ORIGIN,
+  resolveGitHubApiCredentialScope,
+} from "../../extensions/github/api.js";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { releaseGitReadCache, runGitReadOperation } from "../infra/git-read-cache.js";
 import type {
@@ -19,12 +25,6 @@ import type {
   ControlUiSessionPullRequest,
   ControlUiSessionPullRequests,
 } from "./control-ui-contract.js";
-import {
-  ControlUiGitHubError,
-  fetchGitHubJson,
-  GITHUB_API_ORIGIN,
-  resolveGitHubApiCredentialScope,
-} from "./control-ui-github-api.js";
 import {
   loadSessionPullRequestReferences,
   releaseSessionPullRequestReferenceCache,

@@ -1,4 +1,4 @@
-.github-link-hovercard {
+.link-reader-hovercard {
   position: fixed;
   inset: auto;
   margin: 0;
@@ -13,7 +13,7 @@
   color: var(--text);
   font-family: var(--font-body);
   /* Interactive by design: hover intent and text selection both need the card to
-     receive pointer events (see github-link-hovercard.runtime.ts). */
+     receive pointer events (see link-reader-hovercard.ts). */
   pointer-events: auto;
   opacity: 0;
   transform: translateY(-5px) scale(0.99);
@@ -23,30 +23,30 @@
     transform var(--duration-normal) var(--ease-out);
 }
 
-.github-link-hovercard[data-side="bottom"] {
+.link-reader-hovercard[data-side="bottom"] {
   transform: translateY(5px) scale(0.99);
   transform-origin: top left;
 }
 
-.github-link-hovercard[data-open="true"] {
+.link-reader-hovercard[data-open="true"] {
   opacity: 1;
   transform: translateY(0) scale(1);
 }
 
-.github-link-hovercard__header,
-.github-link-hovercard__footer {
+.link-reader-hovercard__header,
+.link-reader-hovercard__footer {
   display: flex;
   align-items: center;
   min-width: 0;
 }
 
-.github-link-hovercard__header {
+.link-reader-hovercard__header {
   gap: 9px;
   color: var(--muted);
   font-size: var(--control-ui-text-sm);
 }
 
-.github-link-hovercard__state {
+.link-reader-hovercard__state {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
@@ -57,19 +57,19 @@
   font-weight: 600;
 }
 
-.github-link-hovercard__state[data-tone="open"] {
+.link-reader-hovercard__state[data-tone="positive"] {
   color: var(--ok);
 }
 
-.github-link-hovercard__state[data-tone="danger"] {
+.link-reader-hovercard__state[data-tone="negative"] {
   color: var(--danger);
 }
 
-.github-link-hovercard__state[data-tone="purple"] {
+.link-reader-hovercard__state[data-tone="accent"] {
   color: var(--pr-merged);
 }
 
-.github-link-hovercard__state-dot {
+.link-reader-hovercard__state-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -79,7 +79,7 @@
 
 /* The repo reference and author are links too, but the title owns the card's
    only underline; the rest stay text until hovered or focused. */
-.github-link-hovercard__repo {
+.link-reader-hovercard__subtitle {
   min-width: 0;
   color: inherit;
   overflow: hidden;
@@ -87,20 +87,20 @@
   white-space: nowrap;
 }
 
-.github-link-hovercard__repo:hover,
-.github-link-hovercard__repo:focus-visible,
-.github-link-hovercard__author:hover,
-.github-link-hovercard__author:focus-visible {
+.link-reader-hovercard__subtitle:hover,
+.link-reader-hovercard__subtitle:focus-visible,
+.link-reader-hovercard__author:hover,
+.link-reader-hovercard__author:focus-visible {
   color: var(--text-strong);
 }
 
-.github-link-hovercard__time {
+.link-reader-hovercard__time {
   flex: 0 0 auto;
   margin-left: auto;
   white-space: nowrap;
 }
 
-.github-link-hovercard__title {
+.link-reader-hovercard__title {
   display: block;
   margin: 15px 0 17px;
   color: var(--text-strong);
@@ -111,47 +111,23 @@
   overflow-wrap: anywhere;
 }
 
-.github-link-hovercard__title:hover,
-.github-link-hovercard__title:focus-visible {
+.link-reader-hovercard__title:hover,
+.link-reader-hovercard__title:focus-visible {
   text-decoration: underline;
 }
 
-.github-link-hovercard__footer {
+.link-reader-hovercard__footer {
   justify-content: space-between;
   gap: 16px;
 }
 
-.github-link-hovercard__author,
-.github-link-hovercard__metrics {
+.link-reader-hovercard__author,
+.link-reader-hovercard__metadata {
   display: inline-flex;
   align-items: center;
 }
 
-.github-link-hovercard__coauthors {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  margin-left: 6px;
-}
-
-/* Overlap reads as one group; the ring keeps faces separable against the card. */
-.github-link-hovercard__coauthors .github-link-hovercard__avatar {
-  width: 21px;
-  height: 21px;
-  box-shadow: 0 0 0 2px var(--surface-1);
-}
-
-.github-link-hovercard__coauthors .github-link-hovercard__avatar + .github-link-hovercard__avatar {
-  margin-left: -7px;
-}
-
-.github-link-hovercard__coauthors-more {
-  margin-left: 5px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.github-link-hovercard__author {
+.link-reader-hovercard__author {
   min-width: 0;
   gap: 8px;
   color: var(--muted);
@@ -161,7 +137,7 @@
   white-space: nowrap;
 }
 
-.github-link-hovercard__avatar {
+.link-reader-hovercard__image {
   width: 25px;
   height: 25px;
   flex: 0 0 auto;
@@ -171,17 +147,12 @@
   object-fit: cover;
 }
 
-.github-link-hovercard__metrics {
+.link-reader-hovercard__metadata {
   flex: 0 0 auto;
   gap: 6px;
 }
 
-.github-link-hovercard__metrics--diff .github-link-hovercard__metric {
-  padding: 0;
-  background: none;
-}
-
-.github-link-hovercard__metric {
+.link-reader-hovercard__metric {
   padding: 4px 8px;
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--bg-muted) 82%, transparent);
@@ -192,80 +163,68 @@
   white-space: nowrap;
 }
 
-.github-link-hovercard__metric--additions {
-  color: var(--ok);
-}
-
-.github-link-hovercard__metric--deletions {
-  color: var(--danger);
-}
-
-.github-link-hovercard__skeleton .skeleton {
+.link-reader-hovercard__skeleton .skeleton {
   display: block;
   height: 14px;
   border-radius: var(--radius-sm);
 }
 
-.github-link-hovercard__skeleton .github-link-hovercard__placeholder--badge {
+.link-reader-hovercard__skeleton .link-reader-hovercard__placeholder--badge {
   width: 60px;
   height: 25px;
   flex-shrink: 0;
   border-radius: var(--radius-full);
 }
 
-.github-link-hovercard__placeholder--repo {
+.link-reader-hovercard__placeholder--subtitle {
   width: 45%;
 }
 
-.github-link-hovercard__placeholder--time {
+.link-reader-hovercard__placeholder--time {
   width: 14%;
   margin-left: auto;
 }
 
-.github-link-hovercard__skeleton .github-link-hovercard__placeholder--title {
+.link-reader-hovercard__skeleton .link-reader-hovercard__placeholder--title {
   width: 90%;
   height: 20px;
 }
 
-.github-link-hovercard__placeholder--author {
+.link-reader-hovercard__placeholder--author {
   width: 35%;
 }
 
-.github-link-hovercard__skeleton .github-link-hovercard__placeholder--metrics {
+.link-reader-hovercard__skeleton .link-reader-hovercard__placeholder--metadata {
   width: 38%;
   height: 25px;
 }
 
 @media (max-width: 560px) {
-  .github-link-hovercard {
+  .link-reader-hovercard {
     padding: 14px;
   }
 
-  .github-link-hovercard__header {
+  .link-reader-hovercard__header {
     flex-wrap: wrap;
   }
 
-  .github-link-hovercard__time {
+  .link-reader-hovercard__time {
     margin-left: 0;
   }
 
-  .github-link-hovercard__title {
+  .link-reader-hovercard__title {
     margin: 13px 0 15px;
   }
 
-  .github-link-hovercard__footer {
+  .link-reader-hovercard__footer {
     align-items: flex-start;
     flex-direction: column;
     gap: 10px;
   }
-
-  .github-link-hovercard__metrics--diff {
-    align-self: flex-end;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .github-link-hovercard {
+  .link-reader-hovercard {
     transition: none;
   }
 }

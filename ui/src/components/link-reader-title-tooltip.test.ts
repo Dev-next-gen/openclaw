@@ -1,8 +1,9 @@
 /* @vitest-environment jsdom */
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import type { GatewayBrowserClient } from "../api/gateway.ts";
 import { createTestGatewayClient } from "../test-helpers/gateway-client.ts";
+import { TEST_LINK_READER } from "../test-helpers/link-reader.ts";
+import type { LinkReaderHovercardProvider } from "./link-reader-hovercard.ts";
 import { toSanitizedMarkdownHtml } from "./markdown.ts";
 import { installTitleTooltips } from "./tooltip-title.ts";
 
@@ -14,14 +15,15 @@ const runtimeLoad = vi.hoisted(() => {
   return { pending, release };
 });
 
-vi.mock(import("./github-link-hovercard.runtime.ts"), async (original) => {
+vi.mock(import("./link-reader-hovercard.ts"), async (original) => {
   await runtimeLoad.pending;
   return original();
 });
 
-const tag = "openclaw-github-link-hovercard-provider";
+const tag = "openclaw-link-reader-hovercard-provider";
 const href = "https://github.com/openclaw/openclaw/issues/99815";
 const response = {
+  url: href,
   comments: 2,
   createdAt: "2026-07-05T08:00:00Z",
   kind: "issue",
@@ -48,8 +50,9 @@ it("reserves supported GitHub titles through cold loading, failures, recovery an
   const first = createDeferred<unknown>();
   const second = createDeferred<unknown>();
   const request = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
-  const provider = document.createElement(tag) as HTMLElement & { client: GatewayBrowserClient };
-  provider.client = { request } as unknown as GatewayBrowserClient;
+  const provider = document.createElement(tag) as LinkReaderHovercardProvider;
+  provider.readers = [TEST_LINK_READER];
+  provider.client = createTestGatewayClient(request);
   const anchor = document.createElement("a");
   anchor.href = href;
   anchor.title = href;
@@ -81,7 +84,7 @@ it("reserves supported GitHub titles through cold loading, failures, recovery an
   try {
     // Install the real bootstrap after the title adapter: listener order must not matter.
     expect(customElements.get(tag)).toBeUndefined();
-    await import("./github-link-hovercard-registration.ts");
+    await import("./link-reader-hovercard-registration.ts");
     anchor.dispatchEvent(new MouseEvent("pointerover", { bubbles: true, composed: true }));
     await vi.advanceTimersByTimeAsync(1_000);
     expect(customElements.get(tag)).toBeUndefined();
@@ -91,13 +94,16 @@ it("reserves supported GitHub titles through cold loading, failures, recovery an
     expect({ mounts: titleMounts.length, open: titleIsOpen() }).toEqual({ mounts: 0, open: false });
 
     runtimeLoad.release();
-    await import("./github-link-hovercard.runtime.ts");
+    await import("./link-reader-hovercard.ts");
     await customElements.whenDefined(tag);
+    await provider.updateComplete;
+    expect(provider.readers).toEqual([TEST_LINK_READER]);
+    expect(provider.client).toBeTruthy();
     anchor.focus();
     await vi.advanceTimersByTimeAsync(1_000);
     expect(request).toHaveBeenCalledTimes(1);
     expect(titleMounts).toEqual([]);
-    expect(document.querySelector(".github-link-hovercard")).toBeNull();
+    expect(document.querySelector(".link-reader-hovercard")).toBeNull();
     noPopupAria();
     first.reject(new Error("Metadata unavailable"));
     await vi.advanceTimersByTimeAsync(0);
@@ -157,7 +163,7 @@ it("reserves supported GitHub titles through cold loading, failures, recovery an
     noPopupAria();
     second.resolve(response);
     await vi.advanceTimersByTimeAsync(0);
-    expect(document.querySelector(".github-link-hovercard")?.textContent).toContain(
+    expect(document.querySelector(".link-reader-hovercard")?.textContent).toContain(
       "Preview ready",
     );
     expect(anchor.getAttribute("aria-expanded")).toBe("true");
@@ -169,7 +175,7 @@ it("reserves supported GitHub titles through cold loading, failures, recovery an
     expect(anchor.title).toBe(href);
   } finally {
     runtimeLoad.release();
-    await import("./github-link-hovercard.runtime.ts");
+    await import("./link-reader-hovercard.ts");
     await customElements.whenDefined(tag);
     first.resolve(response);
     second.resolve(response);
@@ -180,11 +186,12 @@ it("reserves supported GitHub titles through cold loading, failures, recovery an
 
 it("keeps rendered GitHub links free of native titles across preview closure and reentry", async () => {
   runtimeLoad.release();
-  await import("./github-link-hovercard-registration.ts");
+  await import("./link-reader-hovercard-registration.ts");
   const base = document.createElement("base");
   base.href = "https://dashboard.example/";
   document.body.append(base);
-  const provider = document.createElement(tag) as HTMLElement & { client: GatewayBrowserClient };
+  const provider = document.createElement(tag) as LinkReaderHovercardProvider;
+  provider.readers = [TEST_LINK_READER];
   provider.client = createTestGatewayClient(async () => response);
   provider.innerHTML = toSanitizedMarkdownHtml(
     `${href}\n\n[the **related** issue](${href} "${href}")\n\n[![Issue icon](data:image/png;base64,x "Icon hint")](${href} "Issue details")\n\n[](${href} "Issue details")\n\n[<button>](${href} "Issue details")\n\n[\\*](${href} "Issue details")\n\n[Documentation](https://example.com "Read the documentation")`,
@@ -219,15 +226,15 @@ it("keeps rendered GitHub links free of native titles across preview closure and
   // The real lazy bootstrap requires browser :hover; focus supplies intent in jsdom.
   anchor.focus();
   await vi.advanceTimersByTimeAsync(0);
-  expect(document.querySelector(".github-link-hovercard")?.textContent).toContain("Preview ready");
+  expect(document.querySelector(".link-reader-hovercard")?.textContent).toContain("Preview ready");
   noNativeTitles();
   pointer(anchor, "pointerout", child);
   pointer(child, "pointerover", anchor);
   await vi.advanceTimersByTimeAsync(200);
-  expect(document.querySelector(".github-link-hovercard")).not.toBeNull();
+  expect(document.querySelector(".link-reader-hovercard")).not.toBeNull();
   anchor.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   await vi.advanceTimersByTimeAsync(200);
-  expect(document.querySelector(".github-link-hovercard")).toBeNull();
+  expect(document.querySelector(".link-reader-hovercard")).toBeNull();
   noNativeTitles();
   pointer(child, "pointerout", document.body);
   pointer(anchor, "pointerleave", document.body);
@@ -236,7 +243,7 @@ it("keeps rendered GitHub links free of native titles across preview closure and
   noNativeTitles();
   pointer(child, "pointerover", document.body);
   await vi.advanceTimersByTimeAsync(300);
-  expect(document.querySelector(".github-link-hovercard")).not.toBeNull();
+  expect(document.querySelector(".link-reader-hovercard")).not.toBeNull();
   noNativeTitles();
   expect(links[0]?.textContent).toBe("#99815");
   expect(anchor.textContent).toBe("the related issue");

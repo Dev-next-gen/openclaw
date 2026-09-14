@@ -1,4 +1,4 @@
-export type SessionPanelToggleSlot = "browser" | "desktop" | "terminal";
+export type SessionPanelToggleSlot = "browser" | "desktop" | "terminal" | "link-reader";
 
 const INTENT_TTL_MS = 10_000;
 const pendingToggles = new Map<SessionPanelToggleSlot, { event: Event; createdAt: number }>();

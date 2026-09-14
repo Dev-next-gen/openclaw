@@ -3282,7 +3282,7 @@ src/plugins/public-surface-loader.ts	2
 src/plugins/recommended-tool-installs.ts	1
 src/plugins/register-plugin-cli-command-groups.ts	1
 src/plugins/registry-registrars-capabilities.ts	1
-src/plugins/registry-registrars-host.ts	4
+src/plugins/registry-registrars-host.ts	1
 src/plugins/registry-registrars-network.ts	3
 src/plugins/registry-registrars-operations.ts	2
 src/plugins/registry-registrars-providers.ts	1
@@ -3567,7 +3567,6 @@ ui/src/app/config.ts	1
 ui/src/app/custom-theme.ts	2
 ui/src/app/native-bridge.ts	3
 ui/src/app/native-gateways.runtime.ts	4
-ui/src/app/native-link-routing.ts	1
 ui/src/app/native-notifications.ts	2
 ui/src/app/native-route-memory.ts	1
 ui/src/app/native-web-chrome.ts	2
@@ -3622,8 +3621,6 @@ ui/src/components/desktop/desktop-panel.ts	2
 ui/src/components/dock-panel-layout.ts	3
 ui/src/components/exec-approval.ts	1
 ui/src/components/file-preview-modal.ts	1
-ui/src/components/github-link-hovercard-registration.ts	1
-ui/src/components/github-link-hovercard.runtime.ts	1
 ui/src/components/hub-tabs.ts	1
 ui/src/components/input-dialog.ts	1
 ui/src/components/lobster-dex.ts	2

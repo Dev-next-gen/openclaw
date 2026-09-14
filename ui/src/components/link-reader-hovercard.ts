@@ -1,37 +1,42 @@
 import { initialState, Task, TaskStatus } from "@lit/task";
-import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
+import { parseCanonicalIpAddress } from "@openclaw/net-policy/ip";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { readNonBlankString } from "@openclaw/normalization-core/string-coerce";
-import { nothing, ReactiveElement, render } from "lit";
-import type { ControlUiGitHubPreview } from "../../../src/gateway/control-ui-contract.js";
+import { html, nothing, ReactiveElement, render, type TemplateResult } from "lit";
+import type {
+  ControlUiLinkReaderDescriptor,
+  ControlUiLinkReaderPreview,
+} from "../../../src/shared/control-ui-link-reader.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
-import { i18n } from "../i18n/index.ts";
+import { i18n, t } from "../i18n/index.ts";
+import { registerLinkReaderEnglish } from "../i18n/locales/en-link-reader.ts";
+import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "../lib/external-link.ts";
+import { formatRelativeTimestamp } from "../lib/format.ts";
+import { anchorFromNavigationEvent } from "../lib/navigation-click.ts";
+import "../styles/link-reader-hovercard.css";
 import { subscribeToSharedRequest } from "../lib/shared-request-subscription.ts";
-import "../styles/github-link-hovercard.css";
 import {
-  previewState,
-  renderGitHubPreview,
-  renderGitHubPreviewLoading,
-  type GitHubPreview,
-} from "./github-link-hovercard-view.ts";
-import {
-  GITHUB_HOVERCARD_OPEN_DELAY_MS,
-  githubLinkAnchorFromEvent,
-  gitHubPreviewKey,
-  parseGitHubLinkTarget,
-  type GitHubLinkTarget,
-} from "./github-link-target.ts";
+  LINK_READER_HOVERCARD_OPEN_DELAY_MS,
+  resolveLinkReaderTarget,
+  linkReaderTargetKey,
+  EMPTY_LINK_READERS,
+  type LinkReaderTarget,
+} from "./link-reader-target.ts";
 import { createPortaledHovercard, PortaledHovercardController } from "./portaled-hovercard.ts";
+
+registerLinkReaderEnglish();
 
 const SUCCESS_CACHE_MS = 5 * 60_000;
 const FAILURE_CACHE_MS = 30_000;
 const CACHE_LIMIT = 100;
 
+type LinkPreview = LinkReaderTarget & ControlUiLinkReaderPreview;
+
 type CacheEntry = {
-  preview?: ControlUiGitHubPreview;
+  preview?: ControlUiLinkReaderPreview;
   failed?: boolean;
   expiresAt: number;
-  promise: Promise<ControlUiGitHubPreview>;
+  promise: Promise<ControlUiLinkReaderPreview>;
   controller: AbortController;
   subscribers: Set<object>;
 };
@@ -73,100 +78,184 @@ function previewContextFor(
 
 let nextHovercardId = 0;
 
-function requiredString(record: Record<string, unknown>, key: string): string {
-  const value = readNonBlankString(record[key]);
-  if (value === undefined) {
-    throw new Error(`GitHub response omitted ${key}`);
-  }
-  return value;
-}
-
-function safeAvatarDataUrl(value: unknown): string | undefined {
-  return typeof value === "string" && /^data:image\/(?:gif|jpeg|png|webp);base64,/u.test(value)
-    ? value
-    : undefined;
-}
-
-/** Gateway data is untrusted here: keep only well-formed logins and inlined avatars. */
-function parseCoAuthors(value: unknown): { login: string; avatarDataUrl?: string }[] | undefined {
-  if (!Array.isArray(value)) {
+function safePreviewImage(value: string | undefined): string | undefined {
+  if (!value) {
     return undefined;
   }
-  const parsed = value.flatMap((entry) => {
-    if (!isRecord(entry)) {
-      return [];
-    }
-    const login = readNonBlankString(entry.login);
-    if (!login) {
-      return [];
-    }
-    const avatarDataUrl = safeAvatarDataUrl(entry.avatarDataUrl);
-    return [avatarDataUrl ? { login, avatarDataUrl } : { login }];
-  });
-  return parsed.length > 0 ? parsed : undefined;
+  if (/^data:image\/(?:gif|jpeg|png|webp);base64,/u.test(value)) {
+    return value;
+  }
+  try {
+    const url = new URL(value);
+    const host = url.hostname.replace(/\.+$/u, "");
+    return url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      url.origin !== window.location.origin &&
+      host.includes(".") &&
+      !/(?:^|\.)(?:localhost|local|internal|localdomain)$/u.test(host) &&
+      !parseCanonicalIpAddress(host)
+      ? url.href
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
-function parsePreviewResponse(target: GitHubLinkTarget, value: unknown): ControlUiGitHubPreview {
-  if (!isRecord(value)) {
-    throw new Error("GitHub response was not an object");
-  }
+function parsePreviewResponse(
+  target: LinkReaderTarget,
+  value: unknown,
+): ControlUiLinkReaderPreview {
+  const title = isRecord(value) ? readNonBlankString(value.title) : undefined;
   if (
-    value.kind !== target.kind ||
-    typeof value.owner !== "string" ||
-    value.owner.toLowerCase() !== target.owner.toLowerCase() ||
-    typeof value.repo !== "string" ||
-    value.repo.toLowerCase() !== target.repo.toLowerCase() ||
-    value.number !== target.number
+    !isRecord(value) ||
+    !title ||
+    typeof value.url !== "string" ||
+    !resolveLinkReaderTarget(value.url, [target.reader])
   ) {
-    throw new Error("GitHub response did not match the requested link");
+    throw new Error("Invalid link preview response");
   }
+  const badgeValue = isRecord(value.badge) ? value.badge : undefined;
+  const tone = (["neutral", "positive", "negative", "attention", "accent"] as const).find(
+    (item) => item === badgeValue?.tone,
+  );
+  const badge =
+    badgeValue && typeof badgeValue.label === "string" && tone
+      ? { label: badgeValue.label, tone }
+      : undefined;
   return {
-    additions: asFiniteNumber(value.additions),
-    avatarDataUrl: safeAvatarDataUrl(value.avatarDataUrl),
-    closedAt: readNonBlankString(value.closedAt),
-    coAuthorCount: asFiniteNumber(value.coAuthorCount),
-    coAuthors: parseCoAuthors(value.coAuthors),
-    comments: asFiniteNumber(value.comments),
-    createdAt: requiredString(value, "createdAt"),
-    deletions: asFiniteNumber(value.deletions),
-    draft: typeof value.draft === "boolean" ? value.draft : undefined,
-    kind: target.kind,
-    login: readNonBlankString(value.login) ?? "ghost",
-    mergedAt: readNonBlankString(value.mergedAt),
-    number: target.number,
-    owner: target.owner,
-    repo: target.repo,
-    state: requiredString(value, "state"),
-    stateReason: readNonBlankString(value.stateReason),
-    title: requiredString(value, "title"),
-    updatedAt: requiredString(value, "updatedAt"),
+    url: value.url,
+    title,
+    subtitle: readNonBlankString(value.subtitle),
+    badge,
+    author: readNonBlankString(value.author),
+    createdAt: readNonBlankString(value.createdAt),
+    updatedAt: readNonBlankString(value.updatedAt),
+    imageUrl: safePreviewImage(readNonBlankString(value.imageUrl)),
+    metadata: Array.isArray(value.metadata)
+      ? value.metadata.flatMap((entry) =>
+          isRecord(entry) && typeof entry.label === "string" && typeof entry.value === "string"
+            ? [{ label: entry.label, value: entry.value }]
+            : [],
+        )
+      : undefined,
   };
 }
 
-export class GitHubLinkHovercardProvider extends ReactiveElement {
+function renderAvatar(imageUrl: string | undefined) {
+  return imageUrl
+    ? html`<img
+        class="link-reader-hovercard__image"
+        alt=""
+        decoding="async"
+        crossorigin="anonymous"
+        referrerpolicy="no-referrer"
+        src=${imageUrl}
+        @error=${(event: Event) => {
+          if (event.currentTarget instanceof HTMLImageElement) {
+            event.currentTarget.remove();
+          }
+        }}
+      />`
+    : nothing;
+}
+
+function renderCardLink(className: string, href: string, content: string | TemplateResult) {
+  return html`<a
+    class=${className}
+    href=${href}
+    target=${EXTERNAL_LINK_TARGET}
+    rel=${buildExternalLinkRel()}
+    >${content}</a
+  >`;
+}
+
+function renderLoading(card: HTMLDivElement): void {
+  card.dataset.loading = "true";
+  card.removeAttribute("data-state");
+  card.removeAttribute("data-cached");
+  card.setAttribute("aria-label", t("linkReader.loadingPreview"));
+  const rows = [
+    ["header", ["badge", "subtitle", "time"]],
+    ["title", ["title"]],
+    ["footer", ["author", "metadata"]],
+  ] as const;
+  render(
+    html`<div class="link-reader-hovercard__skeleton" aria-hidden="true">
+      ${rows.map(([rowClass, parts]) => html`<div class=${"link-reader-hovercard__" + rowClass}>${parts.map((part) => html`<span class=${"skeleton link-reader-hovercard__placeholder--" + part}></span>`)}</div>`)}
+    </div>`,
+    card,
+  );
+}
+
+function renderPreview(card: HTMLDivElement, preview: LinkPreview, seeded = false): void {
+  card.dataset.loading = "false";
+  card.dataset.cached = String(seeded);
+  card.dataset.state = preview.badge?.tone ?? "neutral";
+  const timestamp = preview.updatedAt ?? preview.createdAt;
+  render(
+    html`<div class="link-reader-hovercard__header">
+        ${preview.badge ? html`<span class="link-reader-hovercard__state" data-tone=${preview.badge.tone}><span class="link-reader-hovercard__state-dot" aria-hidden="true"></span>${preview.badge.label}</span>` : nothing}
+        ${renderCardLink("link-reader-hovercard__subtitle", preview.href, preview.subtitle ?? preview.reader.label)}
+        ${seeded ? html`<span class="link-reader-hovercard__time">${t("linkReader.cachedPreview")}</span>` : timestamp ? html`<time class="link-reader-hovercard__time" datetime=${timestamp}>${formatRelativeTimestamp(Date.parse(timestamp))}</time>` : nothing}
+      </div>
+      ${renderCardLink("link-reader-hovercard__title", preview.href, preview.title)}
+      <div class="link-reader-hovercard__footer">
+        ${preview.author || preview.imageUrl ? html`<span class="link-reader-hovercard__author">${renderAvatar(preview.imageUrl)}${preview.author}</span>` : nothing}
+        <span class="link-reader-hovercard__metadata"
+          >${preview.metadata?.map(({ label, value }) => html`<span class="link-reader-hovercard__metric">${label ? label + ": " : ""}${value}</span>`)}</span
+        >
+      </div>`,
+    card,
+  );
+  card.setAttribute("aria-label", t("linkReader.previewAriaLabel", { title: preview.title }));
+}
+
+export class LinkReaderHovercardProvider extends ReactiveElement {
   // Lit must replay values assigned before the lazy custom element upgrades,
   // otherwise own properties shadow the identity-resetting accessors below.
   static override properties = {
     client: { attribute: false, noAccessor: true },
     agentId: { attribute: false, noAccessor: true },
+    readers: { attribute: false, noAccessor: true },
     previewSeeds: { attribute: false, noAccessor: true },
   };
 
   private gatewayClient: GatewayBrowserClient | null = null;
   private selectedAgentId: string | undefined;
+  private readerDescriptors: readonly ControlUiLinkReaderDescriptor[] = EMPTY_LINK_READERS;
+
+  get readers(): readonly ControlUiLinkReaderDescriptor[] {
+    return this.readerDescriptors;
+  }
+  set readers(value: readonly ControlUiLinkReaderDescriptor[]) {
+    if (
+      value.length === this.readerDescriptors.length &&
+      value.every((reader, index) => reader === this.readerDescriptors[index])
+    ) {
+      return;
+    }
+    this.invalidatePreviewContext();
+    this.close();
+    this.clearPreviews();
+    this.readerDescriptors = value;
+    this.seeds = null;
+    this.dispatchEvent(new Event("link-reader-capabilities-changed"));
+  }
+
   private seeds: {
     client: GatewayBrowserClient | null;
     agentId: string | undefined;
     generation: number | undefined;
     recoveryScope: string | undefined;
-    previews: readonly GitHubPreview[];
+    previews: readonly ControlUiLinkReaderPreview[];
   } | null = null;
 
-  get previewSeeds(): readonly GitHubPreview[] {
+  get previewSeeds(): readonly ControlUiLinkReaderPreview[] {
     return this.seeds?.previews ?? [];
   }
 
-  set previewSeeds(previews: readonly GitHubPreview[]) {
+  set previewSeeds(previews: readonly ControlUiLinkReaderPreview[]) {
     this.seeds = {
       client: this.client,
       agentId: this.agentId,
@@ -177,7 +266,7 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {
     this.requestUpdate();
   }
 
-  private seedPreview(target: GitHubLinkTarget): GitHubPreview | undefined {
+  private seedPreview(target: LinkReaderTarget): LinkPreview | undefined {
     const seeds = this.seeds;
     if (
       !seeds ||
@@ -188,9 +277,10 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {
     ) {
       return undefined;
     }
-    const seed = seeds.previews.find(
-      (preview) => gitHubPreviewKey(preview) === gitHubPreviewKey(target),
-    );
+    const seed = seeds.previews.find((preview) => {
+      const seedTarget = resolveLinkReaderTarget(preview.url, [target.reader]);
+      return seedTarget && linkReaderTargetKey(seedTarget) === linkReaderTargetKey(target);
+    });
     return seed ? { ...seed, ...target } : undefined;
   }
 
@@ -206,6 +296,7 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {
     this.close();
     this.clearPreviews();
     this.gatewayClient = value;
+    this.dispatchEvent(new Event("link-reader-capabilities-changed"));
   }
 
   get agentId(): string | undefined {
@@ -220,6 +311,7 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {
     this.close();
     this.clearPreviews();
     this.selectedAgentId = value;
+    this.dispatchEvent(new Event("link-reader-capabilities-changed"));
   }
 
   private readonly cache = new Map<string, CacheEntry>();
@@ -247,21 +339,20 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {
     for (const anchor of this.querySelectorAll<HTMLAnchorElement>("a.markdown-github-item")) {
       // Nested providers retain their own agent and connection identity.
       let owner = anchor.parentElement;
-      while (owner && !(owner instanceof GitHubLinkHovercardProvider)) {
+      while (owner && !(owner instanceof LinkReaderHovercardProvider)) {
         owner = owner.parentElement;
       }
       if (owner !== this) {
         continue;
       }
-      const target = parseGitHubLinkTarget(anchor.href);
+      const target = resolveLinkReaderTarget(anchor.href, this.readers);
       const preview = target ? this.cachedPreview(target)?.preview : undefined;
-      if (!preview) {
-        delete anchor.dataset.githubState;
+      if (!preview?.badge) {
+        delete anchor.dataset.linkReaderTone;
         anchor.removeAttribute("aria-description");
       } else {
-        const state = previewState(preview);
-        anchor.setAttribute("aria-description", state.label);
-        anchor.dataset.githubState = state.state;
+        anchor.setAttribute("aria-description", preview.badge.label);
+        anchor.dataset.linkReaderTone = preview.badge.tone;
       }
     }
   }
@@ -276,8 +367,14 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {
     this.syncInlineStates();
   }
 
-  async prefetch(target: GitHubLinkTarget, signal: AbortSignal): Promise<void> {
-    if (!this.isConnected || !this.client?.connected || signal.aborted) {
+  async prefetch(target: LinkReaderTarget, signal: AbortSignal): Promise<void> {
+    if (
+      !this.isConnected ||
+      !this.client?.connected ||
+      !this.readers.includes(target.reader) ||
+      !target.reader.linkReader.previewMethod ||
+      signal.aborted
+    ) {
       return;
     }
     this.syncPreviewContext();
@@ -288,7 +385,7 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {
   }
 
   private activeAnchor: HTMLAnchorElement | null = null;
-  private activeTarget: GitHubLinkTarget | null = null;
+  private activeTarget: LinkReaderTarget | null = null;
   // Which surface opened the current card: gates whether focus landing inside
   // the portaled card (e.g. clicking the title link) can hold it open, so a
   // pointer-driven open still fully releases on mouse-out (see handleCardPointerLeave).
@@ -390,21 +487,20 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {
     });
   }
 
-  private readonly handlePointerOver = (event: Event) => {
-    const pointer = event as PointerEvent;
-    if (pointer.pointerType === "touch") {
+  private readonly handlePointerOver = (event: PointerEvent) => {
+    if (event.pointerType === "touch") {
       return;
     }
-    const anchor = githubLinkAnchorFromEvent(event);
-    const target = anchor ? parseGitHubLinkTarget(anchor.href) : null;
-    if (!anchor || !target) {
+    const anchor = anchorFromNavigationEvent(event);
+    const target = anchor ? resolveLinkReaderTarget(anchor.href, this.readers) : null;
+    if (!anchor || !target?.reader.linkReader.previewMethod) {
       return;
     }
-    this.activateFromBootstrap(anchor, target, "pointer", GITHUB_HOVERCARD_OPEN_DELAY_MS);
+    this.activateFromBootstrap(anchor, target, "pointer", LINK_READER_HOVERCARD_OPEN_DELAY_MS);
   };
 
   private readonly handlePointerOut = (event: PointerEvent) => {
-    const anchor = githubLinkAnchorFromEvent(event);
+    const anchor = anchorFromNavigationEvent(event);
     if (!anchor || anchor !== this.activeAnchor) {
       return;
     }
@@ -438,9 +534,9 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {
     if (this.hovercard.restoringFocus) {
       return;
     }
-    const anchor = githubLinkAnchorFromEvent(event);
-    const target = anchor ? parseGitHubLinkTarget(anchor.href) : null;
-    if (!anchor || !target) {
+    const anchor = anchorFromNavigationEvent(event);
+    const target = anchor ? resolveLinkReaderTarget(anchor.href, this.readers) : null;
+    if (!anchor || !target?.reader.linkReader.previewMethod) {
       return;
     }
     this.activateFromBootstrap(anchor, target, "focus", 0);
@@ -463,16 +559,23 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {
 
   activateFromBootstrap(
     anchor: HTMLAnchorElement,
-    target: GitHubLinkTarget,
+    target: LinkReaderTarget,
     trigger: "focus" | "pointer",
     delay: number,
   ): void {
     let owner: Element | null = anchor.parentElement;
-    while (owner && !(owner instanceof GitHubLinkHovercardProvider)) {
+    while (owner && !(owner instanceof LinkReaderHovercardProvider)) {
       owner = owner.parentElement;
     }
     // Nested providers own their agent scope even when intent bubbles to the app provider.
     if (owner !== this) {
+      return;
+    }
+    if (
+      !this.client ||
+      !this.readers.includes(target.reader) ||
+      !target.reader.linkReader.previewMethod
+    ) {
       return;
     }
     this.activate(anchor, target, delay);
@@ -484,7 +587,7 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {
     }
   }
 
-  private activate(anchor: HTMLAnchorElement, target: GitHubLinkTarget, delay: number): void {
+  private activate(anchor: HTMLAnchorElement, target: LinkReaderTarget, delay: number): void {
     const context = this.syncPreviewContext();
     if (anchor === this.activeAnchor && this.activeTarget?.href === target.href) {
       return;
@@ -521,18 +624,18 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {
     );
   }
 
-  private show(anchor: HTMLAnchorElement, preview?: GitHubPreview, seeded = false): void {
+  private show(anchor: HTMLAnchorElement, preview?: LinkPreview, seeded = false): void {
     const existing = this.hovercard.card;
     const card =
       existing ??
       createPortaledHovercard(
-        "openclaw-github-hovercard-" + ++nextHovercardId,
-        "github-link-hovercard",
+        "openclaw-link-reader-hovercard-" + ++nextHovercardId,
+        "link-reader-hovercard",
       );
     if (preview) {
-      renderGitHubPreview(card, preview, seeded);
+      renderPreview(card, preview, seeded);
     } else {
-      renderGitHubPreviewLoading(card);
+      renderLoading(card);
     }
     if (existing) {
       this.hovercard.position();
@@ -548,18 +651,18 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {
     }
   }
 
-  private cachedPreview(target: GitHubLinkTarget): CacheEntry | undefined {
-    const cached = this.cache.get(gitHubPreviewKey(target));
+  private cachedPreview(target: LinkReaderTarget): CacheEntry | undefined {
+    const cached = this.cache.get(linkReaderTargetKey(target));
     return cached && !cached.controller.signal.aborted && cached.expiresAt > Date.now()
       ? cached
       : undefined;
   }
 
   private loadPreview(
-    target: GitHubLinkTarget,
+    target: LinkReaderTarget,
     signal: AbortSignal,
-  ): Promise<ControlUiGitHubPreview> {
-    const key = gitHubPreviewKey(target);
+  ): Promise<ControlUiLinkReaderPreview> {
+    const key = linkReaderTargetKey(target);
     const now = Date.now();
     const cached = this.cachedPreview(target);
     this.cache.delete(key);
@@ -573,18 +676,16 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {
     const client = this.client;
     const context = this.previewContext;
     const agentId = this.agentId;
-    const load = async (): Promise<ControlUiGitHubPreview> => {
-      if (!this.client) {
-        throw new Error("GitHub preview requires a connected Gateway");
+    const load = async (): Promise<ControlUiLinkReaderPreview> => {
+      const method = target.reader.linkReader.previewMethod;
+      if (!client || !method || !this.readers.includes(target.reader)) {
+        throw new Error("Link preview requires an available reader");
       }
-      const response = await this.client.request<ControlUiGitHubPreview>(
-        "controlUi.githubPreview",
+      const response = await client.request<ControlUiLinkReaderPreview>(
+        method,
         {
-          ...(this.agentId ? { agentId: this.agentId } : {}),
-          kind: target.kind,
-          number: target.number,
-          owner: target.owner,
-          repo: target.repo,
+          ...(agentId ? { agentId } : {}),
+          url: target.href,
         },
         { signal: controller.signal },
       );
@@ -612,7 +713,7 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {
         })
         .catch((error: unknown) => {
           // Keep short-lived failures cached so repeatedly crossing a broken or
-          // private link does not burn GitHub's anonymous rate limit.
+          // private link does not burn the service rate limit.
           entry.failed = true;
           entry.expiresAt = Date.now() + FAILURE_CACHE_MS;
           this.syncInlineStates();

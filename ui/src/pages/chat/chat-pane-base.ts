@@ -595,7 +595,7 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   protected readonly sessionDiscussionStates = new Map<string, SessionDiscussionState>();
   protected readonly sessionDiscussionOpenUrls = new Map<string, string | null>();
   protected readonly pendingPanelToggleRequests = new Map<
-    "browser" | "desktop" | "terminal",
+    "browser" | "desktop" | "terminal" | "link-reader",
     Event
   >();
   protected readonly sessionDiscussionProbes = new Set<string>();

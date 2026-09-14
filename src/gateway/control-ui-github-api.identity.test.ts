@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { githubApiToken, hasConfiguredGitHubApiCredential } from "../../extensions/github/api.js";
 import {
   setActiveDegradedSecretOwners,
   SecretSurfaceUnavailableError,
 } from "../secrets/runtime-degraded-state.js";
-import { githubApiToken, hasConfiguredGitHubApiCredential } from "./control-ui-github-api.js";
 
 afterEach(() => setActiveDegradedSecretOwners([]));
 

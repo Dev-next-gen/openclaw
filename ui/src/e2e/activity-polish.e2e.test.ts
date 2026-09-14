@@ -2,6 +2,7 @@ import path from "node:path";
 import { expect, it } from "vitest";
 import { CONTROL_UI_SESSION_PULL_REQUESTS_CHANGED_EVENT } from "../../../src/gateway/control-ui-contract.js";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
+import { TEST_LINK_READER } from "../test-helpers/link-reader.ts";
 import {
   activityPolishFixture,
   activityPolishImages,
@@ -191,10 +192,10 @@ suite.define(() => {
           await pr.waitFor();
           await page.screenshot({ path: path.join(suite.artifactDir, `02-recaps-${width}.png`) });
           await pr.focus();
-          const card = page.locator(".github-link-hovercard");
+          const card = page.locator(".link-reader-hovercard");
           await expect.poll(() => card.textContent()).toContain(activityPolishPullRequest.title);
-          await gateway.waitForRequest("controlUi.githubPreview");
-          await gateway.rejectDeferred("controlUi.githubPreview", {
+          await gateway.waitForRequest(TEST_LINK_READER.linkReader.previewMethod!);
+          await gateway.rejectDeferred(TEST_LINK_READER.linkReader.previewMethod!, {
             code: "UNAVAILABLE",
             message: "Preview enrichment unavailable",
           });

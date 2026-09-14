@@ -1,18 +1,18 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { readNonBlankString } from "@openclaw/normalization-core/string-coerce";
-import type {
-  RemoteProject,
-  ProjectsSearchRemoteResult,
-} from "../../packages/gateway-protocol/src/index.js";
-import { pruneMapToMaxSize } from "../infra/map-size.js";
-import { parseProjectGitUrl } from "../projects/project-git-url.js";
 import {
   fetchGitHubApi,
   fetchGitHubJson,
   GITHUB_API_ORIGIN,
   readGitHubJsonResponse,
   resolveGitHubApiCredentialScope,
-} from "./control-ui-github-api.js";
+} from "../../extensions/github/api.js";
+import type {
+  RemoteProject,
+  ProjectsSearchRemoteResult,
+} from "../../packages/gateway-protocol/src/index.js";
+import { pruneMapToMaxSize } from "../infra/map-size.js";
+import { parseProjectGitUrl } from "../projects/project-git-url.js";
 
 const SEARCH_CACHE_MS = 60_000;
 const SEARCH_CACHE_LIMIT = 100;

@@ -1,29 +1,29 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ControlUiLinkReaderPreview } from "../../../src/shared/control-ui-link-reader.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
-import type { GitHubPreview } from "./github-link-hovercard-view.ts";
-import { GitHubLinkHovercardProvider } from "./github-link-hovercard.runtime.ts";
+import { TEST_LINK_READER } from "../test-helpers/link-reader.ts";
+import { LinkReaderHovercardProvider } from "./link-reader-hovercard.ts";
 
 const TAG = "test-github-seeded-hovercard";
-customElements.define(TAG, class extends GitHubLinkHovercardProvider {});
+customElements.define(TAG, class extends LinkReaderHovercardProvider {});
 const PR_HREF = "https://github.com/openclaw/openclaw/pull/99815";
-const seed: GitHubPreview = {
-  href: PR_HREF,
-  kind: "pull",
-  owner: "openclaw",
-  repo: "openclaw",
-  number: 99815,
+const seed: ControlUiLinkReaderPreview = {
+  url: PR_HREF,
+  subtitle: "openclaw/openclaw #99815",
   title: "Make Activity easier to scan",
-  state: "merged",
-  additions: 42,
-  deletions: 7,
+  badge: { label: "Merged", tone: "accent" },
+  metadata: [
+    { label: "", value: "+42" },
+    { label: "", value: "−7" },
+  ],
 };
 const details = {
   ...seed,
   title: "Make Activity easier to browse",
-  login: "octocat",
+  author: "octocat",
   createdAt: "2026-07-05T08:00:00Z",
   updatedAt: "2026-07-05T09:55:00Z",
 };
@@ -35,9 +35,10 @@ function createSeededLink() {
     connectionGeneration: 1,
     recoveryScope: "principal-a",
   };
-  const provider = document.createElement(TAG) as GitHubLinkHovercardProvider;
+  const provider = document.createElement(TAG) as LinkReaderHovercardProvider;
   provider.client = client as unknown as GatewayBrowserClient;
   provider.agentId = "row-agent";
+  provider.readers = [TEST_LINK_READER];
   provider.previewSeeds = [seed];
   const anchor = document.createElement("a");
   anchor.href = PR_HREF + "#discussion_r1";
@@ -48,7 +49,7 @@ function createSeededLink() {
 }
 
 function hovercard() {
-  return document.querySelector<HTMLElement>(".github-link-hovercard");
+  return document.querySelector<HTMLElement>(".link-reader-hovercard");
 }
 
 async function hover(anchor: HTMLAnchorElement) {
@@ -89,14 +90,14 @@ describe("GitHub hovercards with authorized session details", () => {
     expect(card?.textContent).toContain("−7");
     expect(card?.textContent).toContain("Cached details");
     expect(card?.querySelector("time")).toBeNull();
-    expect(card?.querySelector(".github-link-hovercard__author")).toBeNull();
+    expect(card?.querySelector(".link-reader-hovercard__author")).toBeNull();
     expect(card?.getAttribute("aria-label")).not.toContain("by ");
-    expect(card?.querySelector<HTMLAnchorElement>(".github-link-hovercard__title")?.href).toBe(
+    expect(card?.querySelector<HTMLAnchorElement>(".link-reader-hovercard__title")?.href).toBe(
       anchor.href,
     );
     expect(client.request.mock.calls[0]?.[1]).toMatchObject({
       agentId: "row-agent",
-      number: seed.number,
+      url: anchor.href,
     });
 
     pending.resolve(details);
@@ -111,18 +112,19 @@ describe("GitHub hovercards with authorized session details", () => {
 
   it("replays session seeds assigned before the lazy provider upgrades", async () => {
     const tag = "test-github-seeded-lazy-upgrade";
-    const provider = document.createElement(tag) as GitHubLinkHovercardProvider;
+    const provider = document.createElement(tag) as LinkReaderHovercardProvider;
     const pending = createDeferred<unknown>();
     provider.client = {
       request: vi.fn().mockReturnValue(pending.promise),
     } as unknown as GatewayBrowserClient;
     provider.agentId = "row-agent";
+    provider.readers = [TEST_LINK_READER];
     provider.previewSeeds = [seed];
     const anchor = document.createElement("a");
     anchor.href = PR_HREF;
     provider.append(anchor);
     document.body.append(provider);
-    customElements.define(tag, class extends GitHubLinkHovercardProvider {});
+    customElements.define(tag, class extends LinkReaderHovercardProvider {});
     await provider.updateComplete;
     await hover(anchor);
     expect(hovercard()?.textContent).toContain(seed.title);
@@ -153,7 +155,7 @@ describe("GitHub hovercards with authorized session details", () => {
     expect(hovercard()?.textContent).toContain(details.title);
   });
 
-  it.each(["agent", "client", "connection", "principal"])(
+  it.each(["agent", "client", "connection", "principal", "reader"])(
     "does not expose cached session details or late enrichment after a %s change",
     async (change) => {
       const { pending, client, provider, anchor } = createSeededLink();
@@ -163,6 +165,8 @@ describe("GitHub hovercards with authorized session details", () => {
         provider.agentId = "other-agent";
       } else if (change === "client") {
         provider.client = { ...client } as unknown as GatewayBrowserClient;
+      } else if (change === "reader") {
+        provider.readers = [{ ...TEST_LINK_READER }];
       } else if (change === "connection") {
         client.connectionGeneration += 1;
       } else {
@@ -182,9 +186,9 @@ describe("GitHub hovercards with authorized session details", () => {
 
   it("does not invent unavailable metrics or reuse a seed for another PR", async () => {
     const { client, provider, anchor } = createSeededLink();
-    provider.previewSeeds = [{ ...seed, additions: undefined, deletions: undefined }];
+    provider.previewSeeds = [{ ...seed, metadata: undefined }];
     await hover(anchor);
-    expect(hovercard()?.querySelectorAll(".github-link-hovercard__metric")).toHaveLength(0);
+    expect(hovercard()?.querySelectorAll(".link-reader-hovercard__metric")).toHaveLength(0);
     leave(anchor);
     await vi.advanceTimersByTimeAsync(120);
     anchor.href = "https://github.com/openclaw/openclaw/pull/99816";

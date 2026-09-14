@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  ControlUiGitHubError,
+  fetchGitHubApi,
+  readGitHubJsonResponse,
+} from "../../extensions/github/api.js";
 import { GitHubIdentityError, prepareGitHubReadIdentity } from "../agents/github-tool-identity.js";
 import { BoardValidationError } from "../boards/board-layout.js";
 import { resolveGitHubActionsRequest } from "../boards/github-actions-capability.js";
@@ -7,11 +12,6 @@ import { getActiveSecretsRuntimeConfigSnapshot } from "../secrets/runtime-state.
 import { getOrCreatePromise } from "../shared/lazy-promise.js";
 import type { BoardCapabilityAuthority } from "./board-host-tools.js";
 import { BoardGatewayUnavailableError } from "./board-view-ticket.js";
-import {
-  ControlUiGitHubError,
-  fetchGitHubApi,
-  readGitHubJsonResponse,
-} from "./control-ui-github-api.js";
 import { requestCurrentGitHubOAuthRefresh } from "./github-oauth-lifecycle.js";
 import type { GatewayRequestContext, RespondFn } from "./server-methods/types.js";
 

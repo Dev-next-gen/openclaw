@@ -22,6 +22,7 @@ function normalizeSlotId(value: unknown): SidebarSlotId | null {
     return "dashboard";
   }
   return value === "browser" ||
+    value === "link-reader" ||
     value === "companion" ||
     value === "conversation" ||
     value === "dashboard" ||
