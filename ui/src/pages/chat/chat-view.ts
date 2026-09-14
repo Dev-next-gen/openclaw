@@ -211,9 +211,9 @@ export function renderChat(props: ChatProps) {
         streamStartedAt: placementStartup?.startedAt ?? props.streamStartedAt,
         queue,
         initialTurnId: props.placementStartup?.initialTurn?.id,
-        // The thread needs queued run IDs to retire optimistic bubbles, while
-        // buildPendingInputItems keeps the custody rows themselves out of it.
-        pendingInputs: inputDisplay.pendingInputs,
+        // Keep the owner array stable for transcript-cache reuse. The builder
+        // reconciles canonical messages and keeps queued custody rows out.
+        pendingInputs: pendingInputs?.page.items,
         runActive: props.runActive === true,
         runWorking,
         startupLabel: chatStartupStatusLabel(props.startupStatus, placementStartup),
