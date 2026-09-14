@@ -14,6 +14,36 @@ afterEach(async () => {
 });
 
 describe("chat composer steering queue", () => {
+  it("renders Gateway pending custody as a read-only sourced row", () => {
+    const onQueueRemove = vi.fn();
+    const container = renderQueue({
+      queue: [],
+      displayQueue: [
+        {
+          id: "pending-input:external",
+          text: "Wait for the active turn",
+          createdAt: 1,
+          custody: {
+            kind: "pending-input",
+            stateLabel: "Received · waiting for workspace sync",
+            sourceClients: [{ id: "cli", mode: "cli", displayName: "Release helper" }],
+          },
+        },
+      ],
+      onQueueRemove,
+      onQueueEdit: vi.fn(),
+      onQueueMove: vi.fn(),
+      onQueueSteer: vi.fn(),
+    });
+
+    const row = container.querySelector(".chat-queue__item");
+    expect(row?.textContent).toContain("Wait for the active turn");
+    expect(row?.textContent).toContain("Received · waiting for workspace sync");
+    expect(row?.textContent).toContain("via CLI (Release helper)");
+    expect(row?.querySelector("button")).toBeNull();
+    expect(onQueueRemove).not.toHaveBeenCalled();
+  });
+
   it("keeps attempted unconfirmed messages inline while local commands retain retry and discard", () => {
     const onQueueRetry = vi.fn();
     const onQueueRemove = vi.fn();

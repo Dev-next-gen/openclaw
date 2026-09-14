@@ -1682,16 +1682,17 @@ describe("retained input navigation", () => {
       });
 
       const rows = container.querySelectorAll(".chat-queue__item");
-      expect([...rows].map((row) => row.getAttribute("data-chat-queue-item"))).toEqual([
-        "before",
-        "new",
-      ]);
+      expect([...rows].map((row) => row.getAttribute("data-chat-queue-item"))).toEqual(
+        source === "pending custody"
+          ? ["before", "pending-input:retained-input", "new"]
+          : ["before", "new"],
+      );
       const grips = [...container.querySelectorAll<HTMLButtonElement>(".chat-queue__grip")];
-      expect(grips).toHaveLength(2);
+      expect(grips).toHaveLength(source === "pending custody" ? 3 : 2);
       expect(grips.every((grip) => grip.disabled)).toBe(true);
       grips[1]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
       expect(onQueueMove).not.toHaveBeenCalled();
-      rows[1]?.querySelector<HTMLButtonElement>(".chat-queue__remove")?.click();
+      rows[rows.length - 1]?.querySelector<HTMLButtonElement>(".chat-queue__remove")?.click();
       expect(onQueueRemove).toHaveBeenCalledWith("new");
       expect(queue).toHaveLength(3);
     },

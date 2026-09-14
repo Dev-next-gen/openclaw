@@ -96,8 +96,6 @@ export type BuildChatItemsProps = {
   queue?: ChatQueueItem[];
   initialTurnId?: string;
   pendingInputs?: ChatPendingInputsPage["items"];
-  workspaceSyncPendingRunIds?: readonly string[];
-  workerSetupPending?: boolean;
   showToolCalls: boolean;
   persistCommentary?: boolean;
   /** True while the agent is visibly working (isChatRunWorking). */
