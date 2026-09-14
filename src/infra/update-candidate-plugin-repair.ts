@@ -76,7 +76,7 @@ export async function completeUpdateCandidatePluginRehearsal(params: {
   const candidateRoot =
     params.candidateRoot ?? resolveOpenClawPackageRootSync({ moduleUrl: import.meta.url });
   if (!candidateRoot) {
-    throw new Error("Cannot locate the candidate host for plugin dependency preparation");
+    throw new Error("Cannot locate the staged OpenClaw installation for plugin setup");
   }
   const discovery = discoverConfiguredPluginLoadPaths({
     loadPaths: [...sources],

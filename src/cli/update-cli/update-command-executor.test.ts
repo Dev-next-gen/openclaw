@@ -696,7 +696,7 @@ describe("candidate executor delegation", () => {
               throw new Error(`Candidate exited before admission: ${JSON.stringify(result)}`);
             }),
           ]);
-          expect(() => fence.assertCurrent()).toThrow("suspended");
+          expect(() => fence.assertCurrent()).toThrow("The update process is still running.");
           const store = createManagedHandoffLeaseStore();
           const primary = store.read(root);
           expect(primary.kind).toBe("current");

@@ -416,7 +416,7 @@ export async function updateGitCheckout(params: {
           beforeSha,
           installedRoot: gitRoot,
           upstreamRef,
-          step: inspectionStep("git pack candidate", [], inspectionRoot),
+          step: inspectionStep("git pack update", [], inspectionRoot),
         });
         if (!transfer) {
           return { status: "error" as const, reason: "fetch-failed" };
@@ -714,7 +714,7 @@ export async function updateGitCheckout(params: {
       error instanceof UpdateRequesterRevokedError ? error.code : "unexpected-error",
     );
   } finally {
-    await candidateTransfer?.cleanup(step("git candidate pack cleanup", [], gitRoot));
+    await candidateTransfer?.cleanup(step("git update pack cleanup", [], gitRoot));
     await runtimePromotion?.cleanup();
   }
 }

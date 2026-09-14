@@ -167,7 +167,7 @@ export async function withDelegatedUpdateCommandExecutor<T>(
         !isDeepStrictEqual(child.lease.helper, spawner.executor)
       ) {
         throw new UpdateCommandRecoveryPendingError(
-          "Candidate executor binding does not match its parent.",
+          "The update process does not match its parent.",
         );
       }
       let active = true;
@@ -198,7 +198,7 @@ export async function withDelegatedUpdateCommandExecutor<T>(
           !store.owns(child.lease, "executor")
         ) {
           throw new UpdateCommandRecoveryPendingError(
-            "Candidate executor ownership is no longer current.",
+            "The update process no longer has permission to continue.",
           );
         }
       };
@@ -253,7 +253,7 @@ export async function withDelegatedUpdateCommandExecutor<T>(
             "error" in outcome && outcome.error !== cause
               ? new AggregateError(
                   [outcome.error, cause],
-                  "Candidate and descendant settlement failed",
+                  "Unable to finish stopping the update process and its children",
                   { cause },
                 )
               : cause,
