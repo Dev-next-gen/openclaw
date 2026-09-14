@@ -94,14 +94,14 @@ export async function validateUpdateCandidateCanary(params: {
   const sourceEnv = params.env ?? process.env;
   const logTail: string[] = [];
   const stepLogTail: string[] = [];
-  let activeStep = { name: "candidate snapshot", command: "candidate snapshot" };
+  let activeStep = { name: "candidate runtime", command: "candidate runtime" };
   let stepStartedAt = started;
   const steps: UpdateStepResult[] = [];
   let candidateSchemaVersions: OpenClawSchemaVersions | undefined;
   let doctorConfigWrites = false;
   let doctorConfigChanges: UpdateDoctorConfigChange[] = [];
   let listenerIsolation: CanaryResult["listenerIsolation"];
-  let phase: CanaryPhase = "snapshot";
+  let phase: CanaryPhase = "runtime";
   let env: NodeJS.ProcessEnv = { ...sourceEnv };
   const capture = (chunk: Buffer | string) => {
     const safe = redactSupportString(
@@ -256,7 +256,6 @@ export async function validateUpdateCandidateCanary(params: {
       "dist",
       runtimeProcessEntrypoints.updateMigratedFinalize.distWorkerPath,
     );
-    phase = "runtime";
     try {
       await fs.lstat(continuationEntry);
     } catch (error) {
@@ -279,7 +278,6 @@ export async function validateUpdateCandidateCanary(params: {
       // Older targets also lack the isolated canary CLI; retain their shipped finalization path.
       return { status: "ok", phase, durationMs: Date.now() - started, logTail, steps };
     }
-    phase = "snapshot";
     const policy = resolveUpdateDoctorExecutionPolicy({
       targetVersion: await readPackageVersion(params.root),
       allowGatewayServiceRepair: false,
@@ -287,7 +285,9 @@ export async function validateUpdateCandidateCanary(params: {
     if (!policy.fix) {
       throw new Error("Candidate Doctor cannot enforce isolated service-repair ownership");
     }
-    const snapshotStarted = Date.now();
+    phase = "snapshot";
+    activeStep = { name: "candidate snapshot", command: "candidate snapshot" };
+    stepStartedAt = Date.now();
     rehearsal ??= await prepareUpdateCandidateRehearsal({
       candidateRoot: params.root,
       config: params.config,
@@ -299,7 +299,7 @@ export async function validateUpdateCandidateCanary(params: {
     });
     // Copying private state has its own size/progress budget; preserve the
     // runtime validation budget after large snapshots finish.
-    const snapshotDuration = Date.now() - snapshotStarted;
+    const snapshotDuration = Date.now() - stepStartedAt;
     const snapshotStep: UpdateStepResult = {
       ...activeStep,
       cwd: params.root,
