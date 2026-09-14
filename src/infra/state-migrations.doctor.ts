@@ -1394,7 +1394,7 @@ function createPluginMigrationPreparationRefusal(params: {
   return {
     code: "plugin-planning-deferred",
     message:
-      "Plugin migration preparation requires candidate-bound plugin and session-store descriptors.",
+      "Plugin migration preparation requires plugin and session-store descriptors for the new version.",
   };
 }
 

@@ -259,12 +259,12 @@ config validation, plugin resolution, or test startup fails. It repairs the
 staged update and reruns the failed check while the old Gateway keeps serving.
 Only a passing validation allows activation; otherwise the update fails and
 discards the staged update without stopping the service.
-Before activation, repair shares one disposable rehearsal state/config snapshot
+Before activation, repair shares one disposable state/config snapshot for update checks
 across its turns and validation, then independently validates surviving update
 changes before activation. Successful repair can proceed when Doctor migrations
 change the copied config. Activation reruns update-mode Doctor against the
 captured live input, using the normal config writer, backup, and requester checks;
-it never copies rehearsal paths, canary settings, or inference edits into operator config.
+it never copies temporary validation paths, test Gateway settings, or inference edits into operator config.
 Optional repairs excluded during updates, such as disabling unavailable skills,
 remain excluded. The run ledger and update summary identify changed top-level
 keys and migration messages; the warning log retains the full messages.
