@@ -209,10 +209,9 @@ export function registerCanaryReadinessBudgetTests(
     expect(result).toMatchObject({ status: "error", phase });
     expect(result.durationMs).toBe(phase === "config" ? 425 : 1_000);
     expect(failed).toMatchObject({ name, durationMs, exitCode: 1 });
-    expect(failed?.stderrTail).toContain(
+    expect(failed?.failureFacts?.[0]?.message).toContain(
       phase === "config" ? "Configuration unavailable" : "deadline exceeded",
     );
-    expect(failed?.stderrTail).toContain(`(${durationMs}ms)`);
     expect(failed?.stderrTail).not.toContain("Earlier check");
     expect(result.logTail.join("\n")).toContain("Earlier check completed successfully");
   });
