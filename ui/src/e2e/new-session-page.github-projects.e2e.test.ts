@@ -479,9 +479,9 @@ suite.define(() => {
         await expect.poll(() => canonicalBubble.count()).toBe(1);
         await expect.poll(() => queuedCustody.count()).toBe(0);
         await expect.poll(() => page.locator(".chat-group.user").count()).toBe(1);
-        await expect.poll(() => canonicalBubble.locator("img.chat-message-image").count()).toBe(1);
         await expect.poll(() => metadataRequested).toBe(true);
         releaseMedia();
+        await expect.poll(() => canonicalBubble.locator("img.chat-message-image").count()).toBe(1);
         await expect.poll(readImage).toEqual({ inline: false, usable: true });
         await navigateInApp(page, "new-session");
         await page.locator(".new-session-page__message").waitFor();
