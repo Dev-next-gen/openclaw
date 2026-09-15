@@ -550,7 +550,9 @@ describe("candidate executor delegation", () => {
       if (mismatched) {
         await expect(result).rejects.toThrow(/ownership|identity/);
       } else if (revoked) {
-        await expect(result).rejects.toThrow(/ownership|Unable to finish stopping the update process and its children/);
+        await expect(result).rejects.toThrow(
+          /ownership|Unable to finish stopping the update process and its children/,
+        );
       } else {
         await expect(result).resolves.toBe("completed");
       }

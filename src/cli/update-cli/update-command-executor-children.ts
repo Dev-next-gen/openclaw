@@ -72,9 +72,7 @@ export function createChildOwner(params: {
   let failure: Error | undefined;
   const assertIdle = () => {
     if (delegating) {
-      throw new UpdateCommandRecoveryPendingError(
-        "The update process is still running.",
-      );
+      throw new UpdateCommandRecoveryPendingError("The update process is still running.");
     }
   };
   return {
@@ -166,9 +164,7 @@ export function createChildOwner(params: {
           const result = await operation(grant, (pid, argv) => {
             assertOwners();
             if (bound || pid === process.pid) {
-              throw new UpdateCommandRecoveryPendingError(
-                "Update process can be bound only once.",
-              );
+              throw new UpdateCommandRecoveryPendingError("Update process can be bound only once.");
             }
             for (let index = 0; index < children.length; index++) {
               const assigned = store.bind(children[index]!, pid, undefined, argv);
