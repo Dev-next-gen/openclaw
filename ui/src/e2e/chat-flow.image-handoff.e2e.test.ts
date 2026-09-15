@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { Locator } from "playwright";
 import { expect, it } from "vitest";
 import type { ChatHost } from "../pages/chat/chat-send-contract.ts";
 import { takeControlUiViewportScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
@@ -73,13 +74,12 @@ suite.define(() => {
           historyMessages: [],
           methodResponses: { "chat.startup": initialHistory, "chat.history": initialHistory },
         });
-        const capture = async (stage: string) => {
+        const proofSurface = page.locator(".shell");
+        const capture = async (stage: string, content: Locator) => {
           if (proofDir) {
             await writeFile(
               path.join(proofDir, `${stage}.png`),
-              await takeControlUiViewportScreenshot(page, page.locator(".shell"), [
-                page.locator(".chat-group.user img.chat-message-image"),
-              ]),
+              await takeControlUiViewportScreenshot(page, proofSurface, [content]),
             );
           }
         };
@@ -115,7 +115,7 @@ suite.define(() => {
             )
             .toBe(180);
           expect(await userImage.getAttribute("src")).toMatch(/^blob:/u);
-          await capture("01-submitted");
+          await capture("01-submitted", userImage);
           const acceptedAt = Date.now();
           const pendingInput = {
             id: "accepted-image-input",
@@ -162,7 +162,7 @@ suite.define(() => {
           expect(await page.locator(".chat-group.user", { hasText: prompt }).count()).toBe(0);
           expect(await userImage.count()).toBe(0);
           expect(metadataRequested).toBe(false);
-          await capture("02-custody");
+          await capture("02-custody", pendingRow);
           await gateway.resolveDeferred("chat.send", { runId, status: "started" });
           await waitForCommittedState(
             page,
@@ -217,16 +217,19 @@ suite.define(() => {
             messageSeq: 1,
             message: canonical,
           });
-          await page.locator('.chat-bubble[data-entry-id="accepted-image-input"]').waitFor();
+          const canonicalBubble = page.locator(
+            '.chat-bubble[data-entry-id="accepted-image-input"]',
+          );
+          await canonicalBubble.waitFor();
           await expect.poll(() => pendingRow.count()).toBe(0);
           if (order === "event-first") {
             await gateway.resolveDeferred("chat.history", canonicalHistory);
           }
           await expect.poll(() => metadataRequested).toBe(true);
-          await capture("03-canonical-metadata-loading");
+          await capture("03-canonical-metadata-loading", canonicalBubble);
           releaseMetadata();
           await expect.poll(() => imageRequested).toBe(true);
-          await capture("04-canonical-image-loading");
+          await capture("04-canonical-image-loading", userImage);
           releaseImage();
           await expect.poll(() => userImage.getAttribute("src")).toContain("stable-image-ticket");
           await expect
@@ -237,11 +240,13 @@ suite.define(() => {
             )
             .toBe(180);
           expect(await page.locator(".chat-group.user", { hasText: prompt }).count()).toBe(1);
-          await capture("05-canonical-image-ready");
+          await capture("05-canonical-image-ready", userImage);
         } finally {
           releaseMetadata();
           releaseImage();
-          await capture("06-final");
+          if ((await proofSurface.count()) > 0) {
+            await capture("06-final", proofSurface);
+          }
         }
       },
     );
