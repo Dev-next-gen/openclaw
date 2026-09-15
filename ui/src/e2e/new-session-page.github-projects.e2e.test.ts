@@ -380,9 +380,14 @@ suite.define(() => {
         };
       });
       await gateway.resolveDeferred("chat.startup");
-      await expect.poll(() => metadataRequested).toBe(true);
       const working = page.locator('.chat-working-indicator[role="status"]');
       await pollLocatorText(working).toContain("Preparing workspace…");
+      const queuedCustody = page.locator(
+        '[data-chat-queue-item="pending-input:accepted-project-input"]',
+      );
+      await queuedCustody.waitFor();
+      await pollLocatorText(queuedCustody).toContain(message);
+      expect(metadataRequested).toBe(false);
       expect(await page.locator(".chat-notice").count()).toBe(0);
       if (artifactDir) {
         await writeFile(
