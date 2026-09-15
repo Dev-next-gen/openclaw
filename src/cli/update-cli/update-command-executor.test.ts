@@ -548,7 +548,7 @@ describe("candidate executor delegation", () => {
         operation,
       );
       if (mismatched) {
-        await expect(result).rejects.toThrow(/ownership|identity/);
+        await expect(result).rejects.toBeInstanceOf(UpdateCommandRecoveryPendingError);
       } else if (revoked) {
         await expect(result).rejects.toThrow(
           /ownership|Unable to finish stopping the update process and its children/,

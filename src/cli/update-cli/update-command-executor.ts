@@ -178,7 +178,7 @@ export async function withDelegatedUpdateCommandExecutor<T>(
         !store.acceptParentBoundExecutor(child.lease)
       ) {
         throw new UpdateCommandRecoveryPendingError(
-          "Candidate executor ownership is no longer current.",
+          "The update process no longer has permission to continue.",
         );
       }
       const assertBase = () => {
