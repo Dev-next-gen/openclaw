@@ -2,6 +2,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
+  createOpenClawCrablineChannelReportNotes,
+  runOpenClawCrablineProviderReadiness,
   startOpenClawCrablineAdapter,
   type OpenClawCrablineChannelDriverSelection,
   type OpenClawCrablineInbound,
@@ -534,6 +536,27 @@ class QaCrablineTransport extends QaStateBackedTransportAdapter {
     "No live channel service or external credential lease is required.",
   ];
 
+  captureArtifacts = async ({ outputDir }: { outputDir: string }) => {
+    const readiness = await runOpenClawCrablineProviderReadiness({
+      adapter: this.#adapter,
+      outputDir,
+      selection: this.#selection,
+    });
+    return {
+      artifacts: [
+        {
+          kind: "channel-capability-matrix" as const,
+          path: readiness.capabilityMatrixPath,
+        },
+        {
+          kind: "channel-driver-smoke" as const,
+          path: readiness.providerReadinessArtifactPath,
+        },
+      ],
+      reportNotes: createOpenClawCrablineChannelReportNotes(this.#selection),
+    };
+  };
+
   async cleanupAfterGatewayStop() {
     this.#releaseDiscordQaApiBase?.();
     await this.#state.cleanup();
@@ -611,6 +634,7 @@ export async function createQaCrablineTransportDefinition(
       ? { createRuntimeEnvPatch: transport.createRuntimeEnvPatch }
       : {}),
     ...(transport.prepareFlow ? { prepareFlow: transport.prepareFlow } : {}),
+    captureArtifacts: transport.captureArtifacts,
     cleanupAfterGatewayStop: transport.cleanupAfterGatewayStop.bind(transport),
   };
 }

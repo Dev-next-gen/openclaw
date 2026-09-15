@@ -116,6 +116,14 @@ type QaRunnerTransportFlowPreparationInput = {
   timeoutMs: number;
 };
 
+export type QaRunnerTransportArtifacts = {
+  artifacts: readonly {
+    kind: "channel-capability-matrix" | "channel-driver-smoke";
+    path: string;
+  }[];
+  reportNotes?: readonly string[];
+};
+
 type QaRunnerTransportAdapterDefinition = {
   id: string;
   label: string;
@@ -165,6 +173,9 @@ type QaRunnerTransportAdapterDefinition = {
   prepareFlow?: (
     input: QaRunnerTransportFlowPreparationInput,
   ) => Promise<Record<string, unknown> | void>;
+  captureArtifacts?: (params: {
+    outputDir: string;
+  }) => Promise<QaRunnerTransportArtifacts | undefined>;
   handleAction: (params: {
     action: "delete" | "edit" | "react" | "thread-create";
     args: Record<string, unknown>;
