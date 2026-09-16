@@ -4,11 +4,17 @@
  * Lists and cancels background work in the caller's session tree.
  */
 import { Type } from "typebox";
+import { resolveAcpSessionControlOwner } from "../../acp/runtime/session-control-owner.js";
+import { readAcpSessionEntry } from "../../acp/runtime/session-meta.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createAbortError } from "../../infra/abort-signal.js";
 import { listTaskRecordsUnsorted } from "../../tasks/runtime-internal.js";
 import { readTaskBackingInstance } from "../../tasks/task-backing-records.js";
+import {
+  withTaskCancellationContext,
+  type TaskCancellationTarget,
+} from "../../tasks/task-cancellation-context.js";
 import { getTaskExecutionObservation } from "../../tasks/task-execution-observation.js";
 import { cancelDetachedTaskRunById } from "../../tasks/task-executor.js";
 import { onTaskRegistryChange } from "../../tasks/task-registry-state.js";
@@ -74,7 +80,7 @@ function taskUpdatedAt(task: TaskRecord): number {
 }
 
 function taskOwnerMatches(
-  task: TaskRecord,
+  task: TaskCancellationTarget,
   allowedOwnerKeys: ReadonlySet<string>,
   agentId: string,
   cfg: OpenClawConfig,
@@ -85,13 +91,13 @@ function taskOwnerMatches(
   );
 }
 
-function listTreeTasks(
+function readTaskTree(
   tasks: TaskRecord[],
   rootSessionKeys: ReadonlySet<string>,
   rootAgentId: string,
   cfg: OpenClawConfig,
   subagentOwnership: "retained" | "visible" | "controlled" = "retained",
-): TaskRecord[] {
+) {
   const visibleSessions = new Map<
     string,
     { controllerSessionKey: string; controllerAgentId: string }
@@ -104,6 +110,7 @@ function listTreeTasks(
   }
   const visibleTasks = new Set<string>();
   const controlledRunsByOwner = new Map<string, ReturnType<typeof listControlledSubagentRuns>>();
+  const acpControlOwners = new Map<string, string | undefined>();
   let changed = true;
   while (changed) {
     changed = false;
@@ -153,6 +160,24 @@ function listTreeTasks(
         const childAgentId = task.agentId ?? taskRequesterAgentId ?? "";
         const childIdentity = `${childAgentId}\0${task.childSessionKey}`;
         if (!visibleSessions.has(childIdentity)) {
+          // Retained task rows remain readable; ACP control edges follow the current owner.
+          if (subagentOwnership === "controlled" && task.runtime === "acp") {
+            if (!acpControlOwners.has(childIdentity)) {
+              const current = readAcpSessionEntry({
+                cfg,
+                sessionKey: task.childSessionKey,
+                agentId: task.agentId,
+                clone: false,
+              });
+              acpControlOwners.set(
+                childIdentity,
+                current?.acp ? resolveAcpSessionControlOwner(current.entry) : undefined,
+              );
+            }
+            if (acpControlOwners.get(childIdentity) !== task.ownerKey) {
+              continue;
+            }
+          }
           visibleSessions.set(childIdentity, {
             controllerSessionKey: task.childSessionKey,
             controllerAgentId: childAgentId,
@@ -162,7 +187,10 @@ function listTreeTasks(
       }
     }
   }
-  return tasks.filter((task) => visibleTasks.has(task.taskId));
+  return {
+    tasks: tasks.filter((task) => visibleTasks.has(task.taskId)),
+    sessions: visibleSessions,
+  };
 }
 
 function mapTask(task: TaskRecord) {
@@ -301,6 +329,34 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
     }
     return { cfg, controller, controllerAgentId, allowedOwnerKeys };
   };
+  const assertCancellationControl = (task: TaskCancellationTarget) => {
+    const current = readScope();
+    if (task.scopeKind !== "session") {
+      throw new Error("Task outside session tree.");
+    }
+    if (taskOwnerMatches(task, current.allowedOwnerKeys, current.controllerAgentId, current.cfg)) {
+      return;
+    }
+    if (current.controller.controlScope !== "children") {
+      throw new Error("Leaf subagents cannot cancel other sessions.");
+    }
+    const tree = readTaskTree(
+      (opts.listTasks ?? listTaskRecordsUnsorted)(),
+      current.allowedOwnerKeys,
+      current.controllerAgentId,
+      current.cfg,
+      "controlled",
+    );
+    const ownerAgentId = resolveTaskSessionAgentId(
+      task.ownerKey,
+      task.requesterAgentId,
+      current.cfg,
+    );
+    // Runtime owners fence the selected target; this check fences its caller ancestry.
+    if (!tree.sessions.has(`${ownerAgentId ?? ""}\0${task.ownerKey}`)) {
+      throw new Error("Task outside session tree.");
+    }
+  };
   return {
     label: "Subagents",
     name: "subagents",
@@ -317,13 +373,13 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
           : Math.min(MAX_RECENT_MINUTES, recentMinutesRaw);
       const readTreeTasks = () => {
         const current = readScope();
-        return listTreeTasks(
+        return readTaskTree(
           (opts.listTasks ?? listTaskRecordsUnsorted)(),
           current.allowedOwnerKeys,
           current.controllerAgentId,
           current.cfg,
           "visible",
-        );
+        ).tasks;
       };
 
       if (action === "wait") {
@@ -344,13 +400,13 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
         return jsonResult({ status: "ok", action, ...result });
       }
       const { cfg, controller, controllerAgentId, allowedOwnerKeys } = readScope();
-      const treeTasks = listTreeTasks(
+      const treeTasks = readTaskTree(
         (opts.listTasks ?? listTaskRecordsUnsorted)(),
         allowedOwnerKeys,
         controllerAgentId,
         cfg,
         action === "cancel" ? "controlled" : "retained",
-      );
+      ).tasks;
 
       if (action === "list") {
         const runs = listControlledSubagentRuns(
@@ -405,7 +461,11 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
             error: "Leaf subagents cannot cancel other sessions.",
           });
         }
-        const result = await (opts.cancelTask ?? cancelDetachedTaskRunById)({ cfg, taskId });
+        const result = await withTaskCancellationContext(
+          assertCancellationControl,
+          () => (opts.cancelTask ?? cancelDetachedTaskRunById)({ cfg, taskId }),
+          target,
+        );
         return jsonResult({
           status: result.cancelled ? "cancelled" : "error",
           taskId,

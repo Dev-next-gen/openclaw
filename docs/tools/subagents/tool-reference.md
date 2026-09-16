@@ -41,7 +41,7 @@ session to confirm the effective tool list.
 
 **Defaults:**
 
-- **Model:** native sub-agents inherit the caller unless you set `agents.defaults.subagents.model` (or per-agent `agents.entries.*.subagents.model`). ACP runtime spawns use the same configured subagent model when present; otherwise the ACP harness keeps its own default. An explicit `sessions_spawn.model` still wins.
+- **Model:** same-agent native sub-agents inherit the caller's active model, including session and one-shot overrides, unless you set `agents.defaults.subagents.model` (or per-agent `agents.entries.*.subagents.model`). The inherited model ID is preserved exactly, even when it contains a provider prefix. Cross-agent spawns use the target agent's configured model. ACP runtime spawns use the same configured subagent model when present; otherwise the ACP harness keeps its own default. An explicit `sessions_spawn.model` still wins.
 - **Thinking:** native sub-agents inherit the caller's active turn, including one-shot thinking overrides, unless you set `agents.defaults.subagents.thinking` (or per-agent `agents.entries.*.subagents.thinking`). ACP runtime spawns also apply `agents.defaults.models["provider/model"].params.thinking` for the selected model. An explicit `sessions_spawn.thinking` still wins.
 - **Run timeout:** pass `runTimeoutSeconds` to set a timeout for a specific native, ACP, or visible sub-agent run. When omitted, OpenClaw uses `agents.defaults.subagents.runTimeoutSeconds` if configured; otherwise it falls back to `0` (no timeout). An explicit `0` disables the timeout for that run.
 - **Process lifetime:** a detached OpenClaw sub-agent has its own run lifecycle. A background task created inside an external CLI backend is different: it shares the parent CLI subprocess and stops if that parent reaches `agents.defaults.timeoutSeconds`.
@@ -52,7 +52,10 @@ preserve the recorded run timeout, including `0` for no timeout.
 
 Accepted native sub-agent spawns report their actual initialized `context`
 (`fork` or `isolated`), including `isolated` when a requested fork exceeds the
-parent-context size cap. They also include resolved child model metadata:
+parent-context size cap. The size check includes context added since the latest
+model response, such as completed tool output, and respects compaction and reset
+boundaries. An oversized fork starts isolated with an explanatory note. Spawns
+also include resolved child model metadata:
 `resolvedModel` contains the applied model ref and `resolvedProvider` contains
 the provider prefix when the ref has one.
 
@@ -332,11 +335,17 @@ child session key. An authorized operator or integration must send that
 continuation; merely yielding does not schedule one.
 
 Use `action: "cancel"` with a `taskId` returned by `action: "list"` to stop
-a task. Cancellation is confined to the current controlled session tree; retained
-task history does not grant control over a former child's work. A leaf sub-agent
-cannot cancel work owned by another session. A completion recipient can still
-read and wait for results when another session controls the child, but that read
-access does not permit cancellation.
+a task. Native subagent cancellation requires current controller authority;
+retained task history and completion-recipient read/wait access do not grant
+that control. A leaf sub-agent cannot cancel work owned by another session.
+
+A canonical ACP task's recorded owner retains cancellation of its own exact
+execution after a session-parent change. Core task cancellation refuses retained ACP tasks
+without execution-instance metadata; select the current task or use ACP session
+controls instead. Control over descendants follows the child's current
+spawning session, or its current parent when no spawning session is recorded.
+Moving a normally spawned child's navigation parent does not transfer descendant
+control.
 
 Messages and control have distinct effects. `sessions_send` with
 `mode: "steer"` injects guidance into an active supported run and rejects an

@@ -331,6 +331,7 @@ export async function runCliFallbackCandidate(
               : undefined,
           runParams: {
             preparedRunAdmission: params.preparedRunAdmission,
+            messageActionTurnCapability: params.messageActionTurnCapability,
             diagnosticOwner,
             sessionId: turn.followupRun.run.sessionId,
             sessionKey,
@@ -377,6 +378,7 @@ export async function runCliFallbackCandidate(
               }),
             ),
             modelProvider: params.provider,
+            requesterModel: { provider: params.provider, model: params.model },
             modelHasVision,
             modelContextWindow: selectedModelEntry?.contextWindow,
             modelContextTokens: selectedModelEntry?.contextTokens,

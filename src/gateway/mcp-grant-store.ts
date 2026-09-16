@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { ProviderModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import {
   getAdmittedRunDelegatedAuthority,
   type AdmittedRunContext,
@@ -36,6 +37,8 @@ export type McpLoopbackRequestContext = {
   cwd?: string;
   modelProvider?: string;
   modelId?: string;
+  /** Prepared current-turn identity supplied only by the Gateway-launched run owner. */
+  requesterModel?: ProviderModelRef;
   modelHasVision?: boolean;
   messageProvider?: string;
   clientCaps?: string[];
@@ -123,6 +126,8 @@ type StoredMcpLoopbackClientGrant = McpLoopbackClientGrant & {
   runtimeOwnerToken: string;
   /** Exact host admission retained outside the child-visible request context. */
   admittedRunContext?: AdmittedRunContext;
+  /** Trusted source-turn authority retained only by the host. */
+  messageActionTurnCapability?: string;
   abortSignal?: AbortSignal;
   assertCurrent?: () => void;
   /** Original CLI policy, rebound only to this stored row's exact lifetime. */
@@ -239,6 +244,7 @@ export function mintMcpLoopbackClientGrant(params: {
   context: McpLoopbackRequestContext;
   runtimeOwnerToken: string;
   admittedRunContext?: AdmittedRunContext;
+  messageActionTurnCapability?: string;
   abortSignal?: AbortSignal;
   assertCurrent?: () => void;
   bindQuestionAnswerAuthority?: StoredMcpLoopbackClientGrant["bindQuestionAnswerAuthority"];
@@ -259,6 +265,9 @@ export function mintMcpLoopbackClientGrant(params: {
     context: structuredClone({ ...params.context, sessionKey }),
     runtimeOwnerToken,
     ...(params.admittedRunContext ? { admittedRunContext: params.admittedRunContext } : {}),
+    ...(params.messageActionTurnCapability
+      ? { messageActionTurnCapability: params.messageActionTurnCapability }
+      : {}),
     abortSignal: params.abortSignal,
     assertCurrent: params.assertCurrent,
     bindQuestionAnswerAuthority: params.bindQuestionAnswerAuthority,
@@ -455,6 +464,7 @@ export function resolveMcpLoopbackClientGrant(params: {
       context: McpLoopbackRequestContext;
       captureKey: string;
       admittedRunContext: AdmittedRunContext;
+      messageActionTurnCapability?: string;
       questionAnswerAuthority?: PreparedQuestionAnswerAuthority;
       skillLibraryAuthoring?: SkillLibraryAuthoringCapability;
       rootedExecution?: PreparedRootedExecutionCapability;
@@ -493,6 +503,9 @@ export function resolveMcpLoopbackClientGrant(params: {
     context: structuredClone(grant.context),
     captureKey: grant.activeCaptureKey,
     admittedRunContext,
+    ...(grant.messageActionTurnCapability
+      ? { messageActionTurnCapability: grant.messageActionTurnCapability }
+      : {}),
     questionAnswerAuthority,
     ...(grant.skillLibraryAuthoring ? { skillLibraryAuthoring: grant.skillLibraryAuthoring } : {}),
     isCurrent,

@@ -180,8 +180,9 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
 
 - `CI` concurrency key version, PR cancellation, and canonical `main`'s two
   non-canceling parity slots, each with one coalesced pending tip.
-- `preflight` and `security-fast` start immediately without a debounce
-  or standalone admission job. The protected `vitest-cache-warm` workflow
+- `preflight` starts immediately without a debounce or standalone admission job.
+  `security-fast` waits for its hosted budget decision and still runs after
+  preflight failure unless the workflow was canceled. The protected `vitest-cache-warm` workflow
   publishes the immutable semantic dependency archive after setup succeeds,
   before build and transform warming. Preflight and downstream Node jobs are
   restore-only consumers on eligible self-hosted runners. Exact misses and
@@ -192,12 +193,24 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   `preflight` uses GitHub-hosted Ubuntu in hybrid mode; its logical planner
   profile and cache trust stay unchanged. Default Blacksmith preflight routing
   remains intact. `security-fast` stays hosted outside eligible hybrid first
-  attempts. Security hooks use pinned installed packages
+  attempts and when the bounded optional hosted plan is admitted. Security hooks use pinned installed packages
   and local hook definitions, without remote Git initialization. The `github`
   outage override remains intact. Budget one control-job registration per eligible
-  Blacksmith run or eligible hybrid first attempt.
+  Blacksmith run or eligible hybrid first attempt with optional hosted admission closed.
   The aggregate uses `!cancelled()` to report failed prerequisites without
   holding a superseded run open after workflow cancellation.
+- Automatic canonical hybrid first attempts count every selected hosted row in
+  preflight. `HYBRID_HOSTED_BASE_ROW_LIMIT = 40` admits at most five optional
+  rows within `HYBRID_HOSTED_ROW_LIMIT = 45`: security, three Control UI unit
+  rows, and only browser-extension E2E. Above 40 base rows, retain their
+  Blacksmith routes; an eligible base above 45 warns with counts and retains
+  the complete base manifest. The budget limits optional admission, not coverage.
+  Record base/total rows and compare the actual workflow expansion in guards.
+  This never expands test coverage or workers; Control UI E2E shards, QA,
+  real-Gateway, Android, and compiler-heavy jobs retain their existing routes.
+  Frozen/manual targets, retries, untrusted authors and fully hosted fallback
+  manifests remain outside this first-attempt limit, including existing >45-row
+  fallbacks. Do not change the backend variable or existing caps to enable it.
 - Current fast plugin/channel contract families each share one checkout/setup.
   Their two weighted process envelopes run sequentially with unchanged include
   lists and package commands; channel invocations retain four project slots and
@@ -312,6 +325,18 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   comparison; capacity alone is not a measured speedup.
 - The Docker seed job requests `blacksmith-32vcpu-ubuntu-2404`; its weighted
   scheduler and serial declaration compiler policy stay unchanged.
+  Canonical PRs and `main` share `resolveChangedDockerSeedLanes` owner-path
+  selection; unknown paths retain the published survivor. Canonical manual CI
+  selects survivor when the target declares the Docker seed capability, retaining
+  `legacy-operator-state` with `auto-auth`. Full Release Validation reaches this
+  exact proof through `normal_ci`; expanded Package Acceptance scenarios alone
+  do not replace its restart mode.
+- `run_control_ui_performance` selects production UI, plugin browser, workspace
+  package, dependency/build/policy inputs and their relative import graph,
+  including tooling. Workspace package aliases require conservative package
+  ownership. Test-only files and unrelated runtime changes omit this lane;
+  manual runs, unknown paths and older planners retain coverage. Preserve the
+  target's existing performance-script capability checks.
 - Eligible Control UI E2E rows request the 32-vCPU class with unchanged live
   backend/event/contributor routing and two/one-worker project limits. Targets
   with the named-project contract use six shards on non-frozen Blacksmith and
@@ -319,7 +344,8 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   that contract retain four total rows on Blacksmith or fourteen on GitHub/hybrid,
   including the browser-extension row. Failed-job-only PR and hybrid push retries
   retain the six-shard width on hosted Ubuntu with the existing 25-minute timeout.
-  The browser-extension row stays on 8. Twelve rows finished by 4:38 in run
+  The browser-extension row stays on 8 unless the bounded hybrid plan admits
+  it to hosted Ubuntu. Twelve rows finished by 4:38 in run
   33695337496; the reduced width needs native timing proof and does not refresh
   stale timing weights.
 - Eligible real-Gateway jobs request the existing 32-class for the private artifact
@@ -343,6 +369,14 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   matrix. Keep the complete scenario inventory, separate Matrix run, worker
   limits, stagger, cleanup and deadlines. Measure the four-part jobs natively;
   summed build intervals are not a wall-time saving estimate.
+  PR and main selection uses the existing QA/channel/packaging/orchestration
+  owners. Manual and Full Release Validation retain the full profile; unknown
+  paths or older selectors retain supported coverage. Integration detection
+  outside these owners now waits for manual/release validation. The burden
+  analysis projects about 1,526 Blacksmith vCPU-minutes/hour saved across Docker
+  and QA; zero failures in 20 Docker and 80 QA main jobs is limited evidence,
+  not a measured post-change saving. Keep backend settings, caps, budgets and
+  timeouts unchanged, and verify actual emitted rows and timings.
 - GitHub/hybrid test types use three jobs: two paired core rows run the original
   stripes 1+2 and 3+4 sequentially; the central row runs stripe 5 before the
   extensions/scripts/root tail. Keep every canonical core test graph, at most two compiler

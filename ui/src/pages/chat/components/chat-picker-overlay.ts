@@ -61,7 +61,7 @@ function dismissChatComposerPickersOutside(event: PointerEvent): void {
     }
   }
   for (const menu of document.querySelectorAll<HTMLElement>(
-    ".agent-chat__input > :is(.slash-menu, .skill-menu)",
+    ".agent-chat__input > :is(.slash-menu, .skill-menu, .emoji-menu-popup)",
   )) {
     if (!path.includes(menu)) {
       menu
@@ -73,6 +73,8 @@ function dismissChatComposerPickersOutside(event: PointerEvent): void {
 
 function dismissChatComposerPickersOnEscape(event: KeyboardEvent): void {
   if (
+    event.isComposing ||
+    event.keyCode === 229 ||
     event.defaultPrevented ||
     consumeTooltipEscape(event, document) ||
     event.key !== "Escape" ||
@@ -85,7 +87,9 @@ function dismissChatComposerPickersOnEscape(event: KeyboardEvent): void {
   }
   const pickers = openChatComposerPickers();
   const invocationComposer = document
-    .querySelector<HTMLElement>(".agent-chat__input > :is(.slash-menu, .skill-menu)")
+    .querySelector<HTMLElement>(
+      ".agent-chat__input > :is(.slash-menu, .skill-menu, .emoji-menu-popup)",
+    )
     ?.closest<HTMLElement>(".agent-chat__input");
   if (pickers.length === 0 && !invocationComposer) {
     return;

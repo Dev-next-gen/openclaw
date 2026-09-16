@@ -4,6 +4,7 @@ import { expectDefined } from "@openclaw/normalization-core/expect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { AgentCommandOpts } from "../agents/command/types.js";
+import { resolveAgentRunErrorLifecycleFields } from "../agents/run-termination.js";
 import { runAnnounceAgentCall } from "../agents/subagents/announce/subagent-announce-completion-delivery.js";
 import { registerSubagentRun } from "../agents/subagents/registry/subagent-registry.js";
 import {
@@ -29,6 +30,8 @@ import { setAbortedAgentDedupeEntries } from "./agent-turn/agent-dedupe.js";
 import { abortChatRunById } from "./chat-abort.js";
 import { dispatchGatewayMethodInProcess } from "./server-plugin-in-process-dispatch.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
+import { persistGatewaySessionLifecycleEvent } from "./session-lifecycle-state.js";
+import { loadSessionEntry } from "./session-utils.js";
 import {
   agentCommandMock,
   installGatewayTestHooks,
@@ -191,6 +194,96 @@ describe("private subagent completion processing receipts", () => {
       expect(transcript()).toEqual(committed);
       expect(pending()).toEqual([]);
       await expect(dispatch("changed child result")).rejects.toThrow("conflicts");
+    },
+  );
+
+  it.for(["source changed", "provider failed"] as const)(
+    "settles private execution without confusing cancellation and failure: %s",
+    async (cause, { signal }) => {
+      const entered = createDeferred();
+      const release = createDeferred();
+      let allowed = true;
+      let processingCount = 0;
+      signal.addEventListener("abort", () => release.resolve(), { once: true });
+      agentCommandMock.mockImplementationOnce(async (input) => {
+        const command = input as AgentCommandOpts;
+        entered.resolve();
+        await release.promise;
+        try {
+          command.onExecutionStarted?.();
+          processingCount += 1;
+          throw new Error("synthetic provider failure");
+        } catch (error) {
+          // Exercise the real persisted lifecycle projection using the command's
+          // error classification, not a mock that silently drops lifecycle errors.
+          await persistGatewaySessionLifecycleEvent({
+            sessionKey,
+            event: {
+              runId,
+              sessionId,
+              ts: Date.now(),
+              data: {
+                phase: "error",
+                error: error instanceof Error ? error.message : String(error),
+                ...resolveAgentRunErrorLifecycleFields(error, command.abortSignal),
+              },
+            },
+          });
+          throw error;
+        }
+      });
+      const observation = runAnnounceAgentCall({
+        agentParams: request(),
+        privateCompletion: true,
+        expectFinal: true,
+        isExecutionAllowed: () => allowed,
+        resolveGatewayContext: () => kernel.gatewayRequestContext,
+      });
+      const observed = expect(observation).rejects.toThrow(
+        cause === "source changed"
+          ? "subagent source lifecycle changed before completion delivery"
+          : "synthetic provider failure",
+      );
+      await entered.promise;
+      allowed = cause !== "source changed";
+      release.resolve();
+      await observed;
+      await expect
+        .poll(() => kernel.gatewayRequestContext.chatAbortControllers.has(runId))
+        .toBe(false);
+      const cancelled = cause === "source changed";
+      expect(processingCount).toBe(cancelled ? 0 : 1);
+      const failedNotice = transcript().some((event) =>
+        JSON.stringify(event).includes("run-failed-before-reply"),
+      );
+      expect.soft(failedNotice).toBe(!cancelled);
+      const session = loadSessionEntry(sessionKey).entry;
+      expect.soft(session?.status === "failed").toBe(!cancelled);
+      expect(kernel.gatewayRequestContext.dedupe.get(`agent:${runId}`)).toMatchObject({
+        ok: cancelled,
+        payload: cancelled ? { status: "timeout", stopReason: "rpc" } : { status: "error" },
+      });
+      if (cancelled) {
+        expect(completions()).toMatchObject([{ run_id: runId, succeeded: 0 }]);
+        expect(JSON.parse(String(completions()[0]?.outcome_json))).toMatchObject({
+          reason: "cancelled",
+          stopReason: "rpc",
+        });
+        expect(pending()).toEqual([]);
+        kernel.gatewayRequestContext.dedupe.delete(`agent:${runId}`);
+        expect(await dispatch()).toMatchObject({ status: "error", stopReason: "rpc" });
+        await restart();
+        expect(await dispatch()).toMatchObject({ status: "error", stopReason: "rpc" });
+        expect(agentCommandMock).toHaveBeenCalledOnce();
+        expect(
+          transcript().some((event) => JSON.stringify(event).includes("run-failed-before-reply")),
+        ).toBe(false);
+      } else {
+        expect(JSON.parse(String(completions()[0]?.outcome_json))).toMatchObject({
+          reason: "failed",
+          error: "synthetic provider failure",
+        });
+      }
     },
   );
 

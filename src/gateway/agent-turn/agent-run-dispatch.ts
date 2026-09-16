@@ -37,6 +37,7 @@ import { withTimeout } from "../../infra/fs-safe.js";
 import { defaultRuntime } from "../../runtime.js";
 import { createRunningTaskRun } from "../../tasks/detached-task-runtime.js";
 import { getTaskById } from "../../tasks/runtime-internal.js";
+import { captureTaskCancellationControl } from "../../tasks/task-cancellation-context.js";
 import { bindTaskFlowExecution } from "../../tasks/task-flow-registry.store.sqlite.js";
 import { mapAgentRunTerminalOutcomeToTaskStatus } from "../../tasks/task-registry-common.js";
 import { bindTaskRunExecution } from "../../tasks/task-registry.store.sqlite.js";
@@ -156,13 +157,18 @@ export function dispatchAgentRunFromGateway(params: {
   }) => Promise<boolean> | boolean;
 }) {
   let trackedTask: TaskRecord | undefined;
-  if (params.taskTrackingMode === "cli") {
+  if (params.taskTrackingMode !== "none") {
+    const followup =
+      typeof params.taskTrackingMode === "object" ? params.taskTrackingMode : undefined;
     try {
       trackedTask =
         createRunningTaskRun({
           runtime: "cli",
           sourceId: params.runId,
-          ownerKey: params.ingressOpts.sessionKey,
+          ownerKey: followup?.requesterSessionKey ?? params.ingressOpts.sessionKey,
+          requesterSessionKey: followup?.requesterSessionKey,
+          label: followup?.label,
+          ...(followup ? { notifyPolicy: "silent" as const } : {}),
           scopeKind: "session",
           requesterOrigin: normalizeDeliveryContext({
             channel: params.ingressOpts.channel,
@@ -521,6 +527,7 @@ export function dispatchAgentRunFromGateway(params: {
       ) {
         return err("Task no longer owns an active Gateway run.");
       }
+      captureTaskCancellationControl()?.assertCurrent();
       const result = abortChatRunById(createChatAbortOps(params.context), {
         runId: params.runId,
         sessionKey,
