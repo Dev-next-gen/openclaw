@@ -539,13 +539,20 @@ function pickSafeBreakIndex(
     }
   }
   let fence = fenceIndex < spans.length ? spans[fenceIndex] : undefined;
-  const { lastNewline, lastWhitespace } = scanParenAwareBreakpoints(text, start, end, (index) => {
-    while (fence && fence.end <= index) {
-      fenceIndex += 1;
-      fence = fenceIndex < spans.length ? spans[fenceIndex] : undefined;
-    }
-    return fence && index > fence.start ? fence.end : undefined;
-  });
+  const { lastNewline, lastWhitespace } = scanParenAwareBreakpoints(
+    text,
+    start,
+    end,
+    spans.length > 0
+      ? (index) => {
+          while (fence && fence.end <= index) {
+            fenceIndex += 1;
+            fence = fenceIndex < spans.length ? spans[fenceIndex] : undefined;
+          }
+          return fence && index > fence.start ? fence.end : undefined;
+        }
+      : undefined,
+  );
 
   if (lastNewline > start) {
     return lastNewline;
@@ -564,6 +571,21 @@ function scanParenAwareBreakpoints(
 ): { lastNewline: number; lastWhitespace: number } {
   let lastNewline = -1;
   let lastWhitespace = -1;
+  if (!skipTo) {
+    const window = text.slice(start, end);
+    if (!window.includes("(")) {
+      const newline = window.lastIndexOf("\n");
+      lastNewline = newline < 0 ? -1 : start + newline;
+      for (let i = window.length - 1; i >= 0; i--) {
+        const char = window.charAt(i);
+        if (char !== "\n" && /\s/.test(char)) {
+          lastWhitespace = start + i;
+          break;
+        }
+      }
+      return { lastNewline, lastWhitespace };
+    }
+  }
   let depth = 0;
 
   for (let i = start; i < end; i++) {
