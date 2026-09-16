@@ -523,7 +523,9 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
               async (_signal, resetTimeout) => {
                 resetCompactionTimeout = resetTimeout;
                 setCompactionSafeguardCancellation(compactionSessionManager, undefined);
-                const requestState = trigger === "overflow" ? ("unresolved" as const) : undefined;
+                const requestState =
+                  accountingRecorder?.pendingRequestState ??
+                  (trigger === "overflow" ? ("unresolved" as const) : undefined);
                 if (trigger === "manual") {
                   return {
                     status: "completed" as const,
@@ -588,16 +590,13 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
         }
         if (clientResult) {
           checkpointSnapshotRetained = await persistCompactionCheckpoint({
-            config: params.config,
-            sessionKey: params.sessionKey,
-            sessionId: params.sessionId,
+            sessionTarget,
             trigger: params.trigger,
             snapshot: checkpointSnapshot,
             summary: clientResult.summary,
             firstKeptEntryId: effectiveFirstKeptEntryId,
             tokensBefore: observedTokenCount ?? clientResult.tokensBefore,
             tokensAfter,
-            sessionFile: activeSessionFile,
             leafId: sessionManager.getLeafId?.() ?? undefined,
             createdAt: compactStartedAt,
           });

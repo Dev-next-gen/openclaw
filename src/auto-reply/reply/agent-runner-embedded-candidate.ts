@@ -205,6 +205,7 @@ export async function runEmbeddedFallbackCandidate(
         // Heartbeat ambient routes are delivery context, never implicit message recipients.
         // Omit false so subagent sessions keep their downstream default.
         ...(turn.isHeartbeat ? { requireExplicitMessageTarget: true } : {}),
+        cleanupBundleMcpOnRunEnd: turn.opts?.cleanupBundleMcpOnRunEnd,
         silentReplyPromptMode: turn.followupRun.run.silentReplyPromptMode,
         suppressNextUserMessagePersistence: params.suppressQueuedUserPersistenceForCandidate,
         onUserMessagePersisted: params.notifyUserMessagePersisted,
@@ -234,6 +235,7 @@ export async function runEmbeddedFallbackCandidate(
         abortSignal: params.runAbortSignal,
         replyOperation: turn.replyOperation,
         deferTerminalLifecycle: true,
+        onAttemptStart: lifecycleBackstop.beginAttempt,
         onCompactionAccounting: (fact) => {
           compactionAccounting = fact;
         },

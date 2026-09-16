@@ -11,7 +11,6 @@ import {
   type Root as FsSafeRoot,
   type RootDefaults,
 } from "@openclaw/fs-safe/root";
-import { writeOwnedTempFile } from "./owned-temp-file.js";
 
 export { FsSafeError };
 export type { FsSafeErrorCode } from "@openclaw/fs-safe/errors";
@@ -112,7 +111,14 @@ export async function root(rootDir: string, defaults?: RootDefaults): Promise<Ro
   // Keep the dependency's handle and identity. Its JSON methods call these writes.
   const overrides: Pick<FsSafeRoot, "create" | "write"> = {
     create: async (relativePath, data, options) =>
-      await runPinnedWrite(async () => await create(relativePath, data, options)),
+      await runPinnedWrite(async () => {
+        // Select the dependency's overload without widening streamed-write options.
+        if (typeof data === "string" || Buffer.isBuffer(data)) {
+          await create(relativePath, data, options);
+        } else {
+          await create(relativePath, data, options);
+        }
+      }),
     write: async (relativePath, data, options) =>
       await runPinnedWrite(async () => await write(relativePath, data, options)),
   };
@@ -171,8 +177,9 @@ export async function writeExternalFileWithinRoot(
   const result = await writeExternalFileWithinRootBase({
     rootDir: options.rootDir,
     path: options.path,
-    write: (tempPath) => writeOwnedTempFile(tempPath, options.write),
+    write: options.write,
     staging: "sibling",
+    producerIsolation: "private-directory",
     fallbackFileName: options.fallbackFileName ?? options.tempPrefix,
   });
   // Preserve the caller-facing path spelling while carrying forward any

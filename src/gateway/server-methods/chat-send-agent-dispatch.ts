@@ -182,6 +182,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     prepareAssistantTranscriptMessage: params.prepareAssistantTranscriptMessage,
     isAgentRunStarted: () => agentRunStarted,
     isRunCurrent,
+    abortSignal: activeRunAbort.controller.signal,
     onCommandBlock: isInternalTextSlashCommandTurn
       ? (text) =>
           broadcastChatDelta({
@@ -403,10 +404,10 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                     emitSessionsChanged(context, {
                       sessionKey,
                       agentId,
-                      reason: "chat.run.started",
+                      reason: "agent.run.started",
                     });
                   }
-                  agentRunStarted = replyDispatch.captureAgentTranscriptStart();
+                  agentRunStarted = replyDispatch.captureAgentTranscriptStart(runId);
                   emitServerTiming(
                     "agent-run-started",
                     runId !== clientRunId ? { agentRunId: runId } : undefined,
@@ -672,7 +673,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     } finally {
       await dispatchErrorLifecycle.finalize();
       // Terminal lifecycle can precede owner release; publish exact liveness after cleanup.
-      emitSessionsChanged(context, { sessionKey, agentId, reason: "chat.run.settled" });
+      emitSessionsChanged(context, { sessionKey, agentId, reason: "agent.input.settled" });
       if (userTurnRecorder.isBlocked() && attachments.offloadedRefs.length > 0) {
         // A blocked turn persists only the redacted block reason — no media
         // markers — so the prepared inbound media stays unreferenced forever

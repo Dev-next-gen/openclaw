@@ -15,11 +15,11 @@ import {
   hasImportGraphConsumers,
   hasImportGraphImpactOnTargets,
   isTestFileTarget,
-  isTestSupportFileTarget,
   resolveChangedTestTargetPlan,
   UI_E2E_VITEST_CONFIG,
 } from "../test-projects.test-support.mts";
 import { listAvailableExtensionIds } from "./changed-extensions.mts";
+import { isTestOnlyPath } from "./changed-path-facts.mjs";
 import {
   createNodeTestShards,
   createSelectedNodeTestShardBundles,
@@ -41,6 +41,9 @@ import {
   type VitestPretestBuildMode,
 } from "./vitest-build-prerequisites.mts";
 import { VITEST_PRETEST_BUILD_SECONDS } from "./vitest-shard-metadata.mts";
+
+// The trusted CI harness loads this export from the selected target revision.
+export { resolveChangedDockerSeedLanes } from "./ci-docker-seed-plan.mts";
 
 type ChangedNodeTestShard = {
   checkName: string;
@@ -96,38 +99,6 @@ const MAX_CHANGED_EXTENSION_FALLBACK_JOBS = 50;
 // integration tests past the global timeout.
 const SERIAL_CHANGED_TARGET_RE = /^extensions\/memory-core\//u;
 const BOUNDARY_NODE_TEST_CONFIG = "test/vitest/vitest.boundary.config.ts";
-const MCP_DOCKER_SEED_LANES = [
-  "mcp-channels",
-  "cron-mcp-cleanup",
-  "mcp-code-mode-gateway",
-] as const;
-const DOCKER_SEED_LANE_ORDER = [
-  ...MCP_DOCKER_SEED_LANES,
-  "update-channel-switch",
-  "fleet-cache",
-  "published-upgrade-survivor",
-] as const;
-type DockerSeedLane = (typeof DOCKER_SEED_LANE_ORDER)[number];
-const DOCKER_SEED_LANES_BY_PATH: Readonly<Record<string, readonly DockerSeedLane[]>> = {
-  ".github/workflows/ci.yml": [...MCP_DOCKER_SEED_LANES, "published-upgrade-survivor"],
-  "scripts/e2e/cron-mcp-cleanup-seed.ts": ["cron-mcp-cleanup"],
-  "scripts/e2e/docker-openai-seed.ts": MCP_DOCKER_SEED_LANES,
-  "scripts/e2e/fleet-cache-docker.sh": ["fleet-cache"],
-  "scripts/e2e/lib/mcp-code-mode-probe-server.ts": ["mcp-code-mode-gateway"],
-  "scripts/e2e/lib/mcp-code-mode/scenario.sh": ["mcp-code-mode-gateway"],
-  "scripts/e2e/lib/update-channel-switch/assertions.mjs": ["update-channel-switch"],
-  "scripts/e2e/mcp-channels-seed.ts": ["mcp-channels"],
-  "scripts/e2e/mcp-code-mode-gateway-seed.ts": ["mcp-code-mode-gateway"],
-  "scripts/e2e/update-channel-switch-docker.sh": ["update-channel-switch"],
-  "scripts/lib/ci-changed-node-test-plan.mts": [
-    ...MCP_DOCKER_SEED_LANES,
-    "published-upgrade-survivor",
-  ],
-};
-// Keep the whole state owner: both schema-version constants and future migrations
-// must exercise an installed release's updater before they reach main.
-const PUBLISHED_UPGRADE_OWNER_RE =
-  /^src\/(?:cli\/update-cli\/|infra\/(?:update-|package-update-)|plugins\/update(?:-|\.ts$)|commands\/doctor|state\/)|^scripts\/e2e\/(?:upgrade-survivor|lib\/upgrade-survivor\/)|^scripts\/(?:resolve-upgrade-survivor-baselines\.mts|lib\/(?:docker-e2e-(?:plan|scenarios)|upgrade-survivor-[^/]+)\.(?:mjs|mts))$|^package\.json$/u;
 const publicPluginSdkEntrySources = Object.values(
   buildPluginSdkEntrySources(publicPluginSdkEntrypoints),
 );
@@ -143,34 +114,6 @@ const configsRequiringCanonicalMetadata = new Set(
 const splitNodeTestConfigs = new Set(
   fullNodeTestShards.filter((shard) => shard.includePatterns).flatMap((shard) => shard.configs),
 );
-
-export function resolveChangedDockerSeedLanes(changedPaths: string[]) {
-  const selected = new Set<DockerSeedLane>();
-  for (const changedPath of changedPaths) {
-    const normalizedPath = changedPath.replaceAll("\\", "/");
-    if (normalizedPath.startsWith("scripts/e2e/lib/fleet-cache/")) {
-      selected.add("fleet-cache");
-    }
-    if (
-      PUBLISHED_UPGRADE_OWNER_RE.test(normalizedPath) &&
-      (!normalizedPath.startsWith("src/") || !isTestOnlyPath(normalizedPath))
-    ) {
-      selected.add("published-upgrade-survivor");
-    }
-    for (const lane of DOCKER_SEED_LANES_BY_PATH[normalizedPath] ?? []) {
-      selected.add(lane);
-    }
-  }
-  return DOCKER_SEED_LANE_ORDER.filter((lane) => selected.has(lane));
-}
-
-function isTestOnlyPath(changedPath: string) {
-  return (
-    isTestFileTarget(changedPath) ||
-    isTestSupportFileTarget(changedPath) ||
-    changedPath.startsWith("test/")
-  );
-}
 
 // Inputs `build:ci-artifacts` consumes: runtime/plugin/package sources plus
 // the build pipeline itself, including shared declaration publication and cache owners.
@@ -318,9 +261,26 @@ function createBoundaryShard() {
   };
 }
 
+function isIndependentlyCheckedDocumentation(changedPath: string, cwd: string) {
+  if (
+    changedPath !== changedPath.trim() ||
+    path.posix.normalize(changedPath) !== changedPath ||
+    (changedPath !== "README.md" &&
+      (!/^docs\/.+\.mdx?$/u.test(changedPath) ||
+        changedPath.startsWith("docs/reference/templates/")))
+  ) {
+    return false;
+  }
+  // check:docs owns these pages; packaged workspace templates still need runtime proof.
+  // Missing pages are deletions, but symlinks (including dangling ones) are not pages.
+  const entry = lstatSync(path.join(cwd, changedPath), { throwIfNoEntry: false });
+  return entry === undefined || entry.isFile();
+}
+
 function resolvePreciseChangedTargets(
   changedPaths: string[],
   cwd: string,
+  documentationPaths: ReadonlySet<string>,
   additionalTargets: string[] = [],
 ) {
   const resolveTargetPlan = (paths: string[]) =>
@@ -335,12 +295,15 @@ function resolvePreciseChangedTargets(
     changedPaths.length > 0
       ? resolveTargetPlan(changedPaths)
       : { mode: "targets" as const, targets: [] };
-  // Aggregate resolution must not let one precise path hide another path that
-  // contributes no tests. Partial plans silently drop coverage.
+  // A precise aggregate must not hide an unowned path. Only independently
+  // checked documentation may contribute no Node tests after owner resolution.
   if (
     changedPaths.some((changedPath) => {
       const changedPathPlan = resolveTargetPlan([changedPath]);
-      return changedPathPlan.mode !== "targets" || changedPathPlan.targets.length === 0;
+      return (
+        changedPathPlan.mode !== "targets" ||
+        (changedPathPlan.targets.length === 0 && !documentationPaths.has(changedPath))
+      );
     }) ||
     plan.mode !== "targets"
   ) {
@@ -611,23 +574,31 @@ export function createChangedNodeTestShards(
   }
 
   const livePaths: string[] = [];
-  const deletedPaths: string[] = [];
+  const resolutionPaths: string[] = [];
+  const documentationPaths = new Set<string>();
   for (const changedPath of changedPaths) {
-    (existsSync(path.join(cwd, changedPath)) ? livePaths : deletedPaths).push(changedPath);
-  }
-  // Deleted test files cannot regress runtime behavior, so they never block
-  // targeting. Deleted source files cannot be import-graphed from the merged
-  // tree and no live-path heuristic proves their consumers are covered, so
-  // any source deletion keeps the full-suite plan.
-  if (deletedPaths.some((deletedPath) => !isTestFileTarget(deletedPath))) {
-    return null;
+    const live = existsSync(path.join(cwd, changedPath));
+    const documentation = isIndependentlyCheckedDocumentation(changedPath, cwd);
+    if (documentation) {
+      documentationPaths.add(changedPath);
+    }
+    if (live) {
+      livePaths.push(changedPath);
+    } else if (!isTestFileTarget(changedPath) && !documentation) {
+      // Deleted source cannot be import-graphed; deleted tests retain boundary coverage.
+      return null;
+    }
+    if (live || documentation) {
+      // Preserve input order and resolve even deleted docs before crediting an empty plan.
+      resolutionPaths.push(changedPath);
+    }
   }
 
   // Policy watches can name extension-owned files (such as a bundled manifest)
   // that host suites scan without importing, so an extension path a watch names
   // stays eligible alongside the plugin control-UI paths.
   const policyTargetsByPath = new Map(
-    livePaths
+    resolutionPaths
       .map((changedPath) => [changedPath, resolvePolicyTestTargets([changedPath])] as const)
       .filter(
         ([changedPath, policyTargets]) =>
@@ -636,7 +607,7 @@ export function createChangedNodeTestShards(
           policyTargets.length > 0,
       ),
   );
-  const regularLivePaths = livePaths.filter(
+  const regularPaths = resolutionPaths.filter(
     (changedPath) =>
       (!changedPath.startsWith("extensions/") || isPluginControlUiPath(changedPath)) &&
       // The emitted ratchet checks this data against the exact tested merge tree.
@@ -658,7 +629,7 @@ export function createChangedNodeTestShards(
     return null;
   }
 
-  const targetPlans = resolvePreciseChangedTargets(regularLivePaths, cwd, [
+  const targetPlans = resolvePreciseChangedTargets(regularPaths, cwd, documentationPaths, [
     ...[...policyTargetsByPath.values()].flat(),
     // Plugin changes normally select only extension suites. This host-owned
     // proof also exercises the real Copilot entrypoint and manifest discovery.

@@ -3,6 +3,7 @@
 import fsNode from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import chokidar from "chokidar";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { withTestTimeout } from "../../test/helpers/promise.js";
 import { runQaGatewayFixture } from "../../test/helpers/qa-gateway-cleanup.js";
@@ -52,6 +53,12 @@ let server: Awaited<ReturnType<typeof startGatewayServerCore>> | undefined;
 let client: GatewayClient | undefined;
 let rateLimitEpochMs = Date.now();
 const hotReloadRecovery = vi.fn(() => ({ status: "emitted" as const }));
+const unarmedConfigWatchers: ReturnType<typeof chokidar.watch>[] = [];
+
+type ConfigRpcGatewayOptions = {
+  configRelativePath?: string;
+  watchConfigFiles?: boolean;
+};
 
 function requireClient(): GatewayClient {
   if (!client) {
@@ -91,7 +98,10 @@ function requireConfigObject(value: unknown, label: string): Record<string, unkn
   return value as Record<string, unknown>;
 }
 
-async function startConfigRpcGateway(configRelativePath?: string) {
+async function startConfigRpcGateway({
+  configRelativePath,
+  watchConfigFiles = true,
+}: ConfigRpcGatewayOptions = {}) {
   state = await createOpenClawTestState({
     label: "config-rpc",
     env: {
@@ -110,12 +120,24 @@ async function startConfigRpcGateway(configRelativePath?: string) {
   });
   setLoggerOverride({ level: "silent", consoleLevel: "silent" });
   const config = { agents: { entries: { main: {} } } };
+  const configPath = configRelativePath ? state.statePath(configRelativePath) : state.configPath;
   if (configRelativePath) {
-    const configPath = state.statePath(configRelativePath);
     await writeJsonFile(configPath, config);
     process.env.OPENCLAW_CONFIG_PATH = configPath;
   } else {
     await state.writeConfig(config);
+  }
+  if (!watchConfigFiles) {
+    const watch = chokidar.watch;
+    vi.spyOn(chokidar, "watch").mockImplementation((paths, options) => {
+      if ((Array.isArray(paths) ? paths : [paths]).includes(configPath)) {
+        // Keep managed writes and the real read cache active without independent file notifications.
+        const watcher = new chokidar.FSWatcher(options);
+        unarmedConfigWatchers.push(watcher);
+        return watcher;
+      }
+      return watch(paths, options);
+    });
   }
   hotReloadRecovery.mockClear();
   const port = await getFreePort();
@@ -162,6 +184,7 @@ async function stopConfigRpcGateway() {
       await server?.close();
       server = undefined;
     },
+    () => Promise.all(unarmedConfigWatchers.splice(0).map((watcher) => watcher.close())),
     () => resetGatewayRestartStateForInProcessRestart(),
     () => state?.cleanup(),
     () => resetLogger(),
@@ -282,8 +305,8 @@ async function writeUnresolvedAuthProfileTokenRef(missingEnvVar: string) {
   );
 }
 
-function installConfigWriteGatewayHooks(configRelativePath?: string) {
-  beforeEach(() => startConfigRpcGateway(configRelativePath));
+function installConfigWriteGatewayHooks(options: ConfigRpcGatewayOptions = {}) {
+  beforeEach(() => startConfigRpcGateway(options));
   beforeEach(() => {
     rateLimitEpochMs += 60_000;
     vi.spyOn(Date, "now").mockReturnValue(rateLimitEpochMs);
@@ -426,6 +449,10 @@ describe("gateway config methods", () => {
     expect(response.ok).toBe(false);
     expect(response.error?.message).toContain("config changed since last load");
   });
+});
+
+describe("gateway config methods", () => {
+  installConfigWriteGatewayHooks({ watchConfigFiles: false });
 
   it.each(["config.patch", "config.set", "config.apply"])(
     "%s rejects an include-only stale draft and accepts a reloaded draft",
@@ -435,6 +462,8 @@ describe("gateway config methods", () => {
       await writeJsonFile(includePath, { level: "info" });
       const root = { ...original.config, logging: { $include: "./logging.json5" } };
       await writeJsonFile(original.path, root);
+      // Finish fixture seeding before warming the draft whose rejection must invalidate reads.
+      invalidateConfigGetResponseCache();
       await expect
         .poll(async () => (await getCurrentConfigObject()).config.logging)
         .toEqual({
@@ -464,6 +493,10 @@ describe("gateway config methods", () => {
       await expect.poll(getConfigHash).toBe(fresh.payload?.hash);
     },
   );
+});
+
+describe("gateway config methods", () => {
+  installConfigWriteGatewayHooks();
 
   it.each(["plain", "unrelated-include", "include-only"] as const)(
     "openclaw.changes.list preserves an approved %s operation without a duplicate write",
@@ -805,7 +838,6 @@ describe("gateway config methods", () => {
       });
     type Receipt = { config: Record<string, unknown>; hash: string };
     const pending: Array<ReturnType<typeof rpcReq<Receipt>>> = [];
-    const started = performance.now();
     try {
       const first = rpcReq<Receipt>(
         requireClient(),
@@ -870,10 +902,12 @@ describe("gateway config methods", () => {
         setImmediate(resolve);
       });
       expect(competingWriterStarted).toBe(false);
+      // Exclude the deliberate pause and external-editor fixture IO from completion latency.
+      const completionStarted = performance.now();
       releaseCanonicalRead.resolve();
       const [firstResult, secondResult] = await Promise.all([first, second]);
-      const elapsedMs = performance.now() - started;
-      expect(elapsedMs).toBeLessThan(2_000);
+      const completionMs = performance.now() - completionStarted;
+      expect(completionMs).toBeLessThan(2_000);
       expect(firstResult.ok, firstResult.error?.message).toBe(true);
       expect(secondResult.ok, secondResult.error?.message).toBe(true);
       expect(competingWriterStarted).toBe(true);
@@ -2116,14 +2150,14 @@ describe("gateway config.apply", () => {
 });
 
 describe("gateway config recovery errors", () => {
-  installConfigWriteGatewayHooks(
-    path.join(
+  installConfigWriteGatewayHooks({
+    configRelativePath: path.join(
       "long-config-location-".repeat(4),
       "long-config-location-".repeat(4),
       "long-config-location-".repeat(4),
       "openclaw.json",
     ),
-  );
+  });
 
   it.each(["config.set", "config.patch", "config.apply"])(
     "%s preserves the failed-recovery outcome and backup location with built-in and custom redaction",

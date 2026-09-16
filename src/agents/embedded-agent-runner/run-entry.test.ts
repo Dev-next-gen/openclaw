@@ -1,13 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import {
+  clearAgentRunContext,
+  getAgentRunContext,
+  recordAgentRunModel,
+  resolveProjectedAgentRunModel,
+  registerAgentRunContext,
+} from "../../infra/agent-run-registry.js";
 import type { ContextEngineTurnAttemptFacts } from "../harness/context-engine-turn-attempt.js";
 import { runEmbeddedAgentEntry } from "./run-entry.js";
 import {
+  makeResult,
+  recordTurnAttempt,
   initialAttemptOptions,
   fallbackAttemptOptions,
   type FallbackRunnerParams,
 } from "./run-entry.test-support.js";
-import type { EmbeddedAgentRunResult } from "./types.js";
 
 const state = vi.hoisted(() => ({
   runWithModelFallback: vi.fn(),
@@ -44,77 +52,12 @@ vi.mock("../harness/selection.js", () => ({
   selectAgentHarness: (params: { provider: string }) => state.selectAgentHarness(params),
 }));
 
-function makeResult(params: {
-  provider: string;
-  model: string;
-  classification?: "empty";
-  meta?: Partial<EmbeddedAgentRunResult["meta"]>;
-}): EmbeddedAgentRunResult {
-  return {
-    payloads: params.classification ? [] : [{ text: "recovered" }],
-    meta: {
-      durationMs: 10,
-      aborted: false,
-      providerStarted: true,
-      stopReason: "completed",
-      agentHarnessResultClassification: params.classification,
-      agentMeta: {
-        sessionId: "session-1",
-        provider: params.provider,
-        model: params.model,
-      },
-      ...params.meta,
-    },
-  };
-}
-
 function createDirectHarness() {
   return {
     workspaceDir: "/tmp/workspace",
     preparation: { kind: "direct" as const },
     resolveRuntimeOverride: () => undefined,
   };
-}
-
-function recordTurnAttempt(
-  record: ((facts: ContextEngineTurnAttemptFacts) => void) | undefined,
-  label: string,
-): void {
-  if (!record) {
-    throw new Error("expected context-engine turn candidate callback");
-  }
-  record({
-    boundary: {
-      admission: {
-        agentId: "main",
-        sessionId: label,
-        sessionKey: `agent:main:${label}`,
-        storePath: `/${label}.sqlite`,
-        generation: "generation-1",
-        entryId: `${label}-user`,
-        rawSeq: 1,
-        effectiveParentId: null,
-        activeMessagePosition: 0,
-        logicalTurnId: `${label}-turn`,
-        role: "user",
-      },
-      terminal: {
-        agentId: "main",
-        sessionId: label,
-        sessionKey: `agent:main:${label}`,
-        storePath: `/${label}.sqlite`,
-        generation: "generation-1",
-        entryId: `${label}-assistant`,
-        rawSeq: 2,
-        effectiveParentId: `${label}-user`,
-        activeMessagePosition: 1,
-      },
-    },
-    sessionIdUsed: label,
-    promptError: false,
-    aborted: false,
-    yieldAborted: false,
-  });
 }
 
 describe("runEmbeddedAgentEntry", () => {
@@ -234,9 +177,17 @@ describe("runEmbeddedAgentEntry", () => {
     }
   });
 
-  it("keeps shared fallback and terminal behavior aligned across entry modes", async () => {
+  it("keeps shared fallback and terminal behavior aligned across entry modes", async ({
+    onTestFinished,
+  }) => {
     const cfg: OpenClawConfig = {};
     const runMode = async (behavior: "channel-delivery" | "command-rpc") => {
+      registerAgentRunContext("run-shared-fallback", {
+        agentId: "main",
+        sessionId: "session-1",
+        sessionKey: "agent:main:chat",
+      });
+      onTestFinished(() => clearAgentRunContext("run-shared-fallback"));
       const candidateCalls: Array<{
         provider: string;
         model: string;
@@ -273,6 +224,13 @@ describe("runEmbeddedAgentEntry", () => {
           },
         },
         runCandidate: async (provider, model, options) => {
+          expect(
+            resolveProjectedAgentRunModel({
+              agentId: "main",
+              sessionId: "session-1",
+            }),
+          ).toBeNull();
+          recordAgentRunModel("run-shared-fallback", { provider, model });
           candidateCalls.push({ provider, model, isFallbackRetry: options.isFallbackRetry });
           candidateLeases.push(options.contextEngineLogicalTurnLease);
           return makeResult({
@@ -306,6 +264,7 @@ describe("runEmbeddedAgentEntry", () => {
                       runId: "run-shared-fallback",
                       sessionId: "session-1",
                       turnId: "turn-1",
+                      assistantTranscriptIdempotencyKey: "selected-saved-reply",
                       requested: { provider, model },
                       effective: { provider, model, responseModel: "producer-model" },
                       successfulToolNames: [],
@@ -317,6 +276,7 @@ describe("runEmbeddedAgentEntry", () => {
           });
         },
       });
+      expect(getAgentRunContext("run-shared-fallback")?.activeModel).toBeUndefined();
       await result.settleSessionOverride();
       await result.settleSessionOverride();
       return { result, candidateCalls, candidateLeases, reconciled };
@@ -361,6 +321,9 @@ describe("runEmbeddedAgentEntry", () => {
       },
       rerouted: true,
     });
+    expect(channel.result.terminal.metadata.assistantTranscriptIdempotencyKey).toBe(
+      "selected-saved-reply",
+    );
     expect(channel.result.terminal.metadata.terminalReceipt).toMatchObject({
       requested: { provider: "primary-provider", model: "primary-model" },
       effective: {
@@ -647,7 +610,7 @@ describe("runEmbeddedAgentEntry", () => {
         attempts: [],
       };
     });
-    await runEmbeddedAgentEntry({
+    const result = await runEmbeddedAgentEntry({
       selection: { cfg: {}, provider: "provider", model: "model" },
       identity: { runId: "settle-exhausted", agentId: "main", sessionId: "session-1" },
       harness: createDirectHarness(),
@@ -655,10 +618,36 @@ describe("runEmbeddedAgentEntry", () => {
       sessionOverride: { kind: "preserve" },
       runCandidate: async (provider, model, options) => {
         recordTurnAttempt(options.onContextEngineTurnCandidate, provider);
-        return makeResult({ provider, model, classification: "empty" });
+        return makeResult({
+          provider,
+          model,
+          classification: "empty",
+          meta: {
+            error: { kind: "incomplete_turn", message: `${provider} failed` },
+            agentMeta: {
+              sessionId: "session-1",
+              provider,
+              model,
+              terminalReceipt: {
+                runId: "settle-exhausted",
+                sessionId: "session-1",
+                turnId: provider,
+                requested: { provider, model },
+                effective: { provider, model, responseModel: model },
+                successfulToolNames: [],
+                rerouted: false,
+                assistantTranscriptIdempotencyKey: `saved-${provider}`,
+              },
+            },
+          },
+        });
       },
     });
 
+    expect(result.result.meta.error?.message).toBe("provider failed");
+    expect(result.terminal.metadata.assistantTranscriptIdempotencyKey).toBe(
+      "saved-fallback-provider",
+    );
     expect(state.finalizedAttempts).toEqual([]);
     expect(state.discardedAttempts).toEqual(["fallback-provider"]);
   });

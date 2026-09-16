@@ -2,6 +2,7 @@
 
 import { html, render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MessageClientSource } from "../../../../../src/chat/message-client-source.js";
 import { GatewayBrowserClient } from "../../../api/gateway.ts";
 import * as markdown from "../../../components/markdown.ts";
 import { SessionLinkTitler } from "../../../components/session-link-titling.ts";
@@ -2199,6 +2200,88 @@ describe("grouped chat rendering", () => {
   });
 
   it.each([
+    { client: { id: "cli", mode: "cli" }, label: "CLI" },
+    { client: { id: "openclaw-control-ui", mode: "webchat" }, label: "Web" },
+    { client: { id: "openclaw-tui", mode: "ui" }, label: "TUI" },
+    { client: { id: "openclaw-ios", mode: "node" }, label: "App" },
+    { client: { id: "gateway-client", mode: "backend" }, label: "RPC" },
+  ] satisfies Array<{ client: MessageClientSource; label: string }>)(
+    "keeps $label client provenance separate from the authenticated human author",
+    ({ client, label }) => {
+      const message = createUserMessage("Follow up on the current task.", {
+        __openclaw: {
+          senderId: "profile-1",
+          senderName: "Recorded Name",
+          senderIdentity: { type: "profile", id: "profile-1" },
+          transport: { clients: [{ ...client, displayName: "Task helper" }] },
+        },
+      });
+      const group = prepareMessageGroup(createMessageEntry("source-message", message));
+      const container = document.createElement("div");
+      render(
+        renderTestMessageGroup(group, { userId: "profile-1", userName: "Current Name" }),
+        container,
+      );
+      expect(container.querySelector(".chat-sender-name")?.textContent).toBe("Current Name");
+      const source = container.querySelector(".chat-message-source");
+      if (label === "Web") {
+        expect(source).toBeNull();
+      } else {
+        expect(source?.textContent).toBe(`via ${label} (Task helper)`);
+      }
+    },
+  );
+
+  it.each(
+    (["gutter", "footer"] as const).flatMap((avatarPlacement) => [
+      {
+        avatarPlacement,
+        source: "collected Web and external clients",
+        clients: [
+          { id: "openclaw-control-ui", mode: "webchat" },
+          { id: "cli", mode: "cli", displayName: "Release helper" },
+          { id: "gateway-client", mode: "backend", displayName: "Build helper" },
+        ],
+        expectedSource: "via CLI (Release helper), RPC (Build helper)",
+      },
+      {
+        avatarPlacement,
+        source: "Web only",
+        clients: [{ id: "openclaw-control-ui", mode: "webchat" }],
+        expectedSource: null,
+      },
+    ]),
+  )(
+    "does not borrow the viewer's name or $avatarPlacement avatar for source-only input from $source",
+    ({ avatarPlacement, clients, expectedSource }) => {
+      const message = createUserMessage("Collected follow-ups.", {
+        __openclaw: {
+          transport: { clients },
+        },
+      });
+      const group = prepareMessageGroup(createMessageEntry("source-only-message", message));
+      const container = document.createElement("div");
+      render(
+        renderTestMessageGroup(group, {
+          avatarPlacement,
+          userName: "Unrelated Viewer",
+          userAvatar: "https://example.test/viewer.png",
+        }),
+        container,
+      );
+      expect(container.querySelector(".chat-sender-name")).toBeNull();
+      expect(container.querySelector(".chat-avatar, .chat-author-avatar")).toBeNull();
+      expect(container.textContent).not.toContain("Unrelated Viewer");
+      const source = container.querySelector(".chat-message-source");
+      if (expectedSource === null) {
+        expect(source).toBeNull();
+      } else {
+        expect(source?.textContent).toBe(expectedSource);
+      }
+    },
+  );
+
+  it.each([
     {
       behavior: "keeps a peer's recorded sender name visible",
       senderLabel: "alice",
@@ -2340,7 +2423,7 @@ describe("grouped chat rendering", () => {
       label: "attributed sender without a viewer",
       sender: { id: "other-user" },
       userId: null,
-      peer: true,
+      peer: false,
     },
   ])("sets peer alignment for $label", ({ sender, userId, peer }) => {
     const container = document.createElement("div");
@@ -2629,6 +2712,7 @@ describe("grouped chat rendering", () => {
             showReasoning: true,
             showToolCalls: true,
             assistantName: "OpenClaw",
+            userId: "local-viewer",
             avatarPlacement,
           },
         ),
@@ -4092,14 +4176,14 @@ describe("grouped chat rendering", () => {
     renderMessage();
     expect(container.textContent).not.toContain("Outside allowed folders");
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    await flushAssistantAttachmentAvailabilityChecks();
-
-    expect(
-      container
-        .querySelector<HTMLAnchorElement>(".chat-assistant-attachment-card__download")
-        ?.getAttribute("href"),
-    ).toBe(
-      `/__openclaw__/assistant-media?source=${encodeURIComponent(source)}&mediaTicket=ticket-bootstrap-audio`,
+    await vi.waitFor(() =>
+      expect(
+        container
+          .querySelector<HTMLAnchorElement>(".chat-assistant-attachment-card__download")
+          ?.getAttribute("href"),
+      ).toBe(
+        `/__openclaw__/assistant-media?source=${encodeURIComponent(source)}&mediaTicket=ticket-bootstrap-audio`,
+      ),
     );
   });
 
@@ -4917,16 +5001,14 @@ describe("grouped chat rendering", () => {
       );
 
     rerender();
-    await flushAssistantAttachmentAvailabilityChecks();
     const download = () =>
       container
         .querySelector<HTMLAnchorElement>(".chat-assistant-attachment-card__download")
         ?.getAttribute("href");
-    expect(download()).toContain("mediaTicket=ticket-old");
+    await vi.waitFor(() => expect(download()).toContain("mediaTicket=ticket-old"));
 
     await vi.advanceTimersByTimeAsync(1_001);
-    await flushAssistantAttachmentAvailabilityChecks();
-    expect(download()).toContain("mediaTicket=ticket-new");
+    await vi.waitFor(() => expect(download()).toContain("mediaTicket=ticket-new"));
     expect(container.querySelector("openclaw-chat-audio-player")).not.toBeNull();
   });
 

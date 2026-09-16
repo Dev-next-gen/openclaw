@@ -1,14 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { resolveAmbientOwnerAgentId } from "../agents/agent-scope-config.js";
 import { resolveAgentEffectiveModelPrimary } from "../agents/agent-scope.js";
-import {
-  loadAuthProfileStoreWithoutExternalProfiles,
-  updateAuthProfileStoreWithLock,
-} from "../agents/auth-profiles/store-runtime.js";
-import { resolvePersistedAuthProfileOwnerAgentDir } from "../agents/auth-profiles/store.js";
-import type { AuthProfileCredential } from "../agents/auth-profiles/types.js";
+import { loadAuthProfileStoreWithoutExternalProfiles } from "../agents/auth-profiles/store-runtime.js";
 import { resolveModelRuntimePolicy } from "../agents/model-runtime-policy.js";
 import { resolveProviderIdForAuth } from "../agents/provider-auth-aliases.js";
 import { applyMergePatch } from "../config/merge-patch.js";
@@ -198,6 +192,15 @@ export async function saveSetupCredential(params: {
     credential: candidate.credential,
     pluginId: params.pluginId,
   });
+  // A guided provider login can belong to a separately selected runtime plugin.
+  // Retain its connection settings with the saved credential for a cold retry.
+  const runtimePlugin = params.agentRuntimeId
+    ? prepared.plugins?.entries?.[params.agentRuntimeId]
+    : undefined;
+  if (params.agentRuntimeId && runtimePlugin) {
+    ((retryConfig.plugins ??= {}).entries ??= {})[params.agentRuntimeId] =
+      structuredClone(runtimePlugin);
+  }
   if (prepared.plugins?.installs) {
     (retryConfig.plugins ??= {}).installs = prepared.plugins.installs;
   }
@@ -235,34 +238,6 @@ export async function saveSetupCredential(params: {
     agentDir: params.agentDir,
   });
   return { profile: profiles[0]!, config: prepared };
-}
-
-export async function activateSavedSetupCredential(params: {
-  agentDir: string;
-  profileId: string;
-  credential: AuthProfileCredential;
-  beforeWrite?: () => void;
-}): Promise<void> {
-  if (!params.credential.setup) {
-    return;
-  }
-  const updated = await updateAuthProfileStoreWithLock({
-    agentDir: resolvePersistedAuthProfileOwnerAgentDir(params),
-    updater: (store) => {
-      params.beforeWrite?.();
-      const current = store.profiles[params.profileId];
-      if (!current || !isDeepStrictEqual(current, params.credential)) {
-        throw new Error(
-          "The saved sign-in changed before activation. Test it again in Model Setup.",
-        );
-      }
-      delete current.setup;
-      return true;
-    },
-  });
-  if (!updated) {
-    throw new Error("The saved sign-in is still inactive. Retry activation in Model Setup.");
-  }
 }
 
 async function stagePreparedCandidate(
@@ -312,6 +287,7 @@ async function stagePreparedCandidate(
       modelRef,
       pluginId,
       authChoice: params.choice?.choiceId,
+      agentRuntimeId: params.agentRuntimeId,
       agentDir: ctx.agentDir,
       beforePersistentEffect: () => ctx.beforePersistentEffect("credential"),
     });
@@ -482,6 +458,7 @@ export async function stageProviderAutoCandidate(
 export async function stageProviderAuthCandidate(
   ctx: StageContext,
   interactive: boolean,
+  agentRuntimeId?: string,
 ): Promise<StagedCandidate | StageFailure> {
   const { params } = ctx;
   const apiKey = params.apiKey?.trim();
@@ -517,6 +494,7 @@ export async function stageProviderAuthCandidate(
       result: { profiles, defaultModel: `${prepared.providerId}/${prepared.modelId}` },
       config,
       credentialState: "new",
+      agentRuntimeId,
     });
   }
   const choice = authChoice
@@ -581,6 +559,7 @@ export async function stageProviderAuthCandidate(
           choice,
           provider,
           pendingPluginInstalls: prepared.pendingPluginInstalls,
+          agentRuntimeId,
         });
       },
     );
@@ -698,6 +677,8 @@ export async function stageProviderAuthCandidate(
           choice,
           credentialState: "new",
           ...(choice.appGuidedDiscovery ? {} : { provider: loaded.provider }),
+          agentRuntimeId,
+          pendingPluginInstalls: config.plugins?.installs,
         });
       } catch (error) {
         if (error instanceof SetupInferenceCancelledError || params.signal?.aborted) {

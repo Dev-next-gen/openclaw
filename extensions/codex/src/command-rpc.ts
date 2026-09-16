@@ -20,7 +20,7 @@ import {
   describeControlFailure,
   type CodexControlMethod,
 } from "./app-server/capabilities.js";
-import type { CodexAppServerClient } from "./app-server/client.js";
+import type { CodexAppServerClient, CodexCatalogListRequestKey } from "./app-server/client.js";
 import {
   resolveCodexAppServerRuntimeOptions,
   resolveCodexSupervisionAppServerRuntimeOptions,
@@ -34,6 +34,7 @@ import type {
   JsonValue,
 } from "./app-server/protocol.js";
 import { isJsonObject } from "./app-server/protocol.js";
+import type { CodexControlRequestObservation } from "./app-server/request-observation.js";
 import {
   requestCodexAppServerJson,
   withCodexAppServerJsonClient,
@@ -60,6 +61,8 @@ export type CodexControlRequestOptions = {
   startOptions?: CodexAppServerStartOptions;
   timeoutMs?: number;
   assertCurrent?: () => void;
+  catalogListKey?: CodexCatalogListRequestKey;
+  controlObservation?: CodexControlRequestObservation;
   beforeRequest?: (
     request: CodexAppServerScopedRequest,
     client: CodexAppServerClient,
@@ -222,6 +225,11 @@ export async function codexControlRequest(
   requestParams?: unknown,
   options: CodexControlRequestOptions = {},
 ): Promise<unknown> {
+  try {
+    options.controlObservation?.phase("prepare");
+  } catch {
+    // Diagnostic callbacks cannot change control-request behavior.
+  }
   // Explicit control options own the connection; harness defaults would reject user-home Unix.
   const runtime = options.startOptions
     ? resolveCodexSupervisionAppServerRuntimeOptions({ pluginConfig })
@@ -242,6 +250,8 @@ export async function codexControlRequest(
     sessionId: options.sessionId,
     agentDir: options.agentDir,
     isolated: options.isolated,
+    ...(options.catalogListKey ? { catalogListKey: options.catalogListKey } : {}),
+    ...(options.controlObservation ? { controlObservation: options.controlObservation } : {}),
     ...auth.clientOptions,
   };
   if (options.onResponse || options.beforeRequest) {

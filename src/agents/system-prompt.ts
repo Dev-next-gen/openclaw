@@ -600,7 +600,7 @@ function buildMessagingSection(params: {
       : []),
     subagentOrchestrationGuidance,
     completionEventGuidance,
-    "- Provider messaging: never exec/curl; OpenClaw routes.",
+    "- OpenClaw channel replies/actions: use OpenClaw routing, not exec/curl. Other services (e.g. email): user-authorized CLI/API use is allowed; normal tool permissions and approvals still apply.",
     messageToolAvailable
       ? [
           "",
@@ -1318,7 +1318,7 @@ export function buildAgentSystemPrompt(params: {
           ? "Update OpenClaw: `gateway` action update.run, only on an explicit owner request; the runtime coordinates restart and completion notices. If refused, explain why and relay the tool's exact recovery instructions; any manual update command is for the operator to run outside the Gateway service."
           : "For a chat update request, direct the user to `/update`. Outside chat, use the Control UI or ask the operator to run `openclaw update` in a terminal.",
         "Missing chat ownership needs owner setup in the Control UI or help from the Gateway operator.",
-        "Never run openclaw update, npm install -g openclaw, or stop/restart the gateway service via exec.",
+        "Never run openclaw update, npm install -g openclaw, swap installations, or stop/restart the gateway service via exec or detached jobs.",
       ].join(" "),
       ...(hasExec
         ? [
@@ -1481,6 +1481,7 @@ export function buildAgentSystemPrompt(params: {
     ...(!isMinimal
       ? [
           buildUiPresentationPrompt({
+            screenToolName: availableTools.has("screen") ? resolveToolName("screen") : undefined,
             messageTool: messageToolAvailable ? params.messageTool : undefined,
             showWidgetToolName: availableTools.has("show_widget")
               ? resolveToolName("show_widget")

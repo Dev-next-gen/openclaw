@@ -579,7 +579,6 @@ wa-popover.new-session-page__select::part(body) {
   box-shadow: var(--overlay-shadow);
 }
 
-.agent-select--compact .agent-select__menu-title,
 .new-session-page__menu-title {
   padding: 4px 8px 2px;
   color: var(--muted);
@@ -818,6 +817,17 @@ wa-popover.new-session-page__where-popover::part(body) {
   color: var(--muted);
   text-align: center;
   font-size: var(--control-ui-text-sm);
+}
+
+.new-session-page__environment-skeletons {
+  display: grid;
+  gap: 8px;
+  padding: 6px 12px;
+}
+
+.new-session-page__environment-skeleton-row {
+  display: block;
+  height: 14px;
 }
 
 .new-session-page__menu-chevron {
@@ -1456,10 +1466,11 @@ wa-popover.new-session-page__where-popover::part(body) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 24px;
-  width: 24px;
-  height: 24px;
-  padding: 3px;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  margin-right: -4px;
+  padding: 2px;
   border: 0;
   border-radius: 50%;
   color: inherit;
@@ -1473,8 +1484,8 @@ wa-popover.new-session-page__where-popover::part(body) {
 
 .new-session-page__connect-device svg {
   display: block;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
 }
 
 .new-session-page__cloud-choice-list + .new-session-page__environment-heading {

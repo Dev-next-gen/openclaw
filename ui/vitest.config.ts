@@ -6,9 +6,10 @@ import { fileURLToPath } from "node:url";
 import { playwright } from "@vitest/browser-playwright";
 import { chromium } from "playwright";
 import { defineConfig, defineProject, type ViteUserConfig } from "vitest/config";
+import { intersectIncludePatterns } from "../test/vitest/vitest.include-patterns.ts";
 import {
-  intersectIncludePatterns,
   loadPatternListFromEnv,
+  matchesVitestGlob,
   relativizeScopedPatterns,
 } from "../test/vitest/vitest.pattern-file.ts";
 import { loadVitestPerformanceConfig } from "../test/vitest/vitest.performance-config.ts";
@@ -18,7 +19,10 @@ import {
   sharedVitestConfig,
 } from "../test/vitest/vitest.shared.config.ts";
 import { uiIsolatedTestFiles } from "../test/vitest/vitest.ui-isolated-paths.mjs";
-import { uiNodeDrivenBrowserTestFiles } from "../test/vitest/vitest.ui-paths.mjs";
+import {
+  uiNodeDrivenBrowserTestFiles,
+  uiTimingTestFiles,
+} from "../test/vitest/vitest.ui-paths.mjs";
 import { controlUiLocaleModulesPlugin } from "./config/control-ui-locales.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -104,6 +108,7 @@ function includeUiTests(patterns: string[], env = process.env): string[] {
   const selected = intersectIncludePatterns(
     patterns.map((pattern) => path.posix.normalize(`ui/${pattern}`)),
     loadPatternListFromEnv("OPENCLAW_VITEST_INCLUDE_FILE", env),
+    matchesVitestGlob,
   );
   return selected ? selected.map((pattern) => path.posix.relative("ui", pattern)) : patterns;
 }
@@ -120,6 +125,7 @@ const sharedUiTestConfig = {
   hookTimeout: 60_000,
 } as const;
 const nodeDrivenBrowserLayoutTests = relativizeScopedPatterns(uiNodeDrivenBrowserTestFiles, "ui");
+const timingTests = relativizeScopedPatterns(uiTimingTestFiles, "ui");
 const mockRegistryUnitTests = uiIsolatedTestFiles.map((testFile) => testFile.slice("ui/".length));
 const chromiumExecutableOverrideEnvKey = "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH";
 const systemChromiumExecutableCandidates = [
@@ -273,6 +279,7 @@ export default defineConfig({
           ...sharedUiTestConfig,
           deps: jsdomOptimizedDeps,
           name: "unit-node",
+          exclude: timingTests,
           // No cleanup runner: this project also carries the Playwright-driven
           // layout tests, whose browser lives in module scope. Resetting the
           // module graph between files churns that browser and flakes them.
@@ -286,6 +293,22 @@ export default defineConfig({
         },
       },
       { ...createUiBrowserVitestConfig(), extends: false },
+      {
+        extends: false,
+        plugins: [controlUiLocaleModulesPlugin()],
+        resolve: { alias: workspaceSourceAliases },
+        test: {
+          ...sharedUiTestConfig,
+          deps: jsdomOptimizedDeps,
+          name: "unit-timing",
+          isolate: true,
+          // Finish other UI tests before measuring full-render wall time.
+          sequence: { groupOrder: 1 },
+          include: includeUiTests(timingTests),
+          environment: "jsdom",
+          setupFiles: ["./src/test-helpers/lit-warnings.setup.ts"],
+        },
+      },
     ],
   },
 });

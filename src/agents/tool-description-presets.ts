@@ -71,8 +71,9 @@ export function describeSessionLinkRule(base: string): string {
 /** Describes the sessions_list tool for model-facing instructions. */
 export function describeSessionsListTool(options?: SessionLinkDescriptionOptions): string {
   return [
-    "List visible sessions and sidebar groups; filter kind/label/agentId/search/activity/archive.",
-    "Preview recent messages inline via includeLastMessage/messageLimit; includeDerivedTitles adds derived titles.",
+    "List visible session metadata and groups; filter ownerId/creatorId, projectId/workspaceDir, group/pinned, kind/agent/activity/archive. relationship=owned|created|involving selects the authenticated requesting user's sessions, not the agent's owner.",
+    "Metadata-only by default. limit defaults to 100; larger requests stay valid but limitApplied never exceeds 200. count is this page, not an inventory total. Continue with nextOffset and identical filters while hasMore; truncationReason names a scan/byte budget. Pages are live: deduplicate by agentId/key/sessionId or restart for a fresh inventory. archived=all includes active and archived rows.",
+    "Preview recent messages inline via includeLastMessage/messageLimit; includeDerivedTitles adds derived titles. enrichmentOmitted means previews exceeded the byte budget; read history separately.",
     "Use before history/send target selection.",
     ...(options?.sessionLinkBase ? [describeSessionLinkRule(options.sessionLinkBase)] : []),
   ].join(" ");
@@ -102,7 +103,7 @@ export function describeSessionsSendTool(): string {
     "Run a visible session on this Gateway by sessionKey/label, or a configured local agent by agentId; sessionKey wins redundant label.",
     "A session identifies model context, not an external address; its reply may still announce through established delivery context.",
     SESSIONS_SEND_RESULT_GUIDANCE,
-    "mode:notify queues ephemeral context for the next turn without waking or starting work (bounded process memory, not a durable inbox). mode:steer injects guidance into an active supported run and never starts idle work; mode:followup starts or queues a later turn without steering. Omit mode for existing automatic routing.",
+    "mode:notify queues ephemeral context for the next turn without waking or starting work (bounded process memory, not a durable inbox). mode:steer injects guidance into an active supported run and never starts idle work; mode:followup starts or queues a later turn without steering. mode:resume continues your paused native child task; returns runId/taskRunId, with completion from the task owner, not inline. Resume rejects watch:true and positive timeoutSeconds. Omit mode for existing automatic routing.",
     'Thread chats rejected: target parent channel. Missing configured-agent main created. Waits for reply when available; status "no_reply" is terminal, so do not wait for an announcement.',
     "watch:true: notice arrives when others later change target session.",
   ].join(" ");

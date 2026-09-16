@@ -4,6 +4,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
   iterateSqliteQuerySync,
+  prepareSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
 import { readSqliteDataVersion } from "../../infra/node-sqlite.js";
 import {
@@ -35,7 +36,8 @@ type CanonicalSessionDatabase = Pick<
   OpenClawAgentKyselyDatabase,
   "schema_meta" | "session_key_contract" | "session_nodes" | "session_windows"
 >;
-const validatedDatabases = new WeakSet<DatabaseSync>();
+const validatedDatabases = new WeakMap<DatabaseSync, string>();
+const mainKeyReaders = new WeakMap<DatabaseSync, () => { main_key: string } | undefined>();
 
 type CanonicalSessionMetadata = {
   entries: Map<string, SessionEntry>;
@@ -82,13 +84,18 @@ export function assertCanonicalSessionKeyWrite(sessionKey: string, expectedAgent
 }
 
 function readCanonicalSessionMainKey(database: { db: DatabaseSync }): string {
-  const db = getNodeSqliteKysely<CanonicalSessionDatabase>(database.db);
-  return normalizeMainKey(
-    executeSqliteQueryTakeFirstSync(
-      database.db,
-      db.selectFrom("session_key_contract").select("main_key").where("id", "=", 1),
-    )?.main_key,
-  );
+  let read = mainKeyReaders.get(database.db);
+  if (!read) {
+    const query = prepareSqliteQueryTakeFirstSync<void, { main_key: string }>(database.db, () =>
+      getNodeSqliteKysely<CanonicalSessionDatabase>(database.db)
+        .selectFrom("session_key_contract")
+        .select("main_key")
+        .where("id", "=", 1),
+    );
+    read = () => query();
+    mainKeyReaders.set(database.db, read);
+  }
+  return normalizeMainKey(read()?.main_key);
 }
 
 function assertCanonicalSessionMainKeyWrite(sessionKey: string, mainKey: string): void {
@@ -140,8 +147,8 @@ export function scanCanonicalSqliteSessionEntries(
   mainKey?: string,
   metadata?: CanonicalSessionMetadata,
 ): number {
-  // This connection validates once. External direct-SQLite edits surface at the next
-  // process start, not the next topology change; doctor owns live repair.
+  // Row validation belongs to this connection and its stored main-key policy.
+  // Untracked row edits still require a fresh connection; Doctor owns live repair.
   const db = getNodeSqliteKysely<CanonicalSessionDatabase>(database.db);
   const storedMainKey = executeSqliteQueryTakeFirstSync(
     database.db,
@@ -260,7 +267,7 @@ export function scanCanonicalSqliteSessionEntries(
     visit?.({ entry, sessionKey: row.session_key });
     count += 1;
   }
-  validatedDatabases.add(database.db);
+  validatedDatabases.set(database.db, normalizeMainKey(storedMainKey));
   return count;
 }
 
@@ -269,14 +276,42 @@ export function assertCanonicalSqliteSessionKeysCurrent(
   mainKey?: string,
   collectMetadata = false,
 ): ValidatedSessionMetadata | undefined {
-  if (validatedDatabases.has(database.db)) {
-    return undefined;
+  return validateCanonicalSqliteSessionKeys(database, mainKey, collectMetadata).metadata;
+}
+
+/** Validate the root's database and key together within its synchronous writer transaction. */
+export function assertCanonicalSqliteSessionRootWrite(
+  database: { agentId: string; db: DatabaseSync },
+  sessionKey: string,
+): void {
+  const { validatedMainKey } = validateCanonicalSqliteSessionKeys(database);
+  assertCanonicalSessionKeyWrite(sessionKey);
+  // Warm validation just read this policy. Cold or changed-policy scans retain
+  // their original post-scan read and error order.
+  assertCanonicalSessionMainKeyWrite(
+    sessionKey,
+    validatedMainKey ?? readCanonicalSessionMainKey(database),
+  );
+}
+
+function validateCanonicalSqliteSessionKeys(
+  database: { agentId: string; db: DatabaseSync },
+  mainKey?: string,
+  collectMetadata = false,
+): { validatedMainKey?: string; metadata?: ValidatedSessionMetadata } {
+  const validatedMainKey = validatedDatabases.get(database.db);
+  // Another connection can commit a Doctor/startup policy change while this reader stays open.
+  if (
+    validatedMainKey !== undefined &&
+    validatedMainKey === readCanonicalSessionMainKey(database)
+  ) {
+    return { validatedMainKey };
   }
   const metadata: ValidatedSessionMetadata | undefined = collectMetadata
     ? { dataVersion: readSqliteDataVersion(database.db), entries: new Map(), keys: [] }
     : undefined;
   scanCanonicalSqliteSessionEntries(database, undefined, mainKey, metadata);
-  return metadata;
+  return { metadata };
 }
 
 export function setCanonicalSqliteSessionMainKey(

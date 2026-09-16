@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolveBuildInfo } from "../write-build-info.ts";
 import { createManagedHandoffBuildConfig } from "./managed-handoff-build-config.mts";
 import {
   sharedRuntimeProcessBuildEntries,
@@ -15,7 +16,10 @@ import {
   verifyVitestWorkerArtifacts,
   type VitestWorkerManifest,
 } from "./vitest-worker-artifacts.mts";
-import { vitestWorkerBuildEntries } from "./vitest-worker-build-entries.mts";
+import {
+  legacyFinalizerBuildSources,
+  vitestWorkerBuildEntries,
+} from "./vitest-worker-build-entries.mts";
 import { vitestWorkerDeclarationEntries } from "./vitest-worker-declarations.mts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -27,6 +31,7 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
   const { build }: typeof import("tsdown") = require("tsdown");
   const inputs: Record<string, string> = {};
   const outputs: Record<string, string> = {};
+  let outputPrefix = "";
   const recordInput = (id: string) => {
     const normalized = id.replaceAll("\\", "/");
     if (!path.isAbsolute(normalized) || normalized.split("/").includes("node_modules")) {
@@ -57,6 +62,12 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
     "scripts/lib/runtime-process-core-build-entries.mts",
     "scripts/lib/vitest-worker-build-entries.mts",
     "scripts/lib/state-schema-inline-plugin.mts",
+    "scripts/write-build-info.ts",
+    "scripts/lib/direct-run.mjs",
+    "ui/src/build-info-normalizers.ts",
+    "packages/normalization-core/src/record-coerce.ts",
+    "packages/normalization-core/src/string-coerce.ts",
+    "packages/normalization-core/src/utf16-slice.ts",
     "scripts/lib/vitest-cli-mode.mts",
   ]) {
     recordInput(path.join(root, name));
@@ -71,6 +82,47 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
     (id.startsWith("@openclaw/") || id.startsWith("openclaw/")) &&
     id !== "@openclaw/fs-safe" &&
     !id.startsWith("@openclaw/fs-safe/");
+  const commonPlugins = [
+    {
+      name: "openclaw:worker-build-inputs",
+      load(id) {
+        recordInput(id);
+        return null;
+      },
+      generateBundle(_options, bundle) {
+        const packageDirectories = new Set(Object.keys(inputs).map((id) => path.dirname(id)));
+        for (let packageDirectory of packageDirectories) {
+          while (packageDirectory.startsWith(root)) {
+            const manifest = path.join(packageDirectory, "package.json");
+            if (fs.existsSync(manifest)) {
+              recordInput(manifest);
+              break;
+            }
+            packageDirectory = path.dirname(packageDirectory);
+          }
+        }
+        for (const [name, output] of Object.entries(bundle)) {
+          outputs[outputPrefix + name] = hashVitestWorkerArtifact(
+            output.type === "chunk" ? output.code : Buffer.from(output.source),
+          );
+        }
+      },
+    },
+    {
+      ...schemaPlugin,
+      load(id) {
+        return schemaPlugin.load.call(
+          {
+            addWatchFile: (file) => {
+              recordInput(file);
+              this.addWatchFile(file);
+            },
+          },
+          id,
+        );
+      },
+    },
+  ] satisfies NonNullable<Parameters<typeof build>[0]>["plugins"];
   const config: NonNullable<Parameters<typeof build>[0]> = {
     config: false,
     cwd: root,
@@ -107,53 +159,17 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
           return null;
         },
       },
-      {
-        name: "openclaw:worker-build-inputs",
-        load(id) {
-          recordInput(id);
-          return null;
-        },
-        generateBundle(_options, bundle) {
-          const packageDirectories = new Set(Object.keys(inputs).map((id) => path.dirname(id)));
-          for (let packageDirectory of packageDirectories) {
-            while (packageDirectory.startsWith(root)) {
-              const manifest = path.join(packageDirectory, "package.json");
-              if (fs.existsSync(manifest)) {
-                recordInput(manifest);
-                break;
-              }
-              packageDirectory = path.dirname(packageDirectory);
-            }
-          }
-          for (const [name, output] of Object.entries(bundle)) {
-            outputs[name] = hashVitestWorkerArtifact(
-              output.type === "chunk" ? output.code : Buffer.from(output.source),
-            );
-          }
-        },
-      },
-      {
-        ...schemaPlugin,
-        load(id) {
-          return schemaPlugin.load.call(
-            {
-              addWatchFile: (file) => {
-                recordInput(file);
-                this.addWatchFile(file);
-              },
-            },
-            id,
-          );
-        },
-      },
+      ...commonPlugins,
     ],
   };
   await build(config);
-  await build({
-    ...config,
-    entry: standaloneRuntimeProcessBuildEntries,
-    outputOptions: { codeSplitting: false },
-  });
+  for (const [name, source] of Object.entries(standaloneRuntimeProcessBuildEntries)) {
+    await build({
+      ...config,
+      entry: { [name]: source },
+      outputOptions: { codeSplitting: false },
+    });
+  }
   await build({
     ...createManagedHandoffBuildConfig(),
     config: false,
@@ -163,9 +179,32 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
     logLevel: config.logLevel,
     plugins: config.plugins,
   });
+  outputPrefix = "legacy-finalizer/";
+  await build({
+    ...config,
+    // Array entries honor root; object entries infer src/ and break import.meta paths.
+    entry: legacyFinalizerBuildSources,
+    outDir: path.join(outDir, "legacy-finalizer"),
+    root,
+    // Load hooks forward the complete original namespaces through query imports.
+    unbundle: true,
+    treeshake: false,
+    inputOptions: { preserveEntrySignatures: "strict" },
+    outputOptions: { entryFileNames: "[name].js", chunkFileNames: "[name].js" },
+    // Hooked service and authority owners must stay in this single preserved graph.
+    plugins: commonPlugins,
+  });
+  for (const source of legacyFinalizerBuildSources) {
+    fs.accessSync(path.join(outDir, outputPrefix, source.replace(/\.ts$/u, ".js")));
+  }
   for (const name of Object.keys(entry)) {
     fs.accessSync(path.join(directory, "dist", `${name}.js`));
   }
+  // Version consumers need the built source identity without making this
+  // disposable generation a competing OpenClaw installation root.
+  const buildInfo = `${JSON.stringify(resolveBuildInfo({ rootDir: root }), null, 2)}\n`;
+  fs.writeFileSync(path.join(outDir, "build-info.json"), buildInfo, { flag: "wx" });
+  outputs["build-info.json"] = hashVitestWorkerArtifact(buildInfo);
   const sortedInputs = Object.fromEntries(
     Object.entries(inputs).toSorted(([a], [b]) => a.localeCompare(b)),
   );

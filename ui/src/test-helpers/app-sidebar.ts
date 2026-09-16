@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, vi } from "vitest";
 import type {
-  PreservedSessionWorktree,
   SessionCatalogPullRequestSummary,
   SessionsCatalogListResult,
   SessionsPatchManyParams,
@@ -21,6 +20,7 @@ import type { ApplicationOverlays } from "../app/overlays-types.ts";
 import type { AppSidebarSessionNavigationElement } from "../components/app-sidebar-session-navigation.ts";
 import type { SessionDataController } from "../components/session-data-controller.ts";
 import type { SessionOrganizerController } from "../components/session-organizer-controller.ts";
+import type { ContextualSidebar } from "../components/sidebar-context-state.ts";
 import type { AgentIdentityCapability } from "../lib/agents/identity.ts";
 import {
   createSessionCapability,
@@ -29,6 +29,7 @@ import {
 } from "../lib/sessions/index.ts";
 import { reconcileSessionHistory } from "../lib/sessions/reconcile.ts";
 import { createSessionArchiveState } from "../lib/sessions/session-archive-state.ts";
+import { createSessionRowProvenance } from "../lib/sessions/session-row-provenance.ts";
 import {
   createSidebarContextLifecycle,
   disposeSidebarContextLifecycles,
@@ -38,6 +39,7 @@ import {
   hiddenScopeUpgradeCapability,
 } from "./application-context.ts";
 import { gatewayHelloForMethods, SESSION_MUTATION_TEST_METHODS } from "./gateway-methods.ts";
+import { settleLitElements } from "./lit-settle.ts";
 import { createStorageMock } from "./storage.ts";
 
 // The attention widget owns independent health RPC tests. Keep those requests
@@ -58,6 +60,8 @@ export type SidebarLifecycleState = HTMLElement & {
   basePath: string;
   hiddenSessionCatalogIds: ReadonlySet<string>;
   activeRouteId?: string;
+  contextualSidebar?: ContextualSidebar;
+  router?: AppSidebarSessionNavigationElement["router"];
   enabledRouteIds?: readonly NavigationRouteId[];
   connected: boolean;
   offline: boolean;
@@ -246,6 +250,7 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
   let canonicalListRevision = 1;
   const listeners = new Set<(next: SessionState) => void>();
   const pullRequestSummaries = new Map<string, SessionCatalogPullRequestSummary>();
+  const archiveProvenance = createSessionRowProvenance();
   const archiveState = createSessionArchiveState(
     (key) => state.result?.sessions.find((row) => row.key === key),
     () => {
@@ -253,6 +258,7 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
         listener(state);
       }
     },
+    archiveProvenance,
   );
   const groupsPut = vi.fn(() => Promise.resolve<SessionGroupMutationResult>("completed"));
   const groupsRename = vi.fn(() => Promise.resolve<SessionGroupMutationResult>("completed"));
@@ -264,17 +270,17 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
   const deleteSession = vi.fn((): Promise<SessionDeleteResult> =>
     Promise.resolve({ deleted: false }),
   );
-  const deleteMany = vi.fn(() =>
+  const deleteMany = vi.fn<SessionCapability["deleteMany"]>(() =>
     Promise.resolve({
-      deleted: [] as string[],
-      errors: [] as string[],
-      preservedWorktrees: [] as PreservedSessionWorktree[],
+      deleted: [],
+      errors: [],
+      preservedWorktrees: [],
     }),
   );
   const refresh = vi.fn((_options?: Parameters<SessionCapability["refresh"]>[0]) =>
     Promise.resolve(),
   );
-  const refreshReplacement = vi.fn(() => Promise.resolve());
+  const refreshReplacement = vi.fn(() => Promise.resolve(state.result));
   const patchMany = vi.fn(
     async (
       targets: SessionsPatchManyParams["targets"],
@@ -415,6 +421,8 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
       scopedSessions!.inheritRow(...args),
     projectRows: (rows: readonly GatewaySessionRow[]) => scopedSessions!.projectRows(rows),
     refresh,
+    invalidate: (...args: Parameters<SessionCapability["invalidate"]>) =>
+      scopedSessions!.invalidate(...args),
     refreshReplacement,
     subscribeMessages,
     unsubscribeMessages,
@@ -503,12 +511,13 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
     unsubscribeMessages,
     publish,
     publishList(statePatch: Partial<SessionState>) {
+      canonicalListRevision += 1;
       for (const row of statePatch.result?.sessions ?? []) {
+        archiveProvenance.observeReadRow(row, canonicalListRevision, statePatch.agentId);
         if (row.archived === true || archiveState.visibility(row.key) === "archived") {
           archiveState.observe(row.key, row.archived === true, row);
         }
       }
-      canonicalListRevision += 1;
       publish(statePatch);
     },
   };
@@ -702,8 +711,12 @@ export function setupSidebarTest() {
       modal.dispatchEvent(new CustomEvent("modal-cancel", { cancelable: true }));
     }
     await vi.dynamicImportSettled();
+    const sidebars =
+      document.body.querySelectorAll<AppSidebarSessionNavigationElement>("openclaw-app-sidebar");
     document.body.replaceChildren();
     disposeSidebarContextLifecycles();
+    // Disconnection queues Lit updates; finish them before retiring the DOM globals.
+    await settleLitElements(sidebars);
     if (originalLocalStorage) {
       Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
     } else {

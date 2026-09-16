@@ -3,6 +3,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import type { findModelCatalogEntry } from "../agents/model-catalog-lookup.js";
+import type { selectModelCatalogRuntimeEntry } from "../agents/model-catalog-view.js";
 import type { resolveSessionModelRef } from "../agents/session-model-ref.js";
 import type { SubagentRunReadIndex } from "../agents/subagents/registry/subagent-registry-read.js";
 import type { SubagentRunReadRecord } from "../agents/subagents/registry/subagent-registry.types.js";
@@ -10,6 +11,7 @@ import type { ThinkLevel, listThinkingLevelOptions } from "../auto-reply/thinkin
 import type { SessionAcpMeta, SessionEntry } from "../config/sessions.js";
 import type { SessionEntryReadSource } from "../config/sessions/session-accessor.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
+import type { ProjectedAgentRunIndex } from "../infra/agent-run-registry.js";
 import type { ModelCostConfig } from "../utils/usage-format.js";
 import type { CurrentUserProfileDisplay } from "./current-user-profile-display.js";
 
@@ -26,10 +28,13 @@ export type GatewaySessionModelSource = {
 };
 
 export type SessionListRowContext = {
+  workerPlacementEnvironment?: NodeJS.ProcessEnv;
+  projectedAgentRuns?: ProjectedAgentRunIndex;
   subagentRuns: SubagentRunReadIndex<SubagentRunReadRecord>;
   selectedModelByOverrideRef: Map<string, ReturnType<typeof resolveSessionModelRef>>;
   thinkingMetadataByModelRef: Map<string, GatewayModelThinkingProfile>;
   findModelCatalogEntry: typeof findModelCatalogEntry;
+  selectModelCatalogRuntimeEntry: typeof selectModelCatalogRuntimeEntry;
   displayModelIdentityByKey: Map<string, { provider?: string; model?: string }>;
   modelCostConfigByModelRef: Map<string, ModelCostConfig | undefined>;
   userProfileIdentityById: Map<string, SessionActorProfileIdentity | undefined>;

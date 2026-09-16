@@ -27,6 +27,35 @@ pnpm test:perf:profile:runner -- --output-dir .artifacts/profiles -- --config te
 
 Native imports also need the plugin's declared dependencies and a resolvable `openclaw` host package. The profiler does not install or link dependencies: missing dependencies remain import failures in the JSON report and cause a nonzero exit.
 
+### Zod schema compilation
+
+Compile individual schemas only after measuring a repeated validation path.
+Use the pinned Zod package's `z.compile(schema)` API and retain the compiled
+schema at its existing owner. The `zod/compile` side-effect import enables a
+process-wide hook and is unsuitable for a selective optimization.
+
+Nested tool activity validation compiles its schema on the first matching read
+or creation and reuses it across Gateway turns. Ordinary transcript rows bypass
+that compilation. Config, transcript entry, and browser relay schemas retain
+their existing parsers because their measured caller costs did not justify
+compilation.
+
+Measure compilation and the first operation separately from warmed operations.
+Compare valid, invalid, and mixed inputs through the actual caller, including
+any JSON decoding, copying, or context construction it performs. For predicates
+that discard parsed output, compare ordinary `safeParse(...).success`,
+`z.validate(schema, input)`, and validation with a compiled schema; avoiding
+error allocation can help independently of compilation.
+
+Keep schemas shared with the strict-CSP Control UI uncompiled: explicit
+compilation attempts code generation even when `jitless` is set. Reusing a
+stable schema across calls is a separate optimization that needs no compiler.
+
+Keep refinement and transform callbacks pure: an invalid compiled parse can
+fall back to the runtime parser and execute those callbacks twice. Default
+compilation preserves runtime fallback for unsupported schemas; async parsing
+and encoding keep their existing runtime behavior.
+
 ## Benchmarks
 
 <Accordion title="Session history (scripts/bench-session-history.ts)">
@@ -168,6 +197,28 @@ every session has started its first turn. `--tool-events` requests a tool call
 on every turn, including follow-ups. The per-run timeout still bounds the whole
 workload. Health/control sampling is capped at 2,048 samples, while heap
 sampling continues until the full workload finishes.
+
+`--agent-count N` distributes the same session inventory round-robin across
+1–128 configured agents. It defaults to one agent and cannot exceed the larger
+of `--session-count` and `--concurrency`. Increasing it does not add sessions or
+turns. Multi-agent runs use `main`, `bench-agent-2`, and subsequent IDs with
+separate workspaces. `--workspace-fanout` still assigns a distinct workspace per
+session. Separate browser click targets remain on `main`.
+
+For example, `--agent-count 32 --session-count 1000 --concurrency 32
+--turns-per-session 3` seeds 1,000 sessions and completes 96 turns, three per
+agent. Before the load window and its CPU/allocation profiling, multi-agent runs
+require each agent's current published configured model through `models.list`,
+then verify its complete seeded inventory and reported per-agent SQLite path
+through all pages of scoped `sessions.list` reads. This checks the Gateway's
+reported storage route; it does not independently inspect database files.
+`agentCoverage.beforeLoad` retains the model response and every session page.
+`activeTurnAgentIds` and
+`completedTurns` distinguish the agents handling turns from the configured
+roster: 128 configured agents with 16 parallel sessions does not mean 128 agents
+handled turns. Multi-agent history probe rows retain `sessionKey`, which maps
+successful requests to the independently verified store inventory. These extra
+setup reads do not run in the default one-agent case.
 
 Use `--probe-rounds N` for allocation comparisons with equal probe work. It
 attempts exactly N sampler rounds and N history bursts per configured history

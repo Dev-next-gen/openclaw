@@ -5,7 +5,7 @@ import { clearNodeSqliteKyselyCacheForDatabase } from "../../src/infra/kysely-sy
 /**
  * Count SQLite query executions per caller-defined bucket. Prepared-statement
  * caching (src/infra/kysely-sync.ts) reuses statements across calls, so
- * counting `prepare` invocations undercounts; this wraps `get`, `iterate`, and `run` on matching
+ * counting `prepare` invocations undercounts; this wraps `all`, `get`, `iterate`, and `run` on matching
  * statements and clears the statement cache at attach so statements cached
  * before the spy cannot bypass it.
  */
@@ -17,17 +17,21 @@ export function trackSqliteStatementExecutions<Key extends string>(
   counts: Record<Key, number>;
   rowCounts: Record<Key, number>;
   textBytes: Record<Key, number>;
+  blobBytes: Record<Key, number>;
   restore: () => void;
 } {
   clearNodeSqliteKyselyCacheForDatabase(db);
   const counts = Object.fromEntries(keys.map((key) => [key, 0])) as Record<Key, number>;
   const rowCounts = Object.fromEntries(keys.map((key) => [key, 0])) as Record<Key, number>;
   const textBytes = Object.fromEntries(keys.map((key) => [key, 0])) as Record<Key, number>;
+  const blobBytes = Object.fromEntries(keys.map((key) => [key, 0])) as Record<Key, number>;
   const observeRow = (key: Key, row: Record<string, unknown>) => {
     rowCounts[key] += 1;
     for (const value of Object.values(row)) {
       if (typeof value === "string") {
         textBytes[key] += Buffer.byteLength(value);
+      } else if (ArrayBuffer.isView(value)) {
+        blobBytes[key] += value.byteLength;
       }
     }
   };
@@ -53,6 +57,16 @@ export function trackSqliteStatementExecutions<Key extends string>(
           return row;
         },
       });
+      statement.all = new Proxy(statement.all.bind(statement), {
+        apply(all, _receiver, args) {
+          counts[key] += 1;
+          const rows = all(...args);
+          for (const row of rows) {
+            observeRow(key, row);
+          }
+          return rows;
+        },
+      });
       const originalIterate = statement.iterate.bind(statement) as (
         ...args: unknown[]
       ) => ReturnType<StatementSync["iterate"]>;
@@ -74,6 +88,7 @@ export function trackSqliteStatementExecutions<Key extends string>(
     counts,
     rowCounts,
     textBytes,
+    blobBytes,
     restore: () => {
       clearNodeSqliteKyselyCacheForDatabase(db);
       prepareSpy.mockRestore();

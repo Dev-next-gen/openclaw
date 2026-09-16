@@ -50,7 +50,7 @@ import { HOME_PANEL_TOGGLE_EVENT } from "./panel-toggle-contract.ts";
 import { personActivityLink, personActivityRouting } from "./person-activity-link.ts";
 import {
   renderSessionAttentionIcon,
-  sessionAttentionSubtitle,
+  sessionAttentionTooltipLabel,
 } from "./session-attention-presentation.ts";
 import { renderSessionGlyph, renderSessionUnreadBadge } from "./session-glyph.ts";
 import {
@@ -256,7 +256,7 @@ export function renderAppSidebarHomeRow(host: AppSidebarRenderHost) {
   const mainKey = host.selectedAgentMainSessionKey(agentId);
   const mainRow = host.mainSessionRow(agentId);
   const attention = host.resolveHomeSessionAttention(mainKey, mainRow);
-  const attentionLabel = sessionAttentionSubtitle(attention);
+  const attentionLabel = sessionAttentionTooltipLabel(attention);
   const outboxAttentionCount = host.outboxAttentionCountForSession(mainKey);
   const active =
     isSessionRouteId(host.activeRouteId) &&
@@ -277,7 +277,7 @@ export function renderAppSidebarHomeRow(host: AppSidebarRenderHost) {
     content:
       attention.kind === "none"
         ? html`<span class="nav-item__icon" aria-hidden="true">${icons.home}</span>`
-        : renderSessionAttentionIcon(attention),
+        : renderSessionAttentionIcon(attention, true),
     running,
     queued,
     badge: unread && !running ? renderSessionUnreadBadge() : nothing,
@@ -306,11 +306,7 @@ export function renderAppSidebarHomeRow(host: AppSidebarRenderHost) {
         host.openMainSession(agentId);
       }}
     >
-      ${
-        attentionLabel
-          ? html`<openclaw-tooltip .content=${attentionLabel}>${homeGlyph}</openclaw-tooltip>`
-          : homeGlyph
-      }
+      ${homeGlyph}
       <span class="nav-item__text">${t("nav.home")}</span>
       ${
         outboxAttentionCount > 0 || hasComposerDraft
@@ -500,7 +496,7 @@ export function renderAppSidebarFooterBar(host: AppSidebarRenderHost) {
       >
         <openclaw-viewer-avatar .user=${avatarUser} variant="footer"></openclaw-viewer-avatar>
         <span class="sidebar-identity-card__text">
-          <span class="sidebar-identity-card__name" title=${selfLabel}>${selfLabel}</span>
+          <span class="sidebar-identity-card__name">${selfLabel}</span>
           ${
             gateway
               ? html`<span class="sidebar-identity-card__gateway" aria-hidden="true">

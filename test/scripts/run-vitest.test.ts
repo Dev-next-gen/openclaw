@@ -753,6 +753,10 @@ registerHooks({resolve(specifier, context, nextResolve) {
       ["run", "test/scripts/run-vitest.test.ts", "-t", "src"],
       ["test/scripts/run-vitest.test.ts", "--", "-t", "src"],
     ],
+    [
+      ["run", "test/scripts/run-vitest.test.ts", "--repeats", "19"],
+      ["test/scripts/run-vitest.test.ts", "--", "--repeats", "19"],
+    ],
   ])("keeps option value %j out of project target classification", (argv, expected) => {
     expect(resolveTestProjectsDelegationArgs(argv)).toEqual(expected);
   });
@@ -865,6 +869,14 @@ registerHooks({resolve(specifier, context, nextResolve) {
       null,
     ],
     [["ui/src/**/*.browser.test.ts"], null],
+    [["ui/src/components/markdown.progress.node.test.ts"], null],
+    [
+      [
+        "ui/src/components/markdown.progress.node.test.ts",
+        "ui/src/components/form-controls.browser.test.ts",
+      ],
+      null,
+    ],
     [["ui/src/components", "ui/src/pages/chat/chat-message-markdown.browser.test.ts"], null],
   ])("preserves browser ownership for implicit targets %j", (targets, config) => {
     expect(resolveImplicitVitestArgs(["run", ...targets])).toEqual(

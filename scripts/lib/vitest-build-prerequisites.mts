@@ -26,6 +26,15 @@ export type VitestRuntimeTestSelection = {
 // while unrelated workers may still be importing its public plugin facades.
 const runtimeConsumers = [
   {
+    file: "src/gateway/setup-inference.first-signin.integration.test.ts",
+    configs: [
+      "test/vitest/vitest.gateway-database-workers.config.ts",
+      "test/vitest/vitest.gateway.config.ts",
+    ],
+    mode: "runtime",
+    dir: "src/gateway",
+  },
+  {
     file: "src/plugins/loader.test.ts",
     configs: ["test/vitest/vitest.bundled.config.ts"],
     mode: "runtime",
@@ -49,14 +58,18 @@ const runtimeConsumers = [
     mode: "runtime" as const,
     dir: "extensions",
   })),
-  ...["src/node-host/linux-node-plugin.integration.test.ts", "src/entry.memory-json.test.ts"].map(
-    (file) => ({
-      file,
-      configs: ["test/vitest/vitest.unit.config.ts", "test/vitest/vitest.unit-src.config.ts"],
-      mode: "runtime" as const,
-      dir: "",
-    }),
-  ),
+  {
+    file: "src/node-host/linux-node-plugin.integration.test.ts",
+    configs: ["test/vitest/vitest.unit.config.ts", "test/vitest/vitest.unit-src.config.ts"],
+    mode: "runtime",
+    dir: "",
+  },
+  {
+    file: "src/entry.memory-json.test.ts",
+    configs: ["test/vitest/vitest.infra.config.ts"],
+    mode: "runtime",
+    dir: "",
+  },
   ...[
     "test/openai-model-discovery-auth-order.test.ts",
     "test/plugin-npm-runtime-build.test.ts",
@@ -245,6 +258,7 @@ const runtimeConsumers = [
     "src/gateway/gateway-concurrent-streams.test.ts",
     "src/gateway/gateway-cron-process-identity.windows.test.ts",
     "src/gateway/gateway-route-model-reuse.test.ts",
+    "src/gateway/gateway-ssh-upload-signal.test.ts",
   ].map((file) => ({
     file,
     configs: ["test/vitest/vitest.gateway-core.config.ts", "test/vitest/vitest.gateway.config.ts"],

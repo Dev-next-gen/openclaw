@@ -65,6 +65,7 @@ export async function startGatewayCoreRuntime(input: {
   loadGatewayModelCatalog: typeof import("./server-model-catalog.js").loadGatewayModelCatalog;
   loadGatewayModelCatalogSnapshot: typeof import("./server-model-catalog.js").loadGatewayModelCatalogSnapshot;
   readPreparedGatewayModelCatalog: typeof import("./server-model-catalog.js").readPreparedGatewayModelCatalog;
+  readPreparedGatewayModelCatalogBatch: typeof import("./server-model-catalog.js").readPreparedGatewayModelCatalogBatch;
 }) {
   const {
     lifecycleRuntime: runtime,
@@ -78,6 +79,7 @@ export async function startGatewayCoreRuntime(input: {
     loadGatewayModelCatalog,
     loadGatewayModelCatalogSnapshot,
     readPreparedGatewayModelCatalog,
+    readPreparedGatewayModelCatalogBatch,
   } = input;
   const {
     minimalTestGateway,
@@ -311,6 +313,8 @@ export async function startGatewayCoreRuntime(input: {
         log,
         chatAbortControllers,
         hasRunAbortMarker: (runId) => chatRunState.hasAbortMarker(runId),
+        getNativeApprovalRouteCoordinator: () =>
+          runtime.gatewayInstanceRuntimeRef.current?.nativeApprovals.routeCoordinator,
         // Grant terms freeze at mint. This reads the live config so a policy
         // change applies to grants minted after it, never retroactively.
         resolveGrantDefaultExpiresAtMs: (nowMs) => {
@@ -539,6 +543,7 @@ export async function startGatewayCoreRuntime(input: {
     loadGatewayModelCatalog,
     loadGatewayModelCatalogSnapshot,
     readPreparedGatewayModelCatalog,
+    readPreparedGatewayModelCatalogBatch,
     getPluginMetadataSnapshot: () => runtime.pluginMetadataSnapshot,
   };
 }

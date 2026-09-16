@@ -170,25 +170,29 @@ describe("scripts/lib/docker-e2e-plan", () => {
     return { sha: git("rev-parse", "HEAD"), git };
   }
 
-  it.each(["base", "msteams-polls"])("admits the current frozen catalog for %s", (scenario) => {
-    const root = tempDirs.make("openclaw-current-inert-catalog-");
-    const relative = "scripts/e2e/lib/upgrade-survivor/assertions.mjs";
-    mkdirSync(dirname(join(root, relative)), { recursive: true });
-    copyFileSync(relative, join(root, relative));
-    copyFileSync("package.json", join(root, "package.json"));
-    const { sha } = commitTarget(root);
-    const plan = planFor({
-      selectedLaneNames: ["published-upgrade-survivor"],
-      upgradeSurvivorBaselines: "2026.9.4",
-      upgradeSurvivorScenarios: scenario,
-      upgradeSurvivorTargetRoot: root,
-      frozenTarget: { mode: "inert", source: createFrozenTargetSource(root, sha) },
-    });
-    expect(plan.lanes.map((lane) => lane.name)).toEqual([
-      `published-upgrade-survivor-2026.9.4${scenario === "base" ? "" : `-${scenario}`}`,
-    ]);
-    expect(plan.omittedUnsupportedLanes).toEqual([]);
-  });
+  it.each(["base", "msteams-polls", "missing-configured-plugin-migration"])(
+    "admits the current frozen catalog for %s",
+    (scenario) => {
+      const root = tempDirs.make("openclaw-current-inert-catalog-");
+      const relative = "scripts/e2e/lib/upgrade-survivor/assertions.mjs";
+      mkdirSync(dirname(join(root, relative)), { recursive: true });
+      copyFileSync(relative, join(root, relative));
+      copyFileSync("package.json", join(root, "package.json"));
+      const { sha } = commitTarget(root);
+      const baseline = scenario === "missing-configured-plugin-migration" ? "2026.9.2" : "2026.9.4";
+      const plan = planFor({
+        selectedLaneNames: ["published-upgrade-survivor"],
+        upgradeSurvivorBaselines: baseline,
+        upgradeSurvivorScenarios: scenario,
+        upgradeSurvivorTargetRoot: root,
+        frozenTarget: { mode: "inert", source: createFrozenTargetSource(root, sha) },
+      });
+      expect(plan.lanes.map((lane) => lane.name)).toEqual([
+        `published-upgrade-survivor-${baseline}${scenario === "base" ? "" : `-${scenario}`}`,
+      ]);
+      expect(plan.omittedUnsupportedLanes).toEqual([]);
+    },
+  );
 
   it("keeps admission inert even when frozen omissions authorize executable legacy planning", () => {
     const root = tempDirs.make("openclaw-inert-catalog-");
@@ -1405,6 +1409,29 @@ await import('./scripts/check-docker-e2e-boundaries.mts');`,
           upgradeSurvivorScenarios: alias,
         }).lanes.map((lane) => lane.name),
       ).toContain("published-upgrade-survivor-2026.6.34-legacy-operator-state");
+    }
+  });
+
+  it("pins opt-in Workshop Doctor recovery to published 9.4 without credentials", () => {
+    const plan = planFor({
+      selectedLaneNames: ["published-upgrade-survivor"],
+      upgradeSurvivorBaselines: "2026.9.3 2026.9.4 2026.9.5",
+      upgradeSurvivorScenarios: "workshop-doctor-recovery",
+    });
+    const name = "published-upgrade-survivor-2026.9.4-workshop-doctor-recovery";
+    expect(plan.lanes.map(summarizeLane)).toEqual([
+      publishedUpgradeSurvivorLane(name, "openclaw@2026.9.4", "workshop-doctor-recovery"),
+    ]);
+    expect(plan.requiredPrepublishPluginPackages).toEqual([]);
+    expect(plan.credentials).toEqual([]);
+    for (const alias of ["reported-issues", "far-reaching"]) {
+      expect(
+        planFor({
+          selectedLaneNames: ["published-upgrade-survivor"],
+          upgradeSurvivorBaselines: "2026.9.4",
+          upgradeSurvivorScenarios: alias,
+        }).lanes.map((lane) => lane.name),
+      ).not.toContain(name);
     }
   });
 

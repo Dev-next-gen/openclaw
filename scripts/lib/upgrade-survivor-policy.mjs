@@ -3,6 +3,7 @@ const UPGRADE_SURVIVOR_SCENARIOS = Object.freeze([
   "msteams-polls",
   "abandoned-update",
   "legacy-operator-state",
+  "workshop-doctor-recovery",
   "mobile-pairing-reconnect",
   "acpx-openclaw-tools-bridge",
   "feishu-channel",
@@ -10,6 +11,7 @@ const UPGRADE_SURVIVOR_SCENARIOS = Object.freeze([
   "channel-post-core-restore",
   "plugin-deps-cleanup",
   "configured-plugin-installs",
+  "missing-configured-plugin-migration",
   "custom-plugin-siblings",
   "stale-source-plugin-shadow",
   "prerelease-plugin-registry",
@@ -38,7 +40,11 @@ const scenarioMinimumBaselines = new Map([
 
 // These black-box scenarios are implemented entirely by the current trusted
 // release harness and treat the selected tree only as the package under test.
-const TRUSTED_HARNESS_OWNED_SCENARIOS = new Set(["mobile-pairing-reconnect", "abandoned-update"]);
+const TRUSTED_HARNESS_OWNED_SCENARIOS = new Set([
+  "mobile-pairing-reconnect",
+  "abandoned-update",
+  "workshop-doctor-recovery",
+]);
 
 export function isTrustedHarnessOwnedUpgradeSurvivorScenario(scenario) {
   return TRUSTED_HARNESS_OWNED_SCENARIOS.has(scenario);
@@ -53,6 +59,8 @@ const aggregateScenarios = UPGRADE_SURVIVOR_SCENARIOS.filter(
   (scenario) =>
     scenario !== "msteams-polls" &&
     scenario !== "abandoned-update" &&
+    scenario !== "missing-configured-plugin-migration" &&
+    scenario !== "workshop-doctor-recovery" &&
     scenario !== "mobile-pairing-reconnect" &&
     scenario !== "watchos-direct-node" &&
     scenario !== "prerelease-plugin-registry" &&
@@ -148,8 +156,11 @@ function comparePublishedReleaseVersion(a, b) {
 
 export function supportsUpgradeSurvivorScenarioAtBaseline(scenario, baselineSpec) {
   const version = parsePublishedReleaseVersion(baselineSpec);
-  if (scenario === "abandoned-update") {
+  if (scenario === "abandoned-update" || scenario === "missing-configured-plugin-migration") {
     return baselineSpec === "openclaw@2026.9.2";
+  }
+  if (scenario === "workshop-doctor-recovery") {
+    return baselineSpec === "openclaw@2026.9.4";
   }
   const minimumBaseline = scenarioMinimumBaselines.get(scenario);
   return (

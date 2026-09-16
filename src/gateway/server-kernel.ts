@@ -29,6 +29,8 @@ type LoadGatewayModelCatalogSnapshot =
   typeof import("./server-model-catalog.js").loadGatewayModelCatalogSnapshot;
 type ReadPreparedGatewayModelCatalog =
   typeof import("./server-model-catalog.js").readPreparedGatewayModelCatalog;
+type ReadPreparedGatewayModelCatalogBatch =
+  typeof import("./server-model-catalog.js").readPreparedGatewayModelCatalogBatch;
 type LoadPreparedGatewayModelCatalogSnapshot =
   typeof import("./server-model-catalog.js").loadPreparedGatewayModelCatalogSnapshot;
 type ReadPreparedGatewayModelCatalogOwnerSnapshot =
@@ -94,6 +96,12 @@ const loadGatewayModelCatalogSnapshot: LoadGatewayModelCatalogSnapshot = async (
 const readPreparedGatewayModelCatalog: ReadPreparedGatewayModelCatalog = async (...args) => {
   const mod = await loadGatewayModelCatalogModule();
   return mod.readPreparedGatewayModelCatalog(...args);
+};
+const readPreparedGatewayModelCatalogBatch: ReadPreparedGatewayModelCatalogBatch = async (
+  ...args
+) => {
+  const mod = await loadGatewayModelCatalogModule();
+  return mod.readPreparedGatewayModelCatalogBatch(...args);
 };
 const loadPreparedGatewayModelCatalogSnapshot: LoadPreparedGatewayModelCatalogSnapshot = async (
   ...args
@@ -249,6 +257,7 @@ async function createGatewayKernelWithSdkHost(
         loadGatewayModelCatalog,
         loadGatewayModelCatalogSnapshot,
         readPreparedGatewayModelCatalog,
+        readPreparedGatewayModelCatalogBatch,
       }),
     );
     if (!options.deferEarlyRuntime) {
@@ -276,7 +285,9 @@ async function createGatewayKernelWithSdkHost(
       kernelState?.mentionInbox.dispose();
       await sdkResourceHost.drainWork();
       const cleanupErrors: unknown[] = [];
-      const releaseMetadata = async (retireRegistry?: () => Promise<void>) => {
+      const releaseMetadata = async (
+        retireRegistry?: Parameters<typeof pluginMetadata.close>[1],
+      ) => {
         try {
           await sdkResourceHost.close();
         } catch (cleanupError) {
@@ -285,7 +296,7 @@ async function createGatewayKernelWithSdkHost(
           }
           cleanupErrors.push(cleanupError);
         }
-        await pluginMetadata.close(async (retire) => {
+        return pluginMetadata.close(async (retire) => {
           await closePreparedModelRuntimeSnapshots();
           await retire();
           for (const cleanup of [clearGatewayAgentCliShim, clearSecretsRuntimeSnapshotState]) {

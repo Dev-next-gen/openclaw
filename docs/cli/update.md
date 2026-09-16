@@ -60,6 +60,20 @@ openclaw --update
 `openclaw --update` rewrites to `openclaw update` (useful for shells and
 launcher scripts).
 
+Invalid or unreadable configuration reports `invalid-config` before database
+schema inspection. The diagnostic identifies invalid fields and recommends
+`openclaw doctor --fix`, followed by correcting any remaining errors. A dry run
+keeps this guidance in its JSON `notes` without changing the configuration.
+Guided recovery recognizes the saved config failure after a later successful
+update and still verifies the installed runtime and Gateway readiness.
+
+The 2026.9.4 updater reports this condition as `database-schema-preflight` and
+can show `mode: unknown` even after resolving an npm target. Before another
+update or dry run replaces the latest history, run `openclaw update status --json`
+and inspect `lastRun.origin.nextAction` and `lastRun.target` for the recorded
+reason and target. A candidate release cannot repair an installed updater that
+refuses before staging it; correct the configuration before retrying.
+
 Update admission recognizes orphan `task_delivery_state` rows whose parent tasks
 are missing as repairable. When it can acquire Doctor's ownership fences, it runs
 the same [preservation-first recovery](/reference/database-schemas/integrity-and-recovery#doctor-reports-orphan-task-delivery-rows)
@@ -146,6 +160,14 @@ changes bind the destination CLI separately while retaining the original update 
 restart/stop and detached restart or Windows Startup-folder fallbacks that cannot
 retain this ownership. Ordinary user-invoked `openclaw gateway` commands keep their
 existing behavior.
+
+On Windows, capability probes stay alive until the updater finishes binding their
+process identity. If Windows cannot supply a process creation timestamp, the
+updater retains the identity established by the live parent or uses the child's
+recorded launcher identity, with a warning in the run history and diagnostic logs.
+A different observed identity still refuses the
+handoff. Scheduled Tasks using `InteractiveToken` remain supported; this does not
+require storing a task password.
 
 This target-CLI protection does not cover every Doctor or plugin child, the
 in-process service preparation before package mutation, or the separate

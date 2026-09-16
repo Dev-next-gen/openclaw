@@ -15,7 +15,7 @@ import { inspectDiscordAccount } from "./account-inspect.js";
 import { createDiscordActionGate, listDiscordAccountIds } from "./accounts.js";
 import { coerceDiscordComponentParam, readDiscordComponentSpec } from "./components.js";
 import { withDiscordInboundEventDeliveryMetadata } from "./inbound-event-delivery.js";
-import { normalizeDiscordMessagingTarget } from "./normalize.js";
+import { matchesDiscordToolContextTarget, normalizeDiscordMessagingTarget } from "./normalize.js";
 import { isTrustedRequesterGuildAdminAction } from "./trusted-requester-actions.js";
 
 const localExecutionActions = new Set<ChannelMessageActionName>([
@@ -67,11 +67,10 @@ function matchesCurrentDiscordThread(params: {
   if (!requestedTarget) {
     return false;
   }
-  return [params.toolContext.currentChannelId, params.toolContext.currentMessagingTarget].some(
-    (currentTarget) =>
-      currentTarget !== undefined &&
-      normalizeDiscordMessagingTarget(currentTarget) === requestedTarget,
-  );
+  return matchesDiscordToolContextTarget({
+    target: requestedTarget,
+    toolContext: params.toolContext,
+  });
 }
 
 const loadDiscordChannelActionsRuntime = createLazyRuntimeModule(
@@ -269,6 +268,21 @@ function describeDiscordMessageTool({
 
 export const discordMessageActions: ChannelMessageActionAdapter = {
   providerOwnedReadGates: true,
+  readAuthorityActions: [
+    "read",
+    "search",
+    "reactions",
+    "list-pins",
+    "thread-list",
+    "channel-info",
+    "permissions",
+    "member-info",
+    "role-info",
+    "emoji-list",
+    "channel-list",
+    "voice-status",
+    "event-list",
+  ],
   // Credential-only Discord actions run in the gateway when one is available.
   // Send/file-style actions stay local because core owns their thread, media,
   // component, and client-local payload semantics.
@@ -358,6 +372,7 @@ export const discordMessageActions: ChannelMessageActionAdapter = {
     inboundEventKind,
     conversationReadOrigin,
     reply,
+    assertDirectAdapterHandoff,
   }) => {
     return await (
       await loadDiscordChannelActionsRuntime()
@@ -377,6 +392,7 @@ export const discordMessageActions: ChannelMessageActionAdapter = {
       ...(requesterAccountId ? { requesterAccountId } : {}),
       ...(conversationReadOrigin ? { conversationReadOrigin } : {}),
       ...(reply ? { reply } : {}),
+      ...(assertDirectAdapterHandoff ? { assertDirectAdapterHandoff } : {}),
     });
   },
 };

@@ -4,6 +4,7 @@ import { Directive } from "lit/directive.js";
 import { keyed } from "lit/directives/keyed.js";
 import { repeat } from "lit/directives/repeat.js";
 import { normalizeBasePath } from "../../../app-route-paths.ts";
+import { fetchControlUiResource, subscribeBrowserAuthRestored } from "../../../app/browser-http.ts";
 import { t } from "../../../i18n/index.ts";
 import {
   reserveExternalWindowForDeferredNavigation,
@@ -26,6 +27,7 @@ import {
 } from "./chat-message-local-media.ts";
 import {
   cacheManagedImageBlob,
+  clearChatMediaResourceRefresh,
   isChatMediaResourceCurrent,
   notifyChatMediaResourceSubscribers,
   observeChatMediaResource,
@@ -66,7 +68,11 @@ class MessageImageResourceDirective extends AsyncDirective {
   private presentationKey = Symbol("image-presentation");
   private retained: RetainedInlineImage | { status: "unavailable" } | undefined;
   // Resource updates stay in this part; row ResizeObserver owns layout changes.
-  private readonly requestUpdate = () => this.refreshImage();
+  private readonly refreshImage = () => {
+    if (this.isConnected && this.image) {
+      this.setValue(this.render(this.image, this.options));
+    }
+  };
   private readonly onSettled = (event: Event, source: string) => {
     // A removed IMG may finish after denial; it no longer owns displayed pixels.
     const element = event.currentTarget;
@@ -118,13 +124,13 @@ class MessageImageResourceDirective extends AsyncDirective {
         this.element = undefined;
         this.presentationKey = Symbol("image-presentation");
       }
-      releaseChatMediaResourceSubscriber(this.requestUpdate);
+      releaseChatMediaResourceSubscriber(this.refreshImage);
     }
     this.image = image;
     this.options = options;
     if (!this.isConnected) {
       this.releaseRetainedImage();
-      releaseChatMediaResourceSubscriber(this.requestUpdate);
+      releaseChatMediaResourceSubscriber(this.refreshImage);
       return noChange;
     }
     const onRequestUpdate = options?.onRequestUpdate;
@@ -133,12 +139,12 @@ class MessageImageResourceDirective extends AsyncDirective {
     // callback changes without discarding its loaded resource.
     if (onRequestUpdate) {
       this.pendingPreview = undefined;
-      observeChatMediaResourceSubscriber(onRequestUpdate, this.requestUpdate);
+      observeChatMediaResourceSubscriber(onRequestUpdate, this.refreshImage);
     } else {
-      releaseChatMediaResourceSubscriber(this.requestUpdate);
+      releaseChatMediaResourceSubscriber(this.refreshImage);
     }
     const subscriptionOptions = onRequestUpdate
-      ? { ...options, onRequestUpdate: this.requestUpdate }
+      ? { ...options, onRequestUpdate: this.refreshImage }
       : options;
     const availability = resolveAssistantAttachmentAvailability(image.url, subscriptionOptions);
     const decodeFailed = this.retained?.status === "unavailable";
@@ -329,7 +335,7 @@ class MessageImageResourceDirective extends AsyncDirective {
                   resolveManagedOutgoingImageResource(
                     image.url,
                     this.options?.onRequestUpdate
-                      ? { ...this.options, onRequestUpdate: this.requestUpdate }
+                      ? { ...this.options, onRequestUpdate: this.refreshImage }
                       : this.options,
                     image.artifactId,
                     "thumbnail",
@@ -360,12 +366,6 @@ class MessageImageResourceDirective extends AsyncDirective {
     this.refreshImage();
   }
 
-  private refreshImage() {
-    if (this.isConnected && this.image) {
-      this.setValue(this.render(this.image, this.options));
-    }
-  }
-
   private present(value: unknown) {
     return html`${keyed(this.presentationKey, value)}`;
   }
@@ -375,7 +375,7 @@ class MessageImageResourceDirective extends AsyncDirective {
     this.element = undefined;
     this.pendingPreview = undefined;
     this.presentationKey = Symbol("image-presentation");
-    releaseChatMediaResourceSubscriber(this.requestUpdate);
+    releaseChatMediaResourceSubscriber(this.refreshImage);
   }
 
   protected override reconnected() {
@@ -538,6 +538,18 @@ function resolveManagedOutgoingImageResource(
     opts?.onRequestUpdate,
     `${variantUrl}::${artifactKey}`,
   );
+  if (resource.subscribers.size > 0 && !resource.releaseAuthRecovery) {
+    resource.releaseAuthRecovery = subscribeBrowserAuthRestored(() => {
+      if (!isChatMediaResourceCurrent(resource) || resource.value !== null) {
+        return;
+      }
+      resource.value = undefined;
+      resource.retryAttempted = false;
+      resource.unavailableAt = undefined;
+      clearChatMediaResourceRefresh(resource);
+      notifyChatMediaResourceSubscribers(resource);
+    });
+  }
   const cached = readManagedImageBlobUrl(cacheKey);
   if (cached) {
     resource.value = cached;
@@ -625,7 +637,7 @@ async function fetchManagedOutgoingImageBlob(
   opts: ImageRenderOptions | undefined,
   artifactId: string | undefined,
   variant: ManagedImageVariant,
-  controller = new AbortController(),
+  controller: AbortController,
 ): Promise<Blob | null> {
   const requesterSessionKey = resolveManagedOutgoingMediaSessionKey(source);
   const artifactDownload =
@@ -653,7 +665,7 @@ async function fetchManagedOutgoingImageBlob(
   try {
     // Root deployments use /api directly; subpath deployments expose the same
     // media route beneath the configured Control UI base path.
-    const response = await fetch(requestUrl, {
+    const response = await fetchControlUiResource(requestUrl, {
       method: "GET",
       headers,
       credentials: "same-origin",

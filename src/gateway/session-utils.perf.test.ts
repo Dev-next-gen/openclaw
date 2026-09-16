@@ -199,6 +199,120 @@ describe("session list resolver cache", () => {
     });
   });
 
+  test("bounds row roster lookups and refreshes them across a real row yield", async () => {
+    await withStateDirEnv("openclaw-roster-row-chunks-", async ({ stateDir }) => {
+      resetPluginRuntimeStateForTest();
+      setActivePluginRegistry(createEmptyPluginRegistry());
+      const rosterSize = 32;
+      const rowCount = 80;
+      const ownerId = `agent-${rosterSize - 1}`;
+      const entries = Object.fromEntries(
+        Array.from({ length: rosterSize }, (_, index) => [
+          `agent-${index}`,
+          { identity: { name: `Agent ${index}` }, fastModeDefault: false },
+        ]),
+      );
+      let insideRow = false;
+      let rowReads = 0;
+      const cfg: OpenClawConfig = {
+        agents: {
+          entries: new Proxy(entries, {
+            get(target, key, receiver) {
+              if (insideRow && typeof key === "string" && Object.hasOwn(target, key)) {
+                rowReads++;
+              }
+              return Reflect.get(target, key, receiver);
+            },
+          }),
+          defaults: { model: { primary: "example/roster-model" }, thinkingDefault: "off" },
+        },
+      };
+      resetConfigRuntimeState();
+      setRuntimeConfigSnapshot(cfg);
+      const store = Object.fromEntries(
+        Array.from({ length: rowCount }, (_, index) => [
+          `agent:${ownerId}:dashboard:${index}`,
+          {
+            sessionId: `row-chunk-${index}`,
+            updatedAt: index + 1,
+            createdActor: { type: "agent" as const, id: ownerId },
+          },
+        ]),
+      );
+      const storePath = path.join(stateDir, "sessions.json");
+      const targetsBySessionKey = sessionStoreTargetsFixture({ cfg, store, storePath });
+      const projectionTiming: SessionListProjectionTiming = {
+        prepareSyncMs: 0,
+        rowSyncMs: 0,
+        yieldWaitMs: 0,
+        yieldCount: 0,
+      };
+      let workMs = 0;
+      let projectedRows = 0;
+      let rowsBeforePause = 0;
+      let identityDuringPause: string | undefined;
+      let control: Promise<void> | undefined;
+      const rowChunks = new Set<number>();
+      const clock = vi.spyOn(performance, "now").mockImplementation(() => workMs);
+      const buildRow = rowProjection.buildGatewaySessionRow;
+      const rows = vi
+        .spyOn(rowProjection, "buildGatewaySessionRow")
+        .mockImplementation((params) => {
+          rowChunks.add(projectionTiming.yieldCount);
+          insideRow = true;
+          try {
+            return buildRow(params);
+          } finally {
+            insideRow = false;
+            projectedRows++;
+            workMs++;
+            if (projectedRows === 1) {
+              control = new Promise<void>((resolve) => {
+                setImmediate(() => {
+                  rowsBeforePause = projectedRows;
+                  // Whole-entry replacement exposes facts incorrectly retained across await.
+                  entries[ownerId] = {
+                    identity: { name: "Refreshed owner" },
+                    fastModeDefault: true,
+                  };
+                  identityDuringPause = resolveAgentIdentity(cfg, ownerId)?.name;
+                  resolve();
+                });
+              });
+            }
+          }
+        });
+      try {
+        const result = await listSessionsFromStoreAsync({
+          cfg,
+          store,
+          storePath,
+          targetsBySessionKey,
+          projectionTiming,
+          modelCatalog: [],
+          opts: { limit: rowCount },
+        });
+        expect(result.count).toBe(rowCount);
+        expect(result.totalCount).toBe(rowCount);
+        expect(result.sessions.map((row) => row.key)).toEqual(Object.keys(store).toReversed());
+        expect(rowsBeforePause).toBeGreaterThan(0);
+        expect(rowsBeforePause).toBeLessThan(rowCount);
+        expect(identityDuringPause).toBe("Refreshed owner");
+        expect(result.sessions.map((row) => row.effectiveFastMode)).toEqual(
+          Array.from({ length: rowCount }, (_, index) => index >= rowsBeforePause),
+        );
+        expect(rowChunks.size).toBeGreaterThan(1);
+        // Allow an entry index and both legacy-owner facts per real synchronous row chunk.
+        // Preparation, target setup, and the outside-batch identity probe are not counted.
+        expect(rowReads).toBeLessThanOrEqual(rosterSize * rowChunks.size * 3);
+      } finally {
+        rows.mockRestore();
+        clock.mockRestore();
+        await control;
+      }
+    });
+  });
+
   test("restores an enclosing roster batch after nested selection and failure", () => {
     let ownerEntry = { identity: { name: "Outer owner" } };
     let outerReads = 0;
@@ -282,7 +396,7 @@ describe("session list resolver cache", () => {
             ];
           }),
         );
-        const resolver = vi.spyOn(sessionModelRef, "resolveSessionModelRef");
+        const resolver = vi.spyOn(sessionModelRef, "resolveSessionModelRefCore");
         try {
           const result = await listSessionFixture({
             cfg,
@@ -426,84 +540,53 @@ describe("session list resolver cache", () => {
   test.each([
     {
       name: "cheap rows",
-      rowWorkMs: 0,
-      storeWorkMs: 0,
-      preparationWorkMs: 0,
-      orderingWorkMs: 0,
-      keepRows: true,
-      limit: 100,
       shouldYield: false,
     },
     {
       name: "expensive rows",
       rowWorkMs: 20,
-      storeWorkMs: 0,
-      preparationWorkMs: 0,
-      orderingWorkMs: 0,
-      keepRows: true,
-      limit: 100,
-      shouldYield: true,
     },
     {
       name: "one row after expensive preparation",
-      rowWorkMs: 0,
-      storeWorkMs: 0,
       preparationWorkMs: 1,
-      orderingWorkMs: 0,
-      keepRows: true,
       limit: 1,
-      shouldYield: true,
     },
     {
       name: "an empty page after expensive preparation",
-      rowWorkMs: 0,
-      storeWorkMs: 0,
       preparationWorkMs: 1,
-      orderingWorkMs: 0,
       keepRows: false,
       limit: 1,
-      shouldYield: true,
     },
     {
       name: "one row after combined loading and preparation",
-      rowWorkMs: 0,
       storeWorkMs: 8,
       preparationWorkMs: 0.25,
-      orderingWorkMs: 0,
-      keepRows: true,
       limit: 1,
-      shouldYield: true,
     },
     {
       name: "one row after expensive store loading",
-      rowWorkMs: 0,
       storeWorkMs: 20,
-      preparationWorkMs: 0,
-      orderingWorkMs: 0,
-      keepRows: true,
       limit: 1,
-      shouldYield: true,
     },
     {
       name: "wide ordering",
-      rowWorkMs: 0,
-      storeWorkMs: 0,
-      preparationWorkMs: 0,
       orderingWorkMs: 1,
-      keepRows: true,
       limit: 300,
-      shouldYield: true,
     },
+    { name: "wide ACP metadata preparation", metadataWorkMs: 1, limit: 600 },
+    { name: "runtime-search ACP metadata", metadataWorkMs: 1, search: "unmatched", limit: 1 },
   ])(
     "shares the event loop for $name",
     async ({
-      rowWorkMs,
-      storeWorkMs,
-      preparationWorkMs,
-      orderingWorkMs,
-      keepRows,
-      limit,
-      shouldYield,
+      rowWorkMs = 0,
+      storeWorkMs = 0,
+      preparationWorkMs = 0,
+      orderingWorkMs = 0,
+      metadataWorkMs = 0,
+      search,
+      keepRows = true,
+      limit = 100,
+      shouldYield = true,
     }) => {
       await withStateDirEnv("openclaw-list-work-budget-", async ({ stateDir }) => {
         resetPluginRuntimeStateForTest();
@@ -515,12 +598,20 @@ describe("session list resolver cache", () => {
         let orderingCalls = 0;
         let orderingCallsAtControl = 0;
         let orderingCallsBeforeRows: number | undefined;
+        const metadataEntriesRead = new Set<number>();
+        let metadataCallsAtControl = 0;
+        const entryCount = orderingWorkMs > 0 ? 2051 : metadataWorkMs > 0 ? 600 : 32;
         const store = Object.fromEntries(
-          Array.from({ length: orderingWorkMs > 0 ? 2051 : 32 }, (_, index) => [
+          Array.from({ length: entryCount }, (_, index) => [
             `agent:main:budget-${index}`,
             {
               sessionId: `budget-${index}`,
               updatedAt: index + 1,
+              get acp() {
+                metadataEntriesRead.add(index);
+                workMs += metadataWorkMs;
+                return undefined;
+              },
               // Pin reads charge ordering work before any row is projected.
               get pinnedAt() {
                 orderingCalls++;
@@ -549,6 +640,7 @@ describe("session list resolver cache", () => {
             controlRan = true;
             preparationCallsAtControl = preparationCalls;
             orderingCallsAtControl = orderingCalls;
+            metadataCallsAtControl = metadataEntriesRead.size;
             resolve();
           });
         });
@@ -564,10 +656,10 @@ describe("session list resolver cache", () => {
               workMs += preparationWorkMs;
               return keepRows;
             },
-            opts: { limit },
+            opts: { limit, search },
           });
           expect(result.sessions.map((row) => row.key)).toEqual(
-            keepRows ? Object.keys(store).toReversed().slice(0, limit) : [],
+            keepRows && !search ? Object.keys(store).toReversed().slice(0, limit) : [],
           );
           expect(controlRan).toBe(shouldYield);
           expect(controlBeforePreparation).toBe(false);
@@ -578,6 +670,10 @@ describe("session list resolver cache", () => {
             expect(orderingCallsAtControl).toBeLessThan(
               expectDefined(orderingCallsBeforeRows, "row projection started"),
             );
+          }
+          if (metadataWorkMs > 0) {
+            expect(metadataCallsAtControl).toBeGreaterThan(0);
+            expect(metadataCallsAtControl).toBeLessThan(entryCount);
           }
         } finally {
           rows.mockRestore();

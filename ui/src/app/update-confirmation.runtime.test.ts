@@ -130,8 +130,15 @@ it("shows the git target when no package version is available", async () => {
   const { settled } = startUpdate({
     updateAvailable: null,
     updateSchedule: {
-      target: { commitsBehind: 3, kind: "git" },
-    } as unknown as UpdateScheduleState,
+      channel: "dev",
+      autoEnabled: false,
+      target: {
+        commitsBehind: 3,
+        kind: "git",
+        upstreamRef: "origin/main",
+        upstreamSha: "abc1234",
+      },
+    },
   });
   const { modal } = await getRenderedModalDialog(document.body);
 
@@ -424,6 +431,19 @@ it("keeps the failure visible until the operator explicitly opens its review act
   expect(document.body.querySelector("openclaw-modal-dialog")?.textContent).toContain(
     "Read the recorded cause",
   );
+  await stream.push({
+    run: null,
+    busy: false,
+    connected: true,
+    failure: "Read the recorded cause before retrying.",
+    readError: "Could not check for updates: timeout",
+  });
+  expect(document.body.querySelector("openclaw-modal-dialog")?.textContent).toContain(
+    "Read the recorded cause",
+  );
+  expect(document.body.querySelector("openclaw-modal-dialog")?.textContent).toContain(
+    "Could not check for updates: timeout",
+  );
   expect(onReviewUpdate).not.toHaveBeenCalled();
   findButton("Review update").click();
   await settled;
@@ -551,7 +571,6 @@ it.each([
       check.click();
       pendingStatus.resolve();
       await statusOperation;
-      await flushMicrotasks();
       expect(modal.textContent).not.toContain("Run status read failed");
       expect(modal.querySelector('[role="status"]')?.textContent).toContain("Status refreshed.");
       expect(view.run).toEqual(run);
@@ -559,15 +578,19 @@ it.each([
         statusReadsBeforeCheck + 1,
       );
 
-      statusResponse = Promise.resolve().then(() => {
-        throw new Error("Status refresh unavailable");
-      });
+      statusResponse = Promise.reject(new Error("Status refresh unavailable"));
       findButton("Check status").click();
       await statusOperation;
-      await flushMicrotasks();
-      expect(modal.textContent).toContain("Status refresh unavailable");
+      expect(modal.textContent).toContain(
+        "Could not check for updates: Status refresh unavailable",
+      );
       expect(modal.textContent).not.toContain("Status refreshed.");
       expect(findButton("Check status").disabled).toBe(false);
+      expect(view.run).toEqual(run);
+      statusResponse = Promise.resolve();
+      findButton("Check status").click();
+      await statusOperation;
+      expect(modal.textContent).not.toContain("Could not check for updates");
       expect(view.run).toEqual(run);
       harness.update({ phase: "connecting", client: null });
       await flushMicrotasks();
@@ -578,7 +601,7 @@ it.each([
       }
       findButton("Check status").click();
       expect(request.mock.calls.filter(([method]) => method === "update.status")).toHaveLength(
-        statusReadsBeforeCheck + 2,
+        statusReadsBeforeCheck + 3,
       );
       expect(request.mock.calls.filter(([method]) => method === "update.run")).toHaveLength(
         entry === "started" ? 1 : 0,

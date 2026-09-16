@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 
+import { expectDefined } from "@openclaw/normalization-core";
 import { render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GatewaySessionRow, SessionsListResult } from "../../../api/types.ts";
@@ -19,19 +20,11 @@ import {
 } from "./chat-transcript.test-support.ts";
 
 function requireElement(container: ParentNode, selector: string): HTMLElement {
-  const element = container.querySelector<HTMLElement>(selector);
-  if (!element) {
-    throw new Error(`expected ${selector}`);
-  }
-  return element;
+  return expectDefined(container.querySelector<HTMLElement>(selector), selector);
 }
 
 function requireClosest(element: Element, selector: string): HTMLElement {
-  const closest = element.closest<HTMLElement>(selector);
-  if (!closest) {
-    throw new Error(`expected closest ${selector}`);
-  }
-  return closest;
+  return expectDefined(element.closest<HTMLElement>(selector), `closest ${selector}`);
 }
 
 function touchPointerUp(element: Element): void {
@@ -716,26 +709,44 @@ describe("chat transcript rendering", () => {
     },
   );
 
+  function replyMessages(
+    client?: readonly [id: string, mode: string, displayName: string] | null,
+    namedHuman = false,
+  ) {
+    const [id, mode, displayName] = client ?? [];
+    return [
+      {
+        role: client ? "user" : "assistant",
+        content: "The original answer",
+        __openclaw: {
+          id: "source-message",
+          ...(namedHuman
+            ? {
+                senderId: "profile-alice",
+                senderName: "Alice",
+                senderIdentity: { type: "profile", id: "profile-alice" },
+              }
+            : {}),
+          ...(client ? { transport: { clients: [{ id, mode, displayName }] } } : {}),
+        },
+        timestamp: 1_000,
+      },
+      {
+        role: "user",
+        content: "Follow up",
+        __openclaw: { id: "reply-message", replyToId: "source-message" },
+        timestamp: 2_000,
+      },
+    ] as const;
+  }
+
   it.each([false, true])(
     "resolves persisted replies and owns their flash lifetime (reduced motion: %s)",
     async (reducedMotion) => {
       vi.stubGlobal("matchMedia", () => ({ matches: reducedMotion }));
       const transcript = createTestTranscript();
       const container = document.body.appendChild(document.createElement("div"));
-      const props = threadProps("pane-reply-preview", "agent:main:main", [
-        {
-          role: "assistant",
-          content: "The original answer",
-          __openclaw: { id: "source-message" },
-          timestamp: 1_000,
-        },
-        {
-          role: "user",
-          content: "Follow up",
-          __openclaw: { id: "reply-message", replyToId: "source-message" },
-          timestamp: 2_000,
-        },
-      ]);
+      const props = threadProps("pane-reply-preview", "agent:main:main", [...replyMessages()]);
       render(renderChatThread(props, transcript), container);
       transcript.hostConnected();
       transcript.hostUpdated();
@@ -775,56 +786,61 @@ describe("chat transcript rendering", () => {
     },
   );
 
-  it("hydrates an unloaded reply preview without inserting its source row", async () => {
-    const transcript = createTestTranscript();
-    const container = document.body.appendChild(document.createElement("div"));
-    let resolvedMessage: unknown = undefined;
-    const request = vi.fn();
-    const open = vi.fn();
-    const props = {
-      ...threadProps("pane-reply-hydration", "agent:main:main", [
-        {
-          role: "user",
-          content: "Follow up",
-          __openclaw: { id: "reply-message", replyToId: "source-message" },
-          timestamp: 2_000,
+  it.each([
+    ["assistant", null, false, "Molty"],
+    ["CLI", ["cli", "cli", "Release helper"], false, "via CLI (Release helper)"],
+    ["RPC", ["gateway-client", "backend", "Build helper"], false, "via RPC (Build helper)"],
+    ["named human via CLI", ["cli", "cli", "Release helper"], true, "Alice"],
+  ] as const)(
+    "hydrates an unloaded %s reply preview without inserting its source row",
+    async (_source, client, namedHuman, senderLabel) => {
+      const [sourceMessage, followUp] = replyMessages(client, namedHuman);
+      const transcript = createTestTranscript();
+      const container = document.body.appendChild(document.createElement("div"));
+      let resolvedMessage: unknown = undefined;
+      const request = vi.fn();
+      const open = vi.fn();
+      const props = {
+        ...threadProps("pane-reply-hydration", "agent:main:main", [followUp]),
+        userId: "profile-viewer",
+        userName: "Unrelated Viewer",
+        replyMessageAccess: {
+          revision: 0,
+          navigationId: null,
+          read: () => resolvedMessage,
+          request,
+          open,
         },
-      ]),
-      replyMessageAccess: {
-        revision: 0,
-        navigationId: null,
-        read: () => resolvedMessage,
-        request,
-        open,
-      },
-    };
-    const rerender = () => {
-      render(renderChatThread(props, transcript), container);
-      transcript.hostUpdated();
-    };
-    rerender();
-    transcript.hostConnected();
-    await flushDeferredRowPrune();
+      };
+      const rerender = () => {
+        render(renderChatThread(props, transcript), container);
+        transcript.hostUpdated();
+      };
+      try {
+        rerender();
+        transcript.hostConnected();
+        await flushDeferredRowPrune();
 
-    expect(request).toHaveBeenCalledWith("source-message");
-    expect(container.querySelector("[data-entry-id='source-message']")).toBeNull();
+        expect(request).toHaveBeenCalledWith("source-message");
+        expect(container.querySelector("[data-entry-id='source-message']")).toBeNull();
 
-    resolvedMessage = {
-      role: "assistant",
-      content: "The original answer",
-      __openclaw: { id: "source-message" },
-      timestamp: 1_000,
-    };
-    props.replyMessageAccess.revision += 1;
-    rerender();
+        resolvedMessage = { ...sourceMessage, content: "The original message" };
+        props.replyMessageAccess.revision += 1;
+        rerender();
 
-    const preview = container.querySelector<HTMLButtonElement>(".chat-reply-preview--message");
-    expect(preview?.textContent).toContain("Replying to Molty");
-    expect(preview?.textContent).toContain("The original answer");
-    preview?.click();
-    expect(open).toHaveBeenCalledWith("source-message");
-    transcript.hostDisconnected();
-  });
+        const preview = container.querySelector<HTMLButtonElement>(".chat-reply-preview--message");
+        expect(preview?.querySelector(".chat-reply-preview__label")?.textContent?.trim()).toBe(
+          `Replying to ${senderLabel}`,
+        );
+        expect(preview?.textContent).toContain("The original message");
+        expect(container.querySelector("[data-entry-id='source-message']")).toBeNull();
+        preview?.click();
+        expect(open).toHaveBeenCalledWith("source-message");
+      } finally {
+        transcript.hostDisconnected();
+      }
+    },
+  );
 
   it("clears search before navigating to a filtered reply target", async () => {
     const transcript = createTestTranscript();
@@ -832,23 +848,16 @@ describe("chat transcript rendering", () => {
     const threadContainer = document.body.appendChild(document.createElement("div"));
     const open = vi.fn();
     const paneId = "pane-filtered-reply-navigation";
+    const [sourceMessage, followUp] = replyMessages();
     const props = {
       ...threadProps(paneId, "agent:main:main", [
+        sourceMessage,
         {
-          role: "assistant",
-          content: "The original answer",
-          __openclaw: { id: "source-message" },
-          timestamp: 1_000,
-        },
-        {
-          role: "user",
-          content: "Follow up",
+          ...followUp,
           __openclaw: {
-            id: "reply-message",
-            replyToId: "source-message",
+            ...followUp["__openclaw"],
             replyToPreview: { text: "The original answer", senderLabel: "Molty" },
           },
-          timestamp: 2_000,
         },
       ]),
       replyMessageAccess: {
@@ -888,14 +897,18 @@ describe("chat transcript rendering", () => {
     transcript.hostDisconnected();
   });
 
-  it.each(["Enter", " "])("opens focused transcript file links with %j", async (key) => {
+  it.each(["click", "Enter", " "])("opens focused transcript file links with %j", async (key) => {
     const transcript = createTestTranscript();
     const onOpenWorkspaceFile = vi.fn();
     const onHistoryIntent = vi.fn();
     const container = document.body.appendChild(document.createElement("div"));
     const props = {
       ...threadProps("pane-file-link", "agent:main:main", [
-        { role: "assistant", content: "Inspect `src/chat.ts:17`", timestamp: 1_000 },
+        {
+          role: "assistant",
+          content: "Inspect [index.md](qa-caf%C3%A9/index.md:17)",
+          timestamp: 1_000,
+        },
       ]),
       onOpenWorkspaceFile,
       onHistoryIntent,
@@ -908,11 +921,15 @@ describe("chat transcript rendering", () => {
     const link = container.querySelector<HTMLAnchorElement>("a.markdown-file-link");
     link?.focus();
     expect(document.activeElement).toBe(link);
-    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
-    link?.dispatchEvent(event);
-
-    expect(event.defaultPrevented).toBe(true);
-    expect(onOpenWorkspaceFile).toHaveBeenCalledWith({ path: "src/chat.ts", line: 17 });
+    expect(link?.hasAttribute("href")).toBe(false);
+    if (key === "click") {
+      link?.click();
+    } else {
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      link?.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+    }
+    expect(onOpenWorkspaceFile).toHaveBeenCalledWith({ path: "qa-café/index.md", line: 17 });
     expect(onHistoryIntent).not.toHaveBeenCalled();
     transcript.hostDisconnected();
   });

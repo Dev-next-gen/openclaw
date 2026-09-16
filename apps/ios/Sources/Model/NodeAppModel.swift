@@ -631,7 +631,7 @@ final class NodeAppModel {
         if self.isAppleReviewDemoModeEnabled {
             return LocalFixtureChatTransport(fixture: .appleReviewDemo)
         }
-        let mediaArtifactLoader = IOSMediaArtifactLoader { [weak self] in
+        let connectionProvider: IOSMediaArtifactLoader.ConnectionProvider = { [weak self] in
             guard let config = self?.activeGatewayConnectConfig else { return nil }
             return IOSMediaArtifactLoader.Connection(
                 config: config,
@@ -644,7 +644,9 @@ final class NodeAppModel {
             widgetGateway: self.nodeGateway,
             globalAgentId: self.chatDeliveryAgentId,
             outboxGatewayID: outboxGatewayID,
-            mediaArtifactLoader: mediaArtifactLoader)
+            mediaArtifactLoader: IOSMediaArtifactLoader(connectionProvider: connectionProvider),
+            sourceResourceLoader: IOSSourceResourceLoader(
+                gateway: self.operatorSession, connectionProvider: connectionProvider))
     }
 
     /// Gateway identity the transcript cache is scoped to: the active
@@ -668,6 +670,11 @@ final class NodeAppModel {
         let agentID = self.chatDeliveryAgentId ?? ""
         return "\(self.chatTransportModeID)|\(gatewayID)|\(agentID)|\(self.chatTranscriptCacheGeneration)"
     }
+
+    /// Non-owning access to the current composer; ChatProTab remains its lifecycle owner.
+    @ObservationIgnored weak var presentedChatViewModel: OpenClawChatViewModel?
+    /// Request admission only; the connection controller owns the later handoff.
+    var isGatewayPickerRequestInFlight = false
 
     /// Stable owner key for the long-lived chat view model. Connectivity still
     /// changes `chatViewModelIdentityID` for session-list refreshes, but must
@@ -5197,6 +5204,7 @@ extension NodeAppModel {
             caps: [
                 OpenClawGatewayClientCapability.agentKind,
                 OpenClawGatewayClientCapability.inlineWidgets,
+                OpenClawGatewayClientCapability.modelSelectionPolicy,
             ],
             commands: [],
             permissions: [:],

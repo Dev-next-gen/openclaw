@@ -4,6 +4,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { stableStringify } from "@openclaw/normalization-core/stable-stringify";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { beginDoctorMaintenance } from "../../commands/doctor-maintenance.js";
+import * as doctorServicePolicy from "../../commands/doctor-service-repair-policy.js";
 import * as schtasksExec from "../../daemon/schtasks-exec.js";
 import { readScheduledTaskRuntime } from "../../daemon/schtasks-runtime.js";
 import { ServiceInspectionError } from "../../daemon/service-inspection-error.js";
@@ -355,6 +357,53 @@ it.each([
   }),
 );
 
+it("preserves a silent Scheduled Task probe failure through update and Doctor refusal", () =>
+  withServiceHome(async (home) => {
+    mockProcessPlatform("win32");
+    vi.spyOn(doctorServicePolicy, "shouldManageGatewayService").mockResolvedValue(true);
+    vi.mocked(spawnSync).mockReturnValue({
+      pid: 0,
+      output: [null, "", ""],
+      stdout: "",
+      stderr: "",
+      status: 2,
+      signal: null,
+    });
+    const service = createMockGatewayService({
+      readCommand: async () => ({
+        programArguments: [process.execPath, path.join(process.cwd(), "openclaw.mjs"), "gateway"],
+        environment: { HOME: home },
+      }),
+      readRuntime: readScheduledTaskRuntime,
+      isLoaded: async () => true,
+    });
+    mocks.service.mockReturnValue(service);
+    const inspection = await maybeStopManagedServiceBeforeMutableUpdate({
+      root: process.cwd(),
+      updateInstallKind: "package",
+      shouldRestart: true,
+      phase: "inspect",
+      jsonMode: true,
+    });
+    expect(inspection).toMatchObject({
+      offline: false,
+      stopped: false,
+      serviceMutationAllowed: false,
+      serviceUpdateVerdict: { kind: "unavailable" },
+    });
+    const detail = "Scheduled Task probe failed (exit 2): no output from PowerShell.";
+    expect.soft(inspection.blockMessage).toContain(detail);
+    await expect(
+      beginDoctorMaintenance({
+        root: process.cwd(),
+        options: { repair: true },
+        runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+      }),
+    ).rejects.toThrow(detail);
+    expect(service.stop).not.toHaveBeenCalled();
+    expect(service.install).not.toHaveBeenCalled();
+  }));
+
 const servingAncestorMaintenanceCases = [
   { platform: "linux", identity: "current updater", phase: "inspect", authorized: true },
   { platform: "linux", identity: "current updater", phase: "prepare", authorized: true },
@@ -586,6 +635,54 @@ it.each([
     expect(stop).toHaveBeenCalledTimes(scenario.uid === 2001 ? 1 : 0);
   }),
 );
+
+it("retains the inspected systemd manager route during preparation", () =>
+  withServiceHome(async (home) => {
+    mockProcessPlatform("linux");
+    const seenRoutes: Array<string | undefined> = [];
+    mocks.service.mockReturnValue(
+      createMockGatewayService({
+        readCommand: async (env) => {
+          seenRoutes.push(env.DBUS_SESSION_BUS_ADDRESS);
+          return {
+            programArguments: [
+              process.execPath,
+              path.join(process.cwd(), "openclaw.mjs"),
+              "gateway",
+            ],
+            environment: { HOME: home },
+          };
+        },
+        readRuntime: async () => ({ status: "running", systemd: { managerUid: 2001 } }),
+        isLoaded: async () => true,
+        stop: async () => undefined,
+      }),
+    );
+    const params = {
+      updateInstallKind: "package" as const,
+      root: process.cwd(),
+      shouldRestart: true,
+      jsonMode: true,
+      phase: "inspect" as const,
+    };
+    const before = await maybeStopManagedServiceBeforeMutableUpdate(params);
+    const admittedRoute = "unix:path=/run/user/2001/bus";
+    before.serviceEnv = {
+      ...before.serviceEnv,
+      DBUS_SESSION_BUS_ADDRESS: admittedRoute,
+    };
+    const readsBeforePreparation = seenRoutes.length;
+
+    await expect(
+      maybeStopManagedServiceBeforeMutableUpdate({
+        ...params,
+        phase: "prepare",
+        expectedService: before,
+      }),
+    ).resolves.toMatchObject({ stopped: true });
+
+    expect(seenRoutes.slice(readsBeforePreparation)).toEqual([admittedRoute, admittedRoute]);
+  }));
 
 it.each([
   "shipped handoff",

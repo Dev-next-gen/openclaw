@@ -16,6 +16,11 @@ import * as portInspection from "../../infra/ports-inspect.js";
 import * as tempRoot from "../../infra/tmp-openclaw-dir.js";
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { createUpdateRun } from "../../infra/update-run-ledger.js";
+import {
+  updateRunStepsFromResultStep,
+  updateRunWarningMessages,
+} from "../../infra/update-run-step.js";
+import type { UpdateStepProgress, UpdateStepResult } from "../../infra/update-runner.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
@@ -33,6 +38,64 @@ const { executionParams, inspectOrStopService, mocks, schemaContext, successfulU
   await import("./update-command-execution.test-support.js");
 
 describe("mutable update execution", () => {
+  it.each(["package", "git"] as const)(
+    "continues the %s update with the recorded readiness warning instead of inference repair",
+    async (kind) => {
+      const message =
+        "Readiness probe http://127.0.0.1:18789/readyz failed: HTTP 502. Check the configured proxy.";
+      const step: UpdateStepResult = {
+        name: "candidate gateway canary",
+        command: "gateway run",
+        cwd: "/candidate",
+        durationMs: 1,
+        exitCode: null,
+        advisory: { kind: "candidate-runtime-unavailable", message },
+        failureFacts: [{ check: "readyz", code: "candidate-readiness-probe-failed", message }],
+      };
+      mocks.validateCanary.mockImplementation(async ({ onStep }) => {
+        onStep(step);
+        return {
+          status: "ok",
+          phase: "readiness",
+          steps: [step],
+          durationMs: 1,
+          logTail: [message],
+        };
+      });
+      const repair = await import("./update-command-repair.js");
+      const runRepair = vi.spyOn(repair, "runUpdateCommandRepair");
+      const accepted = vi.fn();
+      const runStagedUpdate = async ({
+        validateCandidate,
+      }: {
+        validateCandidate?: (root: string) => Promise<unknown>;
+      }) => {
+        expect(validateCandidate).toBeTypeOf("function");
+        await validateCandidate?.("/candidate");
+        accepted();
+        return successfulUpdate;
+      };
+      mocks.runPackageUpdate.mockImplementation(runStagedUpdate);
+      mocks.runGitUpdate.mockImplementation(runStagedUpdate);
+      const onStepComplete = vi.fn<NonNullable<UpdateStepProgress["onStepComplete"]>>();
+
+      const execution = await executeMutableUpdate({
+        ...executionParams(kind),
+        progress: { onStepComplete },
+      });
+
+      expect(execution?.result.status).toBe("ok");
+      expect(accepted).toHaveBeenCalledOnce();
+      expect(runRepair).not.toHaveBeenCalled();
+      expect(onStepComplete).toHaveBeenCalledWith(expect.objectContaining(step));
+      const recorded = onStepComplete.mock.calls.flatMap(([completed]) =>
+        updateRunStepsFromResultStep(completed),
+      );
+      expect(updateRunWarningMessages(recorded)).toEqual([message]);
+      expect(recorded.every((entry) => entry.status === "completed")).toBe(true);
+    },
+  );
+
   it.each(
     (["package", "git"] as const).flatMap((kind) =>
       [undefined, 30_000, 600_000].map((timeoutMs) => ({ kind, timeoutMs })),
@@ -228,68 +291,6 @@ describe("mutable update execution", () => {
           server.close();
           await closed;
         }
-      }),
-  );
-  it.each(["package", "staged", "git"] as const)(
-    "refuses an unsupported native receiver before activation: %s",
-    async (route) =>
-      withTestDir({ prefix: "native-before-activation-" }, async (dir) => {
-        const control = path.join(dir, "leases");
-        await fs.mkdir(control);
-        vi.spyOn(tempRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
-        const env = { OPENCLAW_STATE_DIR: dir };
-        const runId = createUpdateRun({ trigger: "cli" }, { env }).runId;
-        const params = executionParams(route === "git" ? "git" : "package");
-        params.root = dir;
-        params.updateStepTimeoutMs = 600_000;
-        params.opts.run = { runId, env };
-        if (route === "staged") {
-          params.packageInstallSpec = path.join(dir, "candidate.tgz");
-        }
-        const events: string[] = [];
-        mocks.nativeSupport.mockImplementation(async ({ executor }) => {
-          executor.assertCurrent();
-          events.push("native-admission");
-          return false;
-        });
-        const candidate = async ({
-          validateCandidate,
-        }: {
-          validateCandidate: (root: string) => Promise<unknown>;
-        }) => {
-          await validateCandidate(dir);
-          // Models the package/Git publisher which follows successful validation.
-          events.push("publish");
-          return successfulUpdate;
-        };
-        mocks.runPackageUpdate.mockImplementation(candidate);
-        mocks.runGitUpdate.mockImplementation(
-          async (
-            options: Parameters<typeof import("./update-command-git.js").updateGitInstall>[0],
-          ) => {
-            if (!options.inspectGitTarget || !options.validateCandidate) {
-              throw new Error("Missing actual Git admission callbacks");
-            }
-            await options.inspectGitTarget({ schemaVersions: { state: 15, agent: 19 } });
-            return candidate({ validateCandidate: options.validateCandidate });
-          },
-        );
-        const result = await withUpdateCommandExecutor(runId, async (executor) => {
-          mocks.prepareMutableUpdate.mockImplementation(async () => {
-            params.opts.run!.executorFence = await executor.enter(dir);
-          });
-          return executeMutableUpdate(params);
-        });
-        expect(result?.result).toMatchObject({
-          status: "error",
-          reason: "target-native-unsupported",
-        });
-        expect(events).toEqual(["native-admission"]);
-        expect(mocks.nativeSupport.mock.calls[0]?.[0]).toMatchObject({
-          timeoutMs: params.updateStepTimeoutMs,
-        });
-        expect(mocks.serviceStopped).toBe(false);
-        expect(mocks.validateCanary).not.toHaveBeenCalled();
       }),
   );
   it("retains the live update run when stopped-service context capture fails", async () => {

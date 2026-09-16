@@ -22,7 +22,6 @@ import type { PluginCliLoadSession } from "../plugins/cli-registry-loader.js";
 import { createPluginCache, getPluginCache, withPluginCache } from "../plugins/plugin-cache.js";
 import { resolveCliArgvInvocation } from "./argv-invocation.js";
 import {
-  hasFlag,
   normalizeGeneratedHelpCommandArgv,
   normalizeRootHelpTargetArgv,
   normalizeRootLogLevelArgv,
@@ -30,7 +29,6 @@ import {
 } from "./argv.js";
 import {
   isReservedNonPluginCommandRoot,
-  shouldRegisterPrimaryCommandOnly,
   shouldSkipPluginCommandRegistration,
 } from "./command-registration-policy.js";
 import { resolveCliStartupPolicy as resolveCliStartupPolicyForArgv } from "./command-startup-policy.js";
@@ -1124,7 +1122,7 @@ async function runCliWithPreparedOutputMode(
     options.runtimeRecoveryEnv,
   );
 
-  if (tryRunGatewayServiceUpdateCapabilityProbe(normalizedArgv)) {
+  if (await tryRunGatewayServiceUpdateCapabilityProbe(normalizedArgv)) {
     return;
   }
 
@@ -1210,7 +1208,7 @@ async function runCliWithPreparedOutputMode(
   const useSourceOnlyBestEffortConfig =
     !(await isCurrentRuntimeSupported()) ||
     normalizedInvocation.primary === "update" ||
-    (normalizedInvocation.primary === "doctor" && hasFlag(normalizedArgv, "--lint"));
+    normalizedInvocation.primary === "doctor";
   const readBestEffortCliConfig = async (): Promise<OpenClawConfig> => {
     if (!bestEffortConfigPromise) {
       bestEffortConfigPromise = import("../config/io.js").then(async (configIo) => {
@@ -1634,7 +1632,7 @@ async function runCliWithPreparedOutputMode(
       // Register the primary command (builtin or subcli) so help and command parsing
       // are correct even with lazy command registration.
       const { primary } = invocation;
-      if (primary && shouldRegisterPrimaryCommandOnly(parseArgv)) {
+      if (primary) {
         await startupTrace.measure("register-primary", async () => {
           const { getProgramContext } = await import("./program/program-context.js");
           const ctx = getProgramContext(program);

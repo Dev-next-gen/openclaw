@@ -1,6 +1,5 @@
 // Memory Core tests cover manager sync ops.startup-catchup plugin behavior.
 import { AsyncLocalStorage } from "node:async_hooks";
-import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveSessionTranscriptsDirForAgent } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
@@ -180,9 +179,7 @@ describe("session startup catch-up", () => {
     const scanError = Object.assign(new Error("transient session archive scan failure"), {
       code: "EIO",
     });
-    const readdirSpy = vi.spyOn(fsSync, "readdirSync").mockImplementation(() => {
-      throw scanError;
-    });
+    const readdirSpy = vi.spyOn(fs, "readdir").mockRejectedValue(scanError);
 
     try {
       const catchUp = harness.catchUp();
@@ -270,7 +267,7 @@ describe("session startup catch-up", () => {
     const harness = new SessionStartupCatchupHarness([
       {
         path: state.path,
-        hash: "current-hash",
+        hash: `sqlite:${state.revisionMs}:current-hash`,
         mtime: state.mtimeMs,
         size: state.size,
       },
@@ -383,7 +380,7 @@ describe("session startup catch-up", () => {
     expect(restarted.indexedPaths).toEqual([]);
   });
 
-  it("indexes a SQLite transcript whose updatedAt rolled back", async () => {
+  it("upgrades an indexed SQLite activity fingerprint during startup catch-up", async () => {
     const session = await writeSqliteSession({
       content: "SQLite rollback",
       updatedAt: 10,
@@ -418,7 +415,7 @@ describe("session startup catch-up", () => {
     expect(harness.indexedContents).toEqual(["User: SQLite rollback"]);
   });
 
-  it("converges an unchanged SQLite updatedAt rollback after deferred session sync", async () => {
+  it("converges a legacy SQLite activity fingerprint without reindexing unchanged text", async () => {
     const session = await writeSqliteSession({ updatedAt: 10 });
     const entry = await buildSessionEntry(session.sessionKey, {
       agentId: "main",
@@ -453,7 +450,7 @@ describe("session startup catch-up", () => {
     expect(harness.indexedContents).toEqual([]);
     expect(harness.getIndexedSourceState(entry.path)).toEqual({
       path: entry.path,
-      hash: entry.hash,
+      hash: `sqlite:${entry.revisionMs}:${entry.hash}`,
       mtime: entry.mtimeMs,
       size: entry.size,
     });
@@ -661,6 +658,7 @@ describe("session startup catch-up", () => {
       expect(timerContexts).toEqual([{ turn: undefined, pendingInput: undefined }]);
 
       await vi.advanceTimersByTimeAsync(6000);
+      await harness.waitForCorpusList();
       await harness.waitForSessionSync();
 
       expect(harness.indexedPaths).toEqual([session.corpusPath]);

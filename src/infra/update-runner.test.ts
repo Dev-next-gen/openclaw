@@ -155,6 +155,22 @@ describe("runGatewayUpdate", () => {
     await fs.writeFile(path.join(tempDir, "openclaw.mjs"), "export {};\n", "utf-8");
   });
 
+  async function withWindowsPackageManagerSimulation<T>(run: () => Promise<T>): Promise<T> {
+    const bunVersion = Object.getOwnPropertyDescriptor(process.versions, "bun");
+    if (bunVersion) {
+      // These cases simulate Windows command selection on a non-Windows host. Keep
+      // Bun's real system-Node probe from searching for a Windows executable here.
+      Object.defineProperty(process.versions, "bun", { ...bunVersion, value: undefined });
+    }
+    try {
+      return await withMockedWindowsPlatform(run);
+    } finally {
+      if (bunVersion) {
+        Object.defineProperty(process.versions, "bun", bunVersion);
+      }
+    }
+  }
+
   async function createStableTagRunner(params: {
     stableTag: string;
     onDoctor?: () => Promise<void>;
@@ -863,7 +879,7 @@ describe("runGatewayUpdate", () => {
       code: 0,
       stdout: " M README.md",
       stderr: "",
-      status: "skipped",
+      status: "error",
       reason: "dirty",
     },
     {
@@ -892,7 +908,11 @@ describe("runGatewayUpdate", () => {
         [`git -C ${tempDir} status --porcelain -- :!dist/control-ui/`]: { code, stdout, stderr },
       });
 
-      const result = await runWithRunner(runner, { beforeGitMutation });
+      const onStepComplete = vi.fn();
+      const result = await runWithCommand(runner, {
+        beforeGitMutation,
+        progress: { onStepComplete },
+      });
 
       expect(result.status).toBe(status);
       expect(result.reason).toBe(reason);
@@ -904,11 +924,16 @@ describe("runGatewayUpdate", () => {
       expect(result.steps).toMatchObject([
         {
           name: "clean check",
-          exitCode: code,
+          exitCode: reason === "dirty" ? 1 : code,
           stdoutTail: stdout || null,
-          stderrTail: stderr || null,
+          stderrTail:
+            reason === "dirty" ? expect.stringContaining("local changes") : stderr || null,
         },
       ]);
+      expect(onStepComplete).toHaveBeenCalledOnce();
+      expect(onStepComplete).toHaveBeenCalledWith(
+        expect.objectContaining({ exitCode: reason === "dirty" ? 1 : code }),
+      );
       expect(beforeGitMutation).not.toHaveBeenCalled();
       expect(calls.some((call) => call.includes(" fetch "))).toBe(false);
       expect(calls.filter((call) => call.includes("rebase"))).toEqual([]);
@@ -1158,7 +1183,8 @@ describe("runGatewayUpdate", () => {
       "refused by caller",
     );
     expect(beforeGitMutation).toHaveBeenCalledWith({
-      metadataUnreadable: expect.stringContaining("exited 128"),
+      sha: upstreamSha,
+      metadataUnreadable: `git show ${upstreamSha}:package.json exited 128`,
     });
   });
 
@@ -1804,7 +1830,7 @@ describe("runGatewayUpdate", () => {
       },
     });
 
-    const result = await withMockedWindowsPlatform(() =>
+    const result = await withWindowsPackageManagerSimulation(() =>
       runWithCommand(runCommand, { channel: "dev" }),
     );
 
@@ -1855,7 +1881,8 @@ describe("runGatewayUpdate", () => {
         PNPM_CONFIG_PREFER_OFFLINE: "false",
         pnpm_config_prefer_offline: undefined,
       },
-      () => withMockedWindowsPlatform(() => runWithCommand(runCommand, { channel: "dev" })),
+      () =>
+        withWindowsPackageManagerSimulation(() => runWithCommand(runCommand, { channel: "dev" })),
     );
 
     expect(result.status).toBe("ok");
@@ -2001,13 +2028,13 @@ describe("runGatewayUpdate", () => {
   );
 
   it.each([
-    { operation: "mkdir", code: "ENOSPC", reason: "preflight-insufficient-space" },
-    { operation: "mkdtemp", code: "ENOSPC", reason: "preflight-insufficient-space" },
-    { operation: "mkdir", code: "EACCES", reason: "preflight-worktree-failed" },
-    { operation: "mkdtemp", code: "EROFS", reason: "preflight-worktree-failed" },
+    ["mkdir", "ENOSPC", "preflight-insufficient-space"],
+    ["mkdtemp", "ENOSPC", "preflight-insufficient-space"],
+    ["mkdir", "EACCES", "preflight-worktree-failed"],
+    ["mkdtemp", "EROFS", "preflight-worktree-failed"],
   ] as const)(
-    "returns a structured preflight failure when $operation rejects with $code",
-    async ({ operation, code, reason }) => {
+    "returns a structured preflight failure when %s rejects with %s",
+    async (operation, code, reason) => {
       await setupGitPackageManagerFixture();
       const beforeGitMutation = vi.fn<() => Promise<void>>();
       const allocator = vi.spyOn(fs, operation);
@@ -2034,66 +2061,39 @@ describe("runGatewayUpdate", () => {
   );
 
   it.each([
-    {
-      command: "pnpm install",
-      stdout: "[ENOSPC] ENOSPC: no space left on device, write",
-      stderr: "",
-      capacity: true,
-    },
-    {
-      command: "pnpm install",
-      stdout:
-        "[ERR_PNPM_ENOSPC] [importPackage /checkout/node_modules/package] ENOSPC: no space left on device, copyfile 'store' -> 'package'",
-      stderr: "",
-      capacity: true,
-    },
-    {
-      command: "pnpm build",
-      stdout: "",
-      stderr: "Error: ENOSPC: no space left on device, write",
-      capacity: true,
-    },
-    {
-      command: "pnpm install",
-      stdout: "",
-      stderr:
-        "\u001b[31m[ERR_PNPM_ENOSPC]\u001b[0m ENOSPC: no space left on device, copyfile 'store' -> 'package'",
-      capacity: true,
-    },
-    {
-      command: "pnpm install",
-      stdout: "[ERR_SQLITE_ERROR] disk I/O error",
-      stderr: "",
-      capacity: false,
-    },
-    {
-      command: "pnpm build",
-      stdout: "",
-      stderr: "Error: ENOSPC: System limit for number of file watchers reached, watch 'src'",
-      capacity: false,
-    },
-    { command: "pnpm install", stdout: "", stderr: "ERR_PNPM_NETWORK", capacity: false },
-    {
-      command: "pnpm build",
-      stdout: "",
-      stderr: "test expected ENOSPC or disk full",
-      capacity: false,
-    },
-    {
-      command: "pnpm build",
-      stdout: "",
-      stderr: "test expected fatal: unable to create file: No space left on device",
-      capacity: false,
-    },
-    {
-      command: "pnpm build",
-      stdout: "",
-      stderr: "fatal: unable to create file: No space left on device (expected)",
-      capacity: false,
-    },
+    ["pnpm install", "[ENOSPC] ENOSPC: no space left on device, write", "", true],
+    [
+      "pnpm install",
+      "[ERR_PNPM_ENOSPC] [importPackage /checkout/node_modules/package] ENOSPC: no space left on device, copyfile 'store' -> 'package'",
+      "",
+      true,
+    ],
+    ["pnpm build", "", "Error: ENOSPC: no space left on device, write", true],
+    [
+      "pnpm install",
+      "",
+      "\u001b[31m[ERR_PNPM_ENOSPC]\u001b[0m ENOSPC: no space left on device, copyfile 'store' -> 'package'",
+      true,
+    ],
+    ["pnpm install", "[ERR_SQLITE_ERROR] disk I/O error", "", false],
+    [
+      "pnpm build",
+      "",
+      "Error: ENOSPC: System limit for number of file watchers reached, watch 'src'",
+      false,
+    ],
+    ["pnpm install", "", "ERR_PNPM_NETWORK", false],
+    ["pnpm build", "", "test expected ENOSPC or disk full", false],
+    [
+      "pnpm build",
+      "",
+      "test expected fatal: unable to create file: No space left on device",
+      false,
+    ],
+    ["pnpm build", "", "fatal: unable to create file: No space left on device (expected)", false],
   ])(
-    "handles dev preflight failure without misclassifying capacity: $command $stdout $stderr",
-    async ({ command, stdout, stderr, capacity }) => {
+    "handles dev preflight failure without misclassifying capacity: %s %s %s",
+    async (command, stdout, stderr, capacity) => {
       await setupGitPackageManagerFixture();
       let failed = false;
       const { runCommand, calls } = createDevGitRunner({
@@ -2136,25 +2136,19 @@ describe("runGatewayUpdate", () => {
   );
 
   it.each([
-    {
-      stderr: "fatal: unable to create file: No space left on device",
-      reason: "preflight-insufficient-space",
-    },
-    {
-      stderr: "error: cannot create directory at 'src': No space left on device",
-      reason: "preflight-insufficient-space",
-    },
-    {
-      stderr: "fatal: could not create leading directories of 'worktree': No space left on device",
-      reason: "preflight-insufficient-space",
-    },
-    {
-      stderr: "fatal: unable to create file: Permission denied",
-      reason: "preflight-worktree-failed",
-    },
+    ["fatal: unable to create file: No space left on device", "preflight-insufficient-space"],
+    [
+      "error: cannot create directory at 'src': No space left on device",
+      "preflight-insufficient-space",
+    ],
+    [
+      "fatal: could not create leading directories of 'worktree': No space left on device",
+      "preflight-insufficient-space",
+    ],
+    ["fatal: unable to create file: Permission denied", "preflight-worktree-failed"],
   ])(
-    "classifies preflight worktree creation failure and removes partial staging: $stderr",
-    async ({ stderr, reason }) => {
+    "classifies preflight worktree creation failure and removes partial staging: %s",
+    async (stderr, reason) => {
       await setupGitPackageManagerFixture();
       const roots: string[] = [];
       const { runCommand } = createDevGitRunner({
@@ -2638,7 +2632,7 @@ describe("runGatewayUpdate", () => {
       },
     });
 
-    await withMockedWindowsPlatform(async () => {
+    await withWindowsPackageManagerSimulation(async () => {
       const result = await runWithCommand(runCommand, { channel: "dev" });
 
       expect(result.status).toBe("ok");
@@ -2673,7 +2667,7 @@ describe("runGatewayUpdate", () => {
       },
     });
 
-    await withMockedWindowsPlatform(async () => {
+    await withWindowsPackageManagerSimulation(async () => {
       const result = await runWithCommand(runCommand, { channel: "dev" });
 
       expect(result.status).toBe("ok");

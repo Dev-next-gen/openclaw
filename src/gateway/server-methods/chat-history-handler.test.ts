@@ -394,59 +394,6 @@ describe("chat history delta publication", () => {
 });
 
 describe("chat history consumption receipts", () => {
-  it("projects pending input at its acceptance time", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      const now = vi.spyOn(Date, "now").mockReturnValue(2_000);
-      const scope = {
-        agentId: "main",
-        sessionKey: "agent:main:pending-display-time",
-        sessionId: "pending-display-time",
-      };
-      await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
-      const receipt = expectDefined(
-        await stageSessionPendingInput(scope, {
-          runId: "pending-display-run",
-          assertCurrent: () => {},
-          message: {
-            role: "user",
-            content: "Display me where I was accepted",
-            timestamp: 1_000,
-            idempotencyKey: "pending-display-run:user",
-          },
-        }),
-        "pending input receipt",
-      );
-      try {
-        let result: unknown;
-        await expectDefined(
-          chatHistoryHandlers["chat.history"],
-          "history handler",
-        )({
-          params: { sessionKey: scope.sessionKey },
-          context: createDirectChatContext(),
-          req: { type: "req", id: "history", method: "chat.history" },
-          client: null,
-          isWebchatConnect: () => false,
-          respond: (ok, payload, error) => {
-            expect(error).toBeUndefined();
-            expect(ok).toBe(true);
-            result = payload;
-          },
-        });
-        const page = expectDefined(asOptionalRecord(result), "history response");
-        const pendingInputs = expectDefined(asOptionalRecord(page.pendingInputs), "pending inputs");
-        const [pending] = pendingInputs.items as Array<Record<string, unknown>>;
-        expect(pending).toMatchObject({
-          acceptedAt: 2_000,
-          message: { content: "Display me where I was accepted", timestamp: 2_000 },
-        });
-      } finally {
-        receipt.finish("interrupted");
-        now.mockRestore();
-      }
-    });
-  });
-
   it.each(["chat.history", "chat.startup"] as const)(
     "%s returns only requested current-session receipts in pages and empty deltas",
     async (method) => {
@@ -937,13 +884,14 @@ describe("chat metadata ownership", () => {
           authProfileOverrideSource: "user",
         },
       );
-      const readChatMetadata = vi.fn(async () => ({ commands: [], models: [] }));
+      const readChatMetadata = vi.fn<GatewayRequestContext["readChatMetadata"]>(async () => ({
+        commands: [],
+        models: [],
+        swarmEnabled: false,
+      }));
       const respond = vi.fn();
       const handler = expectDefined(chatHistoryHandlers["chat.metadata"], "metadata handler");
-      const context = {
-        getRuntimeConfig: () => ({}),
-        readChatMetadata,
-      } as unknown as GatewayRequestContext;
+      const context = createDirectChatContext({ readChatMetadata });
       for (const params of [{ agentId: "   ", sessionKey }, { agentId: "main" }]) {
         await handler({
           params,
@@ -956,7 +904,7 @@ describe("chat metadata ownership", () => {
       }
       expect(readChatMetadata.mock.calls).toEqual([
         [
-          {
+          expect.objectContaining({
             agentId: "main",
             sessionKey,
             isCurrent: expect.any(Function),
@@ -964,7 +912,7 @@ describe("chat metadata ownership", () => {
               authProfileOverride: "test:locked",
               authProfileOverrideSource: "user",
             }),
-          },
+          }),
         ],
         [{ agentId: "main" }],
       ]);

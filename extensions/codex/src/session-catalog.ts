@@ -10,8 +10,17 @@ import type {
 } from "openclaw/plugin-sdk/session-catalog";
 import type { CodexAppServerBindingStore } from "./app-server/session-binding.js";
 import { resolveCodexCatalogCreateSession } from "./session-catalog-create.js";
+import {
+  currentCodexCatalogListDiagnostics,
+  createCodexCatalogListScope,
+} from "./session-catalog-diagnostics.js";
 import type { CodexCatalogHome } from "./session-catalog-homes.js";
-import { listCodexSessionCatalog, readCodexSessionTranscript } from "./session-catalog-listing.js";
+import {
+  createCodexSessionCatalogListOperation,
+  listCodexSessionCatalog,
+  runCatalogListInline,
+} from "./session-catalog-list-operation.js";
+import { readCodexSessionTranscript } from "./session-catalog-listing.js";
 import {
   CatalogParamsError,
   CODEX_APP_SERVER_THREADS_LIST_COMMAND,
@@ -149,6 +158,112 @@ function resolveLocalCatalogHomeForThread(params: {
   return exact[0]!;
 }
 
+type CatalogListOperation = ReturnType<NonNullable<SessionCatalogProvider["createListOperation"]>>;
+
+function withCatalogListScope(initialize: () => CatalogListOperation): CatalogListOperation {
+  let create: (() => CatalogListOperation) | undefined = initialize;
+  let operation: CatalogListOperation | undefined;
+  let scope: ReturnType<typeof createCodexCatalogListScope> | undefined;
+  let running = false;
+  let closed = false;
+  let completed = false;
+  return {
+    async next() {
+      if (closed || running) {
+        throw new Error("Codex catalog list operation cannot advance");
+      }
+      running = true;
+      try {
+        scope ??= createCodexCatalogListScope();
+        return await scope.run(async () => {
+          if (create) {
+            const initializeOnce = create;
+            create = undefined;
+            operation = initializeOnce();
+          }
+          if (!operation) {
+            throw new Error("Codex catalog list operation did not initialize");
+          }
+          const step = await operation.next();
+          completed ||= step.done;
+          return step;
+        });
+      } finally {
+        running = false;
+      }
+    },
+    close() {
+      if (closed) {
+        return;
+      }
+      if (running) {
+        throw new Error("Cannot close an active Codex catalog list step");
+      }
+      closed = true;
+      create = undefined;
+      const current = operation;
+      operation = undefined;
+      const currentScope = scope;
+      scope = undefined;
+      try {
+        if (currentScope) {
+          currentScope.run(() => current?.close());
+        }
+      } finally {
+        currentScope?.finish(completed ? "resolved" : "rejected");
+      }
+    },
+  };
+}
+
+function catalogHostMapper(
+  localTerminalAvailable: boolean,
+  localHomes: readonly CodexCatalogHome[],
+) {
+  return (host: CodexSessionCatalogHost): SessionCatalogHost => {
+    const diagnostics = currentCodexCatalogListDiagnostics();
+    const started = diagnostics ? performance.now() : 0;
+    try {
+      return {
+        ...toGenericCatalogHost(host, localTerminalAvailable),
+        canStartTerminal:
+          host.kind === "gateway"
+            ? localTerminalAvailable &&
+              host.hostId === CODEX_LOCAL_SESSION_HOST_ID &&
+              localHomes.some(
+                (home) => home.hostId === host.hostId && home.appServer.start.transport === "stdio",
+              )
+            : host.canStartTerminal === true,
+      };
+    } finally {
+      if (diagnostics && !diagnostics.closed) {
+        diagnostics.fields.mappingMs =
+          (diagnostics.fields.mappingMs ?? 0) + performance.now() - started;
+      }
+    }
+  };
+}
+
+function mappedHostPublisher(
+  onHost: (host: SessionCatalogHost) => void,
+  mapHost: (host: CodexSessionCatalogHost) => SessionCatalogHost,
+) {
+  return (host: CodexSessionCatalogHost) => onHost(mapHost(host));
+}
+
+function mapCatalogListOperation(
+  operation: ReturnType<typeof createCodexSessionCatalogListOperation>,
+  mapHost: (host: CodexSessionCatalogHost) => SessionCatalogHost,
+): CatalogListOperation {
+  return {
+    async next() {
+      const step = await operation.next();
+      return step.done ? { done: true, hosts: step.hosts.map(mapHost) } : step;
+    },
+    close: () => operation.close(),
+  };
+}
+
 function registerCodexSessionCatalog(params: {
   api: OpenClawPluginApi;
   bindingStore: CodexAppServerBindingStore;
@@ -192,18 +307,8 @@ function registerCodexSessionCatalog(params: {
     return { ...bound, source: bound.source };
   };
   const checkUpstreamActivity = upstream.createChecker(params);
-  const provider: SessionCatalogProvider = {
-    id: "codex",
-    label: "Codex",
-    supportsProcessHomeIsolation: true,
-    resolveCreateSession: ({ agentId }) =>
-      resolveCodexCatalogCreateSession(
-        params.api.runtime.modelConfig,
-        params.getRuntimeConfig() ?? (params.api.config as OpenClawConfig),
-        agentId,
-      ),
-    list: async (query) => {
-      const localTerminalAvailable = resolveLocalCodexTerminalExecutable() !== undefined;
+  const createListOperation: NonNullable<SessionCatalogProvider["createListOperation"]> = (query) =>
+    withCatalogListScope(() => {
       const {
         agentId: requestedAgentId,
         allowProcessHomeFallback,
@@ -216,19 +321,12 @@ function registerCodexSessionCatalog(params: {
       } = query;
       const agentId = resolveRequestAgentId(requestedAgentId);
       const localHomes = [...catalogHomes(agentId, allowProcessHomeFallback)];
-      const mapHost = (host: CodexSessionCatalogHost) => ({
-        ...toGenericCatalogHost(host, localTerminalAvailable),
-        canStartTerminal:
-          host.kind === "gateway"
-            ? localTerminalAvailable &&
-              host.hostId === CODEX_LOCAL_SESSION_HOST_ID &&
-              localHomes.some(
-                (home) => home.hostId === host.hostId && home.appServer.start.transport === "stdio",
-              )
-            : host.canStartTerminal === true,
-      });
-      return (
-        await listCodexSessionCatalog({
+      const mapHost = catalogHostMapper(
+        resolveLocalCodexTerminalExecutable() !== undefined,
+        localHomes,
+      );
+      return mapCatalogListOperation(
+        createCodexSessionCatalogListOperation({
           agentId,
           bindingStore: params.bindingStore,
           config: params.getRuntimeConfig(),
@@ -240,10 +338,23 @@ function registerCodexSessionCatalog(params: {
           signal,
           sessionEntries,
           localHomes,
-          ...(onHost ? { onHost: (host) => onHost(mapHost(host)) } : {}),
-        })
-      ).hosts.map(mapHost);
-    },
+          ...(onHost ? { onHost: mappedHostPublisher(onHost, mapHost) } : {}),
+        }),
+        mapHost,
+      );
+    });
+  const provider: SessionCatalogProvider = {
+    id: "codex",
+    label: "Codex",
+    supportsProcessHomeIsolation: true,
+    resolveCreateSession: ({ agentId }) =>
+      resolveCodexCatalogCreateSession(
+        params.api.runtime.modelConfig,
+        params.getRuntimeConfig() ?? (params.api.config as OpenClawConfig),
+        agentId,
+      ),
+    list: (query) => runCatalogListInline(createListOperation(query)),
+    createListOperation,
     read: async (request) => {
       const { agentId, source, control } = bindRequest(request);
       return await readCodexSessionTranscript({

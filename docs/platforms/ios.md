@@ -36,6 +36,13 @@ Open **Settings** in the sidebar to use the same Dashboard settings pages as the
 web and macOS apps. A connected operator session with `operator.admin` is required.
 The toolbar's **Gateway** button opens the native connection screen, including
 setup, paired Gateways, manual connection, and advanced connection options.
+The sidebar footer also provides Gateway access: **Add Gateway** when none are
+saved, a direct connection-settings button when one is saved, and a quick picker
+when multiple Gateways are saved. The picker keeps saved Gateways available even
+when they are offline and includes a management action for setup and pairing.
+Selection identifies the focused Gateway, not whether it is connected.
+Finish recording or delivering attachments and send or clear the current draft
+before using the quick picker. It does not move drafts to another Gateway.
 **Approvals** opens the native approval inbox and shows the pending count.
 
 The Gateway must serve Dashboard pages that support the companion iOS app.
@@ -95,6 +102,19 @@ opens **Devices**, the Dashboard owner of paired nodes and connected clients.
 Long-press a session in the sidebar or Sessions screen to open its session actions, then choose **Color**. Select red, blue, green, yellow, purple, orange, pink, or cyan. **Default** clears the color.
 
 A colored session has a narrow leading stripe in session lists and a small dot beside its title in Chat. Unset colors show neither marker. The Gateway stores color names, not hex values; the app adjusts their hues for light and dark appearances.
+
+## Sources in chat
+
+Completed answers show up to eight compact **Sources** cards for cited pages
+returned by web search or web fetch during that answer's run. Tap a card to read
+the recorded **Search snippet** or **Page excerpt**, then choose **Open source**
+to visit the page. A card says when no recorded excerpt is available. Opening
+the preview does not retrieve the page again.
+
+Source icons follow the Gateway's automatic favicon preference and use the
+Gateway's authenticated favicon service. A globe appears when icons are disabled
+or unavailable. Session links and GitHub issue or pull request links keep their
+existing link cards.
 
 ## Diagrams in chat
 

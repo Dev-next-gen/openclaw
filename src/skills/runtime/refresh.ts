@@ -26,7 +26,7 @@ import {
 } from "../loading/workspace-skill-roots.js";
 import { resolveWorkshopWatchRoots } from "../workshop/skills-root.js";
 import { areOrderedArraysEqual } from "./ordered-array-equality.js";
-import { waitForStableSkillFile } from "./refresh-file-stability.js";
+import { createRawSkillFileScheduler } from "./refresh-file-stability.js";
 import {
   bumpSkillsSnapshotVersion,
   clearSkillsSnapshotVersionForWorkspace,
@@ -511,13 +511,14 @@ function createSkillsPathWatcher(target: WatchTarget): SkillsPathWatchState {
       }
     }, SKILLS_WATCH_DEBOUNCE_MS);
   };
-  const scheduleRawSkillFile = (changedPath: string) => {
-    void waitForStableSkillFile(changedPath, SKILLS_WATCH_DEBOUNCE_MS, watcher)
-      .catch((err: unknown) => {
-        log.warn(`skills watcher stability check failed (${changedPath}): ${String(err)}`);
-      })
-      .then(() => schedule(changedPath));
-  };
+  const scheduleRawSkillFile = createRawSkillFileScheduler({
+    watcher,
+    stabilityMs: SKILLS_WATCH_DEBOUNCE_MS,
+    schedule,
+    onError: (changedPath, err) => {
+      log.warn(`skills watcher stability check failed (${changedPath}): ${String(err)}`);
+    },
+  });
 
   // ignoreInitial suppresses writes discovered before native watches are ready.
   // Reconcile the whole workspace once its initial scans finish, rather than
@@ -757,10 +758,4 @@ export async function closeSkillsWatchers(resetState = false): Promise<void> {
   workspaceWatchTargetCache.clear();
   workspaceWatchLastEnsuredAt.clear();
   await Promise.all(active.map(teardownSkillsPathWatcher));
-}
-
-if (process.env.VITEST || process.env.NODE_ENV === "test") {
-  (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.skillsRefreshTestApi")] = {
-    resetSkillsRefreshForTest: () => closeSkillsWatchers(true),
-  };
 }

@@ -1,5 +1,7 @@
 package ai.openclaw.app
 
+import ai.openclaw.app.gateway.GatewayLoadedImage
+import ai.openclaw.app.gateway.GatewaySourcePreviewConfig
 import ai.openclaw.app.gateway.Question
 import ai.openclaw.app.gateway.QuestionListResult
 import ai.openclaw.app.gateway.QuestionRecord
@@ -26,9 +28,21 @@ internal object AndroidScreenshotFixture {
 
   val branchesEnabled: Boolean get() = scene == AndroidScreenshotScene.Branches
 
+  private val workScene: Boolean
+    get() = scene in setOf(AndroidScreenshotScene.CompletedWork, AndroidScreenshotScene.ActiveWork, AndroidScreenshotScene.WorkBoundaries)
+
   const val gatewayId = "android-screenshot-gateway"
   const val controlUiBaseUrl = "http://127.0.0.1:18789"
-  const val mainSessionKey = "agent:main:node-screenshot"
+  val mainSessionKey: String get() = if (workScene) "agent:main:node-work-proof" else "agent:main:node-screenshot"
+  val sourcePreviewConfig: GatewaySourcePreviewConfig?
+    get() = if (scene == AndroidScreenshotScene.Sources) GatewaySourcePreviewConfig(controlUiBaseUrl, "", "https://gateway.example", true, 0L) else null
+
+  fun loadSourceFavicon(hostname: String): GatewayLoadedImage? {
+    if (scene != AndroidScreenshotScene.Sources || hostname != "parks.example.org") return null
+    val svg = """<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#30a86b"/><path d="M16 5 6 21h7v6h6v-6h7Z" fill="white"/></svg>"""
+    return GatewayLoadedImage(svg.toByteArray(), "image/svg+xml")
+  }
+
   const val primarySessionTitle = "Android release planning"
   const val cronJobId = "android-release-digest"
   const val cronJobName = "Android release digest"
@@ -67,6 +81,10 @@ internal object AndroidScreenshotFixture {
           if (branchesEnabled) {
             branchRequestParams(paramsJson)
             branchHistory(activeLeaf.get())
+          } else if (scene == AndroidScreenshotScene.Sources) {
+            sourceHistory()
+          } else if (workScene) {
+            workHistory()
           } else {
             chatHistory()
           }
@@ -108,7 +126,7 @@ internal object AndroidScreenshotFixture {
         }
 
         "question.list" -> {
-          Json.encodeToString(QuestionListResult(listOf(pendingQuestion)))
+          Json.encodeToString(QuestionListResult(if (workScene) emptyList() else listOf(pendingQuestion)))
         }
 
         "cron.list" -> {
@@ -500,6 +518,209 @@ internal object AndroidScreenshotFixture {
         },
       )
     }.toString()
+
+  private fun sourceHistory(): String =
+    buildJsonObject {
+      put("sessionId", JsonPrimitive("screenshot-sources"))
+      put("sessionInfo", session(mainSessionKey, "Trail research", 1_783_555_320_000))
+      put(
+        "messages",
+        buildJsonArray {
+          add(chatMessage("user", "Find a quiet coastal walk and explain what to expect.", 1_783_555_260_000))
+          add(
+            buildJsonObject {
+              put("role", JsonPrimitive("toolResult"))
+              put("runId", JsonPrimitive("source-preview-run"))
+              put("toolName", JsonPrimitive("web_search"))
+              put("toolCallId", JsonPrimitive("source-search"))
+              put("timestamp", JsonPrimitive(1_783_555_275_000))
+              put(
+                "details",
+                buildJsonObject {
+                  put("kind", JsonPrimitive("results"))
+                  put(
+                    "externalContent",
+                    buildJsonObject {
+                      put("source", JsonPrimitive("web_search"))
+                      put("untrusted", JsonPrimitive(true))
+                      put("wrapped", JsonPrimitive(true))
+                    },
+                  )
+                  put(
+                    "results",
+                    buildJsonArray {
+                      listOf(
+                        Triple("https://parks.example.org/coast", "Coastal trail guide", "A sheltered coastal path with open sea views, gentle grades, and several quiet picnic spots."),
+                        Triple("https://trails.example.org/shore", "Shoreline walking notes", "The eastern trailhead is usually quieter. Morning walkers often see herons along the inlet."),
+                        Triple("https://gateway.example/chat/main/source-preview", "Research session", "Related research session."),
+                        Triple("https://github.com/openclaw/openclaw/issues/123", "Tracking issue", "Related tracking issue."),
+                      ).forEach { (url, title, snippet) ->
+                        fun wrapped(value: String) = "<<<EXTERNAL_UNTRUSTED_CONTENT id=\"0123456789abcdef\">>>\nSource: Web Search\n---\n$value\n<<<END_EXTERNAL_UNTRUSTED_CONTENT id=\"0123456789abcdef\">>>"
+                        add(
+                          buildJsonObject {
+                            put("url", JsonPrimitive(url))
+                            put("title", JsonPrimitive(wrapped(title)))
+                            put("snippet", JsonPrimitive(wrapped(snippet)))
+                          },
+                        )
+                      }
+                    },
+                  )
+                },
+              )
+              put("content", JsonPrimitive("Found two coastal walking guides."))
+            },
+          )
+          add(
+            buildJsonObject {
+              put("role", JsonPrimitive("assistant"))
+              put("runId", JsonPrimitive("source-preview-run"))
+              put("phase", JsonPrimitive("final_answer"))
+              put("timestamp", JsonPrimitive(1_783_555_290_000))
+              put("content", JsonPrimitive("Try the **coastal trail** for a gentle walk with sea views and sheltered picnic spots. Start at the eastern trailhead in the morning for a quieter route.\n\nBring water and a light layer; the exposed sections can be breezy. See the [park guide](https://parks.example.org/coast) and [walking notes](https://trails.example.org/shore).\n\nRelated: [research session](https://gateway.example/chat/main/source-preview) · [tracking issue](https://github.com/openclaw/openclaw/issues/123)."))
+            },
+          )
+        },
+      )
+    }.toString()
+
+  private fun workHistory(): String =
+    buildJsonObject {
+      put("sessionId", JsonPrimitive("screenshot-work"))
+      put("thinkingLevel", JsonPrimitive("low"))
+      put("sessionInfo", session(mainSessionKey, "Checklist review", 1_783_555_320_000))
+      put(
+        "messages",
+        buildJsonArray {
+          add(chatMessage("user", "Check the release checklist and summarize what is ready.", 1_783_555_260_000))
+          add(workMessage("review", "I’ll read the checklist and check the results.", 1_783_555_265_000, "commentary"))
+          add(workTool("read", "read", "docs/release-checklist.md", "Checklist read: build, tests, and documentation.", 1_783_555_270_000))
+          if (scene == AndroidScreenshotScene.WorkBoundaries) {
+            add(
+              buildJsonObject {
+                put("role", JsonPrimitive("assistant"))
+                put("timestamp", JsonPrimitive(1_783_555_280_000))
+                put("phase", JsonPrimitive("commentary"))
+                put(
+                  "content",
+                  buildJsonArray {
+                    add(
+                      buildJsonObject {
+                        put("type", JsonPrimitive("text"))
+                        put("text", JsonPrimitive("The checklist attachment is available here."))
+                      },
+                    )
+                    add(
+                      buildJsonObject {
+                        put("type", JsonPrimitive("file"))
+                        put("mimeType", JsonPrimitive("text/plain"))
+                        put("fileName", JsonPrimitive("release-checklist.txt"))
+                        put("sizeBytes", JsonPrimitive(48))
+                        put("url", JsonPrimitive("https://example.com/release-checklist.txt"))
+                      },
+                    )
+                  },
+                )
+              },
+            )
+            add(workTool("verify", "exec", "check localization", "Localization check failed: one translation is missing.", 1_783_555_290_000, isError = true))
+            add(
+              buildJsonObject {
+                put("role", JsonPrimitive("assistant"))
+                put("id", JsonPrimitive("android-screenshot-final-audit-call"))
+                put("timestamp", JsonPrimitive(1_783_555_310_000))
+                put(
+                  "content",
+                  buildJsonArray {
+                    add(
+                      buildJsonObject {
+                        put("type", JsonPrimitive("toolCall"))
+                        put("id", JsonPrimitive("android-screenshot-call-final-audit"))
+                        put("name", JsonPrimitive("exec"))
+                        put("arguments", buildJsonObject { put("command", JsonPrimitive("check final release audit")) })
+                      },
+                    )
+                  },
+                )
+              },
+            )
+            add(workMessage("answer", "The build and tests are ready. One translation still needs attention.", 1_783_555_320_000, "final_answer"))
+            add(
+              buildJsonObject {
+                put("role", JsonPrimitive("toolResult"))
+                put("id", JsonPrimitive("android-screenshot-final-audit-result"))
+                put("timestamp", JsonPrimitive(1_783_555_330_000))
+                put("toolCallId", JsonPrimitive("android-screenshot-call-final-audit"))
+                put("toolName", JsonPrimitive("exec"))
+                put("content", JsonPrimitive("Final audit failed: signature check needs attention."))
+                put("isError", JsonPrimitive(true))
+              },
+            )
+          } else {
+            add(workMessage("verify", "The checklist is complete. I’ll verify the test results.", 1_783_555_280_000, "commentary"))
+            add(workTool("tests", "exec", "check release results", "Build passed. Tests passed. Documentation checked.", 1_783_555_300_000))
+            if (scene == AndroidScreenshotScene.CompletedWork) {
+              add(workMessage("answer", "The release checklist is ready: the build, tests, and documentation checks passed.", 1_783_555_320_000, "final_answer"))
+            }
+          }
+        },
+      )
+      if (scene == AndroidScreenshotScene.ActiveWork) {
+        put(
+          "inFlightRun",
+          buildJsonObject {
+            put("runId", JsonPrimitive("android-screenshot-work-active"))
+            put("text", JsonPrimitive("I’m checking the final release details."))
+          },
+        )
+      }
+    }.toString()
+
+  private fun workMessage(
+    id: String,
+    text: String,
+    timestamp: Long,
+    phase: String,
+  ) = buildJsonObject {
+    chatMessage("assistant", text, timestamp).forEach { (key, value) -> put(key, value) }
+    put("id", JsonPrimitive("android-screenshot-work-$id"))
+    put("phase", JsonPrimitive(phase))
+  }
+
+  private fun workTool(
+    id: String,
+    name: String,
+    detail: String,
+    result: String,
+    timestamp: Long,
+    isError: Boolean = false,
+  ) = buildJsonObject {
+    put("role", JsonPrimitive("assistant"))
+    put("id", JsonPrimitive("android-screenshot-tool-$id"))
+    put("timestamp", JsonPrimitive(timestamp))
+    put(
+      "content",
+      buildJsonArray {
+        add(
+          buildJsonObject {
+            put("type", JsonPrimitive("toolCall"))
+            put("id", JsonPrimitive("android-screenshot-call-$id"))
+            put("name", JsonPrimitive(name))
+            put("arguments", buildJsonObject { put(if (name == "read") "path" else "command", JsonPrimitive(detail)) })
+          },
+        )
+        add(
+          buildJsonObject {
+            put("type", JsonPrimitive("toolResult"))
+            put("toolCallId", JsonPrimitive("android-screenshot-call-$id"))
+            put("name", JsonPrimitive(name))
+            put("content", JsonPrimitive(result))
+            put("isError", JsonPrimitive(isError))
+          },
+        )
+      },
+    )
+  }
 
   private fun chatHistory(): String =
     buildJsonObject {

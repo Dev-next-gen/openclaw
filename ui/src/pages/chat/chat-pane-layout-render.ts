@@ -213,6 +213,8 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       lastReadAt: selectedSession?.lastReadAt,
       pullRequests: this.sessionPullRequests,
       companion: companionThread,
+      companionFocusRequest: this.sessionCompanionFocusRequest,
+      canFocusCompanion: () => this.active && this.presented,
       companionPresented:
         this.presented &&
         this.visuallyPresented &&
@@ -222,7 +224,6 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
         this.sessionCompanionThreads.setDraft(state.sessionKey, draft, currentAgentId),
       onCompanionVisibilityChange: this.setSessionObserverVisibility,
       connected: state.connected,
-      pendingQuestion: companionThread.pendingQuestion,
       onClearCompanion: () => void this.clearSessionCompanion(),
       onRefreshTasks: backgroundTasks.onRefresh,
       tasksLoading: backgroundTasks.loading,

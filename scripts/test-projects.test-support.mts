@@ -36,13 +36,17 @@ import {
   isDatabaseWorkerCoreTestFile,
 } from "../test/vitest/vitest.database-worker-core-paths.mjs";
 import { codexExtensionTestRoots } from "../test/vitest/vitest.extension-codex-paths.mjs";
-import { databaseWorkerExtensionTestFiles } from "../test/vitest/vitest.extension-database-workers-paths.mjs";
+import {
+  databaseWorkerExtensionTestFiles,
+  databaseWorkerExtensionTestRoots,
+} from "../test/vitest/vitest.extension-database-workers-paths.mjs";
 import { matrixExtensionTestRoots } from "../test/vitest/vitest.extension-matrix-paths.mjs";
 import { telegramExtensionTestRoots } from "../test/vitest/vitest.extension-telegram-paths.mjs";
 import {
   gatewayDatabaseWorkerTestFiles,
   gatewayPluginTestFiles,
 } from "../test/vitest/vitest.gateway-server-paths.mjs";
+import { intersectIncludePatterns } from "../test/vitest/vitest.include-patterns.ts";
 import { packageContractTestFiles } from "../test/vitest/vitest.package-contract-paths.mjs";
 import { resolveVitestFsModuleCacheRoot } from "../test/vitest/vitest.performance-config.ts";
 import {
@@ -63,6 +67,7 @@ import {
   isControlUiSourcePath,
   isPluginControlUiPath,
   isUiBrowserTestFile,
+  uiTimingTestFiles,
 } from "../test/vitest/vitest.ui-paths.mjs";
 import {
   getUnitFastIsolatedTestFiles,
@@ -82,7 +87,11 @@ import {
   listChangedPathsFromGit as listChangedPathsFromGitSource,
 } from "./changed-lanes.mts";
 import { parsePermissiveBooleanToken } from "./lib/arg-utils.mts";
-import { getChangedPathFacts } from "./lib/changed-path-facts.mjs";
+import {
+  getChangedPathFacts,
+  isTestFileTarget,
+  isTestSupportFileTarget,
+} from "./lib/changed-path-facts.mjs";
 import {
   GIT_LS_FILES_MAX_BUFFER_BYTES,
   createExtensionTestProcessTargetChunks,
@@ -119,6 +128,8 @@ import {
   resolveShardTimingKey,
   type VitestShardTimingSpec,
 } from "./lib/vitest-shard-metadata.mts";
+
+export { isTestFileTarget } from "./lib/changed-path-facts.mjs";
 
 type VitestRunPlan = {
   config: string;
@@ -298,6 +309,10 @@ const EXTENSION_TEST_PROCESS_ROOTS = new Map([
   [EXTENSION_CODEX_VITEST_CONFIG, codexExtensionTestRoots],
   [EXTENSION_MATRIX_VITEST_CONFIG, matrixExtensionTestRoots],
   [EXTENSION_TELEGRAM_VITEST_CONFIG, telegramExtensionTestRoots],
+  [
+    EXTENSION_DATABASE_WORKERS_VITEST_CONFIG,
+    [...databaseWorkerExtensionTestRoots, ...databaseWorkerExtensionTestFiles],
+  ],
 ]);
 
 const FULL_SUITE_CONFIG_WEIGHT = new Map([
@@ -465,6 +480,7 @@ const BROAD_TOOLING_SCRIPT_TEST_TARGET_CHUNK_SIZE = 60;
 const FULL_SUITE_AGENTS_CORE_TEST_TARGET_CHUNK_COUNT = 6;
 const FULL_SUITE_TOOLING_TEST_TARGET_CHUNK_SIZE = 2;
 const FULL_SUITE_UNIT_FAST_TEST_TARGET_CHUNK_SIZE = 70;
+const FULL_SUITE_UNIT_SRC_TEST_TARGET_CHUNK_SIZE = 150;
 const TUI_VITEST_CONFIG = "test/vitest/vitest.tui.config.ts";
 const TUI_PTY_VITEST_CONFIG = "test/vitest/vitest.tui-pty.config.ts";
 const UI_VITEST_CONFIG = "test/vitest/vitest.ui.config.ts";
@@ -540,6 +556,7 @@ const VITEST_CONFIG_BY_KIND: Record<string, string> = {
   ui: UI_VITEST_CONFIG,
   uiIsolated: UI_ISOLATED_VITEST_CONFIG,
   uiBrowser: UI_BROWSER_VITEST_CONFIG,
+  uiTiming: "test/vitest/vitest.ui-timing.config.ts",
   uiE2e: UI_E2E_VITEST_CONFIG,
   unitSrc: UNIT_SRC_VITEST_CONFIG,
   unitSecurity: UNIT_SECURITY_VITEST_CONFIG,
@@ -1055,6 +1072,31 @@ function listUnitFastFullSuiteTestTargets() {
   );
 }
 
+let cachedUnitSrcFullSuiteTestTargets: string[] | null = null;
+let cachedUnitSrcFullSuiteTestTargetsCwd: string | null = null;
+
+function listUnitSrcFullSuiteTestTargets(cwd: string) {
+  if (cachedUnitSrcFullSuiteTestTargets && cachedUnitSrcFullSuiteTestTargetsCwd === cwd) {
+    return cachedUnitSrcFullSuiteTestTargets;
+  }
+  const unitFastTargets = new Set(getUnitFastTestFiles());
+  const srcDir = path.join(cwd, "src");
+  cachedUnitSrcFullSuiteTestTargets = (
+    fs.existsSync(srcDir) ? listRepoFilesRecursive(srcDir, cwd) : []
+  )
+    .filter(
+      (file) =>
+        file.endsWith(".test.ts") &&
+        isUnitConfigTestFile(file) &&
+        !unitFastTargets.has(file) &&
+        !path.matchesGlob(file, "src/acp/**") &&
+        !path.matchesGlob(file, "src/security/**"),
+    )
+    .toSorted((left, right) => left.localeCompare(right));
+  cachedUnitSrcFullSuiteTestTargetsCwd = cwd;
+  return cachedUnitSrcFullSuiteTestTargets;
+}
+
 function listAgentsCoreFullSuiteTestTargets(cwd: string) {
   const isolatedTests = new Set([
     ...agentVitestProjectOwners.spawnProductionBoundary.include,
@@ -1101,24 +1143,74 @@ function createBroadToolingScriptPlans(params: VitestRunPlan & { cwd: string }) 
     : null;
 }
 
-function createBoundedExtensionPlans(plan: VitestRunPlan, env?: NodeJS.ProcessEnv) {
+function ownsIncludeSelection(
+  includePatterns: string[] | null,
+  ownedTargets?: ReadonlySet<string>,
+) {
+  return (
+    includePatterns !== null &&
+    includePatterns.length > 0 &&
+    includePatterns.every((pattern) => ownedTargets?.has(pattern))
+  );
+}
+
+function resolveInheritedIncludeScope(
+  includePatterns: string[],
+  inheritedPatterns: string[],
+  ownedTargets?: ReadonlySet<string>,
+) {
+  const owned = includePatterns.filter((pattern) => ownedTargets?.has(pattern));
+  if (owned.length === includePatterns.length) {
+    return includePatterns;
+  }
+  return (
+    intersectIncludePatterns(
+      uniqueOrdered([...inheritedPatterns, ...owned]),
+      includePatterns,
+      path.matchesGlob,
+    ) ?? includePatterns
+  );
+}
+
+function createBoundedExtensionPlans(
+  plan: VitestRunPlan,
+  env?: NodeJS.ProcessEnv,
+  ownedTargets?: ReadonlySet<string>,
+) {
   const { config, forwardedArgs, watchMode } = plan;
   const roots = EXTENSION_TEST_PROCESS_ROOTS.get(config);
   if (watchMode || !roots) {
     return [plan];
   }
-  // A CI include file already owns the test scope. Keep that file set, but
-  // still honor process lifetime so isolate:true configs cannot re-import
-  // a second heavy file in the same Vitest process.
-  const includeFilePath = env?.[INCLUDE_FILE_ENV_KEY]?.trim();
+  // Broad CI selections keep their inherited scope and process limits.
+  // Explicit owned selections do not depend on borrowed include metadata.
+  const includeFilePath = ownsIncludeSelection(plan.includePatterns, ownedTargets)
+    ? undefined
+    : env?.[INCLUDE_FILE_ENV_KEY]?.trim();
   if (includeFilePath) {
     if (!fs.existsSync(includeFilePath)) {
       return [{ ...plan, includePatterns: null }];
     }
-    const scopedTargets = loadIncludePatternsForSpecFilter(env ?? {}) ?? [];
+    const inheritedTargets = loadIncludePatternsForSpecFilter(env ?? {}) ?? [];
+    const scopedTargets = plan.includePatterns
+      ? resolveInheritedIncludeScope(plan.includePatterns, inheritedTargets, ownedTargets)
+      : inheritedTargets;
+    if (scopedTargets.length === 0) {
+      return [];
+    }
     const chunks = splitExtensionTestProcessTargets(config, scopedTargets);
     if (chunks.length <= 1) {
-      return [{ ...plan, includePatterns: null }];
+      return [
+        {
+          ...plan,
+          includePatterns:
+            !plan.includePatterns?.some((target) => ownedTargets?.has(target)) &&
+            scopedTargets.length === inheritedTargets.length &&
+            scopedTargets.every((target, index) => target === inheritedTargets[index])
+              ? null
+              : scopedTargets,
+        },
+      ];
     }
     return chunks.map((includePatterns) => ({
       config,
@@ -1127,7 +1219,13 @@ function createBoundedExtensionPlans(plan: VitestRunPlan, env?: NodeJS.ProcessEn
       watchMode,
     }));
   }
-  const chunks = createExtensionTestProcessTargetChunks(config, roots, forwardedArgs);
+  const chunks = createExtensionTestProcessTargetChunks(
+    config,
+    config === EXTENSION_DATABASE_WORKERS_VITEST_CONFIG && plan.includePatterns
+      ? plan.includePatterns
+      : roots,
+    forwardedArgs,
+  );
   if (chunks.length <= 1) {
     return [plan];
   }
@@ -1179,22 +1277,6 @@ function isGlobTarget(arg: string) {
   return /[*?[\]{}]|[@+!]\(/u.test(arg);
 }
 
-function isFileLikeTarget(arg: string) {
-  return /\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(arg);
-}
-
-export function isTestFileTarget(arg: string) {
-  return /\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(arg);
-}
-
-export function isTestSupportFileTarget(arg: string) {
-  if (/(?:^|\/)(?:test-helpers|test-support)(?:\/|$)/u.test(arg)) {
-    return true;
-  }
-  const basename = path.posix.basename(arg).replace(/\.[cm]?[jt]sx?$/u, "");
-  return /(?:^|[._-])(?:suite|test-(?:helpers|support))(?:[._-]|$)/u.test(basename);
-}
-
 function isLikelyFileTarget(arg: string) {
   return /(?:^|\/)[^/]+\.[A-Za-z0-9]+$/u.test(arg);
 }
@@ -1206,7 +1288,7 @@ function isPathLikeTargetArg(arg: string, cwd: string) {
   const relative = toRepoRelativeTarget(arg, cwd);
   return (
     isGlobTarget(arg) ||
-    isFileLikeTarget(arg) ||
+    isTestFileTarget(arg) ||
     isVitestConfigPathLikeTarget(relative) ||
     isExistingPathTarget(arg, cwd) ||
     (path.posix.extname(relative) === "" &&
@@ -1223,9 +1305,17 @@ function toRepoRelativeTarget(arg: string, cwd: string) {
   return normalizePathPattern(path.relative(cwd, absolute));
 }
 
+function explicitIncludeTargets(targetArgs: string[], cwd: string) {
+  return new Set(
+    targetArgs
+      .map((target) => toRepoRelativeTarget(target, cwd))
+      .filter((target) => isTestFileTarget(target) && !isGlobTarget(target)),
+  );
+}
+
 function toScopedIncludePattern(arg: string, cwd: string) {
   const relative = toRepoRelativeTarget(arg, cwd);
-  if (isGlobTarget(relative) || isFileLikeTarget(relative)) {
+  if (isGlobTarget(relative) || isTestFileTarget(relative)) {
     return relative;
   }
   if (isExistingFileTarget(arg, cwd) || isLikelyFileTarget(relative)) {
@@ -3291,6 +3381,9 @@ function resolveToolingTestTargets(changedPath: string, cwd = process.cwd()) {
       ? resolveDirectToolingReferenceTests(implementationPath, cwd)
       : [];
   const targets = [
+    ...(!hasDirectOwner && isRoutableChangedTarget(changedPath) && isTestFileTarget(changedPath)
+      ? [changedPath]
+      : []),
     ...exactTargets,
     ...(explicitTargets ?? []),
     ...semanticTargets,
@@ -3558,7 +3651,7 @@ export function resolveChangedTestTargetPlanForArgs(
 
 function classifyTarget(arg: string, cwd: string, beforeDatabaseWorkerOwnership = false) {
   const relative = toRepoRelativeTarget(arg, cwd);
-  if (databaseWorkerExtensionTestFiles.includes(relative)) {
+  if (!beforeDatabaseWorkerOwnership && databaseWorkerExtensionTestFiles.includes(relative)) {
     return "extensionDatabaseWorkers";
   }
   const configTargetKind = resolveVitestConfigTargetKind(relative);
@@ -3593,6 +3686,9 @@ function classifyTarget(arg: string, cwd: string, beforeDatabaseWorkerOwnership 
   }
   if (isUiIsolatedTestFile(relative)) {
     return "uiIsolated";
+  }
+  if (uiTimingTestFiles.includes(relative)) {
+    return "uiTiming";
   }
   if (isUiBrowserTestFile(relative)) {
     return "uiBrowser";
@@ -3765,7 +3861,7 @@ function classifyTarget(arg: string, cwd: string, beforeDatabaseWorkerOwnership 
         ? agentVitestProjectOwners.all.kind
         : agentVitestProjectOwners.support.kind;
     }
-    return isFileLikeTarget(relative) &&
+    return isTestFileTarget(relative) &&
       path.posix.dirname(relative) === agentVitestProjectOwners.core.root
       ? agentVitestProjectOwners.core.kind
       : agentVitestProjectOwners.support.kind;
@@ -3908,6 +4004,7 @@ export function buildVitestRunPlans(
   const changedTargetArgs =
     targetArgs.length === 0 ? resolveChangedTargetArgs(args, cwd, listChangedPaths, options) : null;
   const requestedTargetArgs = changedTargetArgs ?? targetArgs;
+  const ownedTargets = explicitIncludeTargets(targetArgs, cwd);
   if (
     watchMode &&
     requestedTargetArgs.some((target) => {
@@ -4075,6 +4172,16 @@ export function buildVitestRunPlans(
     groupedTargets.set("toolingIsolated", current);
   }
   const uiTargets = groupedTargets.get("ui") ?? [];
+  const impliedUiTimingTargets = uiTimingTestFiles.filter((file) =>
+    uiTargets.some((targetArg) =>
+      includePatternMatchesAnyFile(toScopedIncludePattern(targetArg, cwd), [file]),
+    ),
+  );
+  if (impliedUiTimingTargets.length > 0) {
+    groupedTargets.set("uiTiming", [
+      ...new Set([...(groupedTargets.get("uiTiming") ?? []), ...impliedUiTimingTargets]),
+    ]);
+  }
   const broadUiTargets = uiTargets.filter(
     (targetArg) => !isTestFileTarget(toRepoRelativeTarget(targetArg, cwd)),
   );
@@ -4108,9 +4215,10 @@ export function buildVitestRunPlans(
     }
     groupedTargets.set("uiIsolated", current);
   }
-  const cliTargets = groupedTargets.get("cli") ?? [];
+  // Source-child ownership can cross shared suites (for example state tests).
+  // Match every active target so broad selections cannot silently omit excluded children.
   const impliedCliProcessTargets = cliProcessTestFiles.filter((file) =>
-    cliTargets.some((targetArg) =>
+    activeTargetArgs.some((targetArg) =>
       includePatternMatchesAnyFile(toScopedIncludePattern(targetArg, cwd), [file]),
     ),
   );
@@ -4124,11 +4232,18 @@ export function buildVitestRunPlans(
     groupedTargets.set("cliProcess", current);
   }
 
+  const impliedExtensionWorkerTargets = classifiedTargets
+    .filter(({ kind }) => kind === "extensionDatabaseWorkers")
+    .map(({ relative }) => relative);
+  const impliedWatchWorkerTargets = [
+    ...impliedDatabaseWorkerTargets,
+    ...impliedExtensionWorkerTargets,
+  ];
   const previousWatchKinds = watchMode
     ? new Set(classifiedTargets.map(({ targetArg }) => classifyTarget(targetArg, cwd, true)))
     : new Set<string>();
   if (watchMode && (groupedTargets.size > 1 || previousWatchKinds.size > 1)) {
-    if (impliedDatabaseWorkerTargets.length > 0 && previousWatchKinds.size === 1) {
+    if (impliedWatchWorkerTargets.length > 0 && previousWatchKinds.size === 1) {
       const previousKind = [...previousWatchKinds][0]!;
       const wholeOwner = classifiedTargets.some(({ targetArg }) =>
         shouldUseWholeConfigTarget(previousKind, targetArg, cwd),
@@ -4138,10 +4253,10 @@ export function buildVitestRunPlans(
           config: "test/vitest/vitest.database-worker-watch.config.ts",
           databaseWorkerWatchOwner: VITEST_CONFIG_BY_KIND[previousKind] ?? DEFAULT_VITEST_CONFIG,
           databaseWorkerWatchTests: wholeOwner
-            ? databaseWorkerCoreTestFiles.filter(
+            ? [...databaseWorkerCoreTestFiles, ...databaseWorkerExtensionTestFiles].filter(
                 (file) => classifyTarget(file, cwd, true) === previousKind,
               )
-            : impliedDatabaseWorkerTargets,
+            : impliedWatchWorkerTargets,
           forwardedArgs: nonTargetArgs,
           includePatterns: wholeOwner
             ? null
@@ -4184,7 +4299,7 @@ export function buildVitestRunPlans(
       kind === "packageContract" ||
       grouped.every((targetArg) => isCanonicalAgentOwnerDirectoryTarget(targetArg, cwd)) ||
       (kind === "default" &&
-        grouped.every((targetArg) => isFileLikeTarget(toRepoRelativeTarget(targetArg, cwd))));
+        grouped.every((targetArg) => isTestFileTarget(toRepoRelativeTarget(targetArg, cwd))));
     const useWholeConfigTarget = grouped.some((targetArg) =>
       shouldUseWholeConfigTarget(kind, targetArg, cwd),
     );
@@ -4244,7 +4359,8 @@ export function buildVitestRunPlans(
       );
     });
     const boundedExtensionPlans =
-      boundedExtensionRoots.length > 0 && boundedRootsCoverGroupedTargets
+      kind === "extensionDatabaseWorkers" ||
+      (boundedExtensionRoots.length > 0 && boundedRootsCoverGroupedTargets)
         ? createBoundedExtensionPlans(
             {
               config,
@@ -4253,6 +4369,7 @@ export function buildVitestRunPlans(
               watchMode,
             },
             options.env,
+            ownedTargets,
           )
         : null;
     if (boundedExtensionPlans) {
@@ -4319,6 +4436,13 @@ export function buildFullSuiteVitestRunPlans(args: string[], cwd = process.cwd()
           const chunkCount = Math.ceil(
             targets.length / FULL_SUITE_UNIT_FAST_TEST_TARGET_CHUNK_SIZE,
           );
+          chunks = splitTargetChunks(targets, chunkCount);
+        } else if (config === UNIT_SRC_VITEST_CONFIG) {
+          // The 600+ file process can run for 20 minutes and has produced late,
+          // non-reproducible mock-transform failures under Bun. Bound the worker
+          // lifetime while preserving the complete file inventory.
+          const targets = listUnitSrcFullSuiteTestTargets(cwd);
+          const chunkCount = Math.ceil(targets.length / FULL_SUITE_UNIT_SRC_TEST_TARGET_CHUNK_SIZE);
           chunks = splitTargetChunks(targets, chunkCount);
         } else if (config === TOOLING_VITEST_CONFIG) {
           // Tooling tests spawn package managers and native helpers. Keep native
@@ -4595,11 +4719,33 @@ export function createVitestRunSpecs(
 ) {
   const cwd = params.cwd ?? process.cwd();
   const baseEnv = params.baseEnv ?? process.env;
+  const ownedTargets = explicitIncludeTargets(parseTestProjectsArgs(args, cwd).targetArgs, cwd);
   const plans = filterPlansForContractIncludeFile(
     buildVitestRunPlans(args, cwd, listChangedPathsFromGit, { env: baseEnv }),
     baseEnv,
+    ownedTargets,
   );
-  return plans.map((plan, index) => {
+  const inheritedIncludes = plans.some(
+    (plan) =>
+      plan.includePatterns !== null && !ownsIncludeSelection(plan.includePatterns, ownedTargets),
+  )
+    ? loadIncludePatternsForSpecFilter(baseEnv)
+    : null;
+  return plans.flatMap((originalPlan, index) => {
+    const plan =
+      originalPlan.includePatterns && inheritedIncludes
+        ? {
+            ...originalPlan,
+            includePatterns: resolveInheritedIncludeScope(
+              originalPlan.includePatterns,
+              inheritedIncludes,
+              ownedTargets,
+            ),
+          }
+        : originalPlan;
+    if (inheritedIncludes && plan.includePatterns?.length === 0) {
+      return [];
+    }
     const includeFilePath = plan.includePatterns
       ? path.join(os.tmpdir(), `openclaw-vitest-include-${randomUUID()}-${index}.json`)
       : null;
@@ -4648,12 +4794,28 @@ function includePatternMatchesConfig(candidate: string, configPatterns: readonly
   );
 }
 
-function filterPlansForContractIncludeFile(plans: VitestRunPlan[], env: NodeJS.ProcessEnv) {
+function filterPlansForContractIncludeFile(
+  plans: VitestRunPlan[],
+  env: NodeJS.ProcessEnv,
+  ownedTargets?: ReadonlySet<string>,
+) {
+  if (
+    !plans.some(
+      (plan) =>
+        CHANNEL_CONTRACT_CONFIG_PATTERNS.has(plan.config) &&
+        !ownsIncludeSelection(plan.includePatterns, ownedTargets),
+    )
+  ) {
+    return plans;
+  }
   const includePatterns = loadIncludePatternsForSpecFilter(env);
   if (!includePatterns) {
     return plans;
   }
   return plans.filter((plan) => {
+    if (plan.includePatterns?.some((pattern) => ownedTargets?.has(pattern))) {
+      return true;
+    }
     const configPatterns = CHANNEL_CONTRACT_CONFIG_PATTERNS.get(plan.config);
     if (!configPatterns) {
       return true;

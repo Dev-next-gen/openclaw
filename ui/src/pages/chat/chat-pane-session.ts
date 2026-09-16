@@ -27,6 +27,7 @@ import { parseAgentSessionKey, scopedSessionArtifactKey } from "../../lib/sessio
 import { releaseChatAttachmentPayloads } from "./attachment-payload-store.ts";
 import { catalogMessageId } from "./catalog-message-id.ts";
 import { loadChatBranches } from "./chat-history-branches.ts";
+import { getAcceptedChatHistorySession } from "./chat-history-state.ts";
 import {
   CATALOG_TOOL_RESULT_PREVIEW_MAX_CHARS,
   catalogRawResult,
@@ -37,6 +38,7 @@ import { retirePullRequestRefreshes } from "./chat-pull-request-refresh.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { resolveChatAgentId, selectedChatSessionRow } from "./chat-state-route.ts";
 import {
+  chatPullRequestId,
   dismissChatPullRequest,
   listDismissedChatPullRequests,
 } from "./components/chat-pull-requests.ts";
@@ -46,6 +48,26 @@ import { scheduleChatScroll } from "./scroll.ts";
 export abstract class ChatPaneSession extends ChatPaneTaskSuggestions {
   private deferredSessionHydrationActive = false;
   private pendingDeferredSessionHydration: (() => void) | null = null;
+
+  protected secondarySessionReadsReady(explicit = false): boolean {
+    const state = this.state;
+    return Boolean(
+      state?.connected &&
+      this.presented &&
+      document.visibilityState !== "hidden" &&
+      (explicit ||
+        (!this.deferredSessionHydrationActive &&
+          (parseCatalogSessionKey(state.sessionKey) ||
+            this.transcriptReady ||
+            getAcceptedChatHistorySession(state)))),
+    );
+  }
+
+  protected get visibleSessionPullRequests(): ControlUiSessionPullRequest[] {
+    return this.sessionPullRequests.filter(
+      (pullRequest) => !this.dismissedSessionPullRequestIds.has(chatPullRequestId(pullRequest)),
+    );
+  }
 
   protected refreshSessionPullRequests(options: { refresh?: boolean } = {}): boolean {
     if (!this.presented) {
@@ -201,7 +223,7 @@ export abstract class ChatPaneSession extends ChatPaneTaskSuggestions {
         retireIfCurrent();
         return;
       }
-      if (!this.presented) {
+      if (!this.presented || document.visibilityState === "hidden") {
         this.pendingDeferredSessionHydration = () => scheduleHydration(historyCommitted);
         return;
       }
@@ -209,8 +231,10 @@ export abstract class ChatPaneSession extends ChatPaneTaskSuggestions {
       // These affordances do not shape the transcript. Start them together only
       // after the transcript paints; a DOM commit still runs before the browser can paint.
       scheduleControlUiAfterPaint(state, () => {
-        if (isCurrent() && this.presented) {
+        if (isCurrent() && this.presented && document.visibilityState !== "hidden") {
           this.deferredSessionHydrationActive = false;
+          state.requestUpdate?.();
+          void this.refreshTaskSuggestions({ automatic: true });
           if (historyCommitted) {
             this.markSessionRead(selectedChatSessionRow(state));
           }
@@ -268,6 +292,8 @@ export abstract class ChatPaneSession extends ChatPaneTaskSuggestions {
     // not an operation failure and should not latch the unread retry guard.
     if (
       !access.allowed ||
+      // Shared visibility can still be capped to viewing by the caller's role.
+      row.sharingRole === "viewer" ||
       this.sessionParticipationTracker.resolve({
         catalog: parseCatalogSessionKey(state.sessionKey) !== null,
         listLoading: state.sessionsLoading,
@@ -293,10 +319,10 @@ export abstract class ChatPaneSession extends ChatPaneTaskSuggestions {
             this.unreadPatchGuard.patchFailed(guardKey);
           }
         },
-        () => {
-          // Unlatch so later unread snapshots retry; the session capability
-          // publishes the actionable error for the owning page.
-          this.unreadPatchGuard.patchFailed(guardKey);
+        (error: unknown) => {
+          // The capability publishes the error once; only transient failures
+          // may send another acknowledgement on the next snapshot.
+          this.unreadPatchGuard.patchFailed(guardKey, error);
         },
       );
   }

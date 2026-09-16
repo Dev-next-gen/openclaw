@@ -5,7 +5,7 @@ import {
 } from "../../../plugins/runtime/gateway-request-scope.js";
 import {
   isGatewayRestartDrainError,
-  runWithGatewayIndependentRootWorkAdmission,
+  runWithGatewayDetachedWorkAdmission,
 } from "../../../process/gateway-work-admission.js";
 import { defaultRuntime } from "../../../runtime.js";
 import { retireSessionMcpRuntimeForSessionKey } from "../../agent-bundle-mcp-tools.js";
@@ -13,7 +13,10 @@ import { removeInternalSessionEffectsSession } from "../../internal-session-effe
 import type { SubagentAnnounceDeliveryResult } from "../announce/subagent-announce-dispatch.js";
 import { blockSubagentCompletionDelivery } from "../completion/subagent-completion-admission.store.js";
 import { revokeRequesterCronAuthorityBatch } from "../requester-cron-authority.js";
-import { ensureDeliveryState } from "./subagent-delivery-state.js";
+import {
+  ensureDeliveryState,
+  isCompletedRequesterDeliveryBlocked,
+} from "./subagent-delivery-state.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
 import { shouldSuppressSubagentRecoverySessionEffects } from "./subagent-recovery-state.js";
 import type {
@@ -342,6 +345,9 @@ export function scheduleRequesterSettleWake(
   // terminal status and end evidence so a live child never wakes its requester.
   if (
     entry.collect ||
+    // Also fences older persisted ordinary wakes on restart. Explicit retry
+    // clears suspension; a genuine yielded batch keeps its existing owner.
+    (isCompletedRequesterDeliveryBlocked(entry) && admittedWake?.requesterYieldBatch !== true) ||
     entry.execution.status === "running" ||
     !hasSubagentRunEnded(entry) ||
     !requesterSessionKey ||
@@ -369,8 +375,16 @@ export function scheduleRequesterSettleWake(
   // dispatch and chained re-arms so transcript writes acquire a fresh lock.
   runWithoutOwnedSessionTranscriptWrites(() => {
     void context
-      .runRequesterSettleWake(entry, () =>
-        params.maybeWakeRequesterAfterAllChildrenSettled({
+      .runRequesterSettleWake(entry, async () => {
+        // Admission may wait behind restored work. Revalidate the durable block
+        // after that wait, not only when the wake was initially scheduled.
+        if (
+          isCompletedRequesterDeliveryBlocked(entry) &&
+          entry.requesterSettleWake?.requesterYieldBatch !== true
+        ) {
+          return false;
+        }
+        return params.maybeWakeRequesterAfterAllChildrenSettled({
           requesterSessionKey,
           requesterOrigin: entry.requesterOrigin,
           settledEntry: entry,
@@ -378,8 +392,8 @@ export function scheduleRequesterSettleWake(
             transitionRequesterSettleWakeBatch(context, batch, state),
           completeBatch: (batch, rearmGeneration, outcome) =>
             completeRequesterSettleWakeBatch(context, batch, rearmGeneration, outcome),
-        }),
-      )
+        });
+      })
       .catch((error: unknown) => {
         // Restart admission defers the durable wake to startup; it is not a delivery failure.
         if (isGatewayRestartDrainError(error)) {
@@ -450,9 +464,9 @@ export function completeCleanupBookkeeping(
       );
     };
     const runCleanupTail = (label: string, run: () => Promise<unknown>) => {
-      // Admission can wait beyond retirement or replacement. Recheck ownership
-      // inside the independent root; surviving tails must still block snapshots.
-      void runWithGatewayIndependentRootWorkAdmission(async () => {
+      // Admission can outlive the caller's async scope. Own the tail's lifetime
+      // and recheck row ownership after waiting; surviving tails still block snapshots.
+      void runWithGatewayDetachedWorkAdmission(async () => {
         if (postBookkeepingEffectsAllowed()) {
           await run();
         }

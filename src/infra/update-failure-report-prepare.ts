@@ -151,7 +151,7 @@ function resolveFailedSteps(input: UpdateFailureReportInput): ReportedFailedStep
         ? [
             {
               name: step.step,
-              exitCode: null,
+              exitCode: step.exitCode ?? null,
               failureFacts: step.failureFacts,
               detail: step.detail,
             },
@@ -179,7 +179,8 @@ function resolveUpdateTarget(
   input: UpdateFailureReportInput,
   context: UpdateFailureReportContext,
 ): string {
-  const explicit = input.target?.trim();
+  const explicit =
+    input.target?.trim() || input.recordedRun?.target?.sha || input.recordedRun?.target?.version;
   if (explicit) {
     // update.run records these two display forms from validated campaign facts.
     // Revalidate their scalar payloads before adding the fixed display words.
@@ -265,12 +266,22 @@ async function renderBoundedDiagnostics(
   for (const step of selectUpdateFailureReportSteps(steps)) {
     const phase = sanitizeFactIdentifier(step.name, context);
     const termination = step.termination ? `, termination ${step.termination}` : "";
-    const message =
-      step.failureFacts?.find((fact) => fact.message)?.message ?? step.detail ?? step.stderrTail;
-    const diagnostic = message ? redactPublicSupportDiagnosticLine(message, context) : undefined;
-    diagnostics.push(
-      `Failed phase ${phase}: ${step.exitCode == null && diagnostic && diagnostic !== "[redacted-diagnostic]" ? diagnostic : `exit ${step.exitCode ?? "unknown"}`}${termination}`,
-    );
+    const message = [
+      ...(step.failureFacts ?? []).flatMap((fact) => [fact.message, fact.code]),
+      step.detail,
+      step.stderrTail,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    const diagnostic = redactPublicSupportDiagnosticLine(message, context);
+    const exit = `exit ${step.exitCode ?? "unknown"}`;
+    const detail =
+      diagnostic === "[redacted-diagnostic]"
+        ? exit
+        : step.exitCode == null
+          ? diagnostic
+          : `${exit} (${diagnostic})`;
+    diagnostics.push(`Failed phase ${phase}: ${detail}${termination}`);
     diagnostics.push(
       ...(await Promise.all(
         normalizeUpdateFailureFacts(step.failureFacts ?? [], context.env).map(async (fact) =>
@@ -322,6 +333,7 @@ export async function prepareUpdateFailureReport(
     result: {
       ...request.result,
       reason: request.result.reason ?? recordedRun?.reason ?? undefined,
+      after: request.result.after ?? recordedRun?.after,
     },
   };
   const env = options.env ?? process.env;

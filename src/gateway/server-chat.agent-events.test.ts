@@ -29,6 +29,7 @@ import {
 import {
   emitAgentEvent as emitRuntimeAgentEvent,
   emitAgentEventForOwner,
+  emitAgentEventForRunContext,
   getAgentEventLifecycleGeneration,
   onAgentRuntimeEvent,
   resetAgentEventsForTest,
@@ -37,6 +38,7 @@ import {
 import {
   clearAgentRunContext as clearRegisteredAgentRunContext,
   claimAgentRunContext,
+  getAgentRunContext,
   registerAgentRunContext,
   releaseAgentRunContext,
 } from "../infra/agent-run-registry.js";
@@ -3596,6 +3598,59 @@ describe("agent event handler", () => {
     });
   });
 
+  it("publishes candidate changes and clearing without persisting session selection", ({
+    onTestFinished,
+  }) => {
+    const runId = "run-live-model";
+    registerAgentRunContext(runId, {
+      agentId: "main",
+      sessionKey: "session-1",
+      sessionId: "session-id",
+      projectSessionActive: true,
+    });
+    vi.mocked(loadGatewaySessionRow).mockImplementation(() => ({
+      key: "session-1",
+      kind: "direct",
+      updatedAt: 1,
+      status: "running",
+      modelProvider: "selected",
+      model: "configured",
+      activeModelProvider: getAgentRunContext(runId)?.activeModel?.provider,
+      activeModel: getAgentRunContext(runId)?.activeModel?.model,
+    }));
+    const { broadcastToConnIds, sessionEventSubscribers, handler } = createHarness({
+      resolveSessionKeyForRun: () => "session-1",
+      resolveSessionActiveRunState: () => ({ active: true, runIds: [runId] }),
+    });
+    sessionEventSubscribers.subscribe("conn-model");
+    onTestFinished(onAgentRuntimeEvent(handler));
+    const runContext = getAgentRunContext(runId)!;
+    for (const model of ["primary", "fallback", null]) {
+      emitAgentEventForRunContext(
+        {
+          runId,
+          stream: "lifecycle",
+          data: { phase: "model", provider: model === null ? null : "provider", model },
+        },
+        runContext,
+      );
+    }
+    const changes = broadcastToConnIds.mock.calls.filter(([event]) => event === "sessions.changed");
+    expect(changes).toHaveLength(3);
+    for (const [index, model] of ["primary", "fallback", null].entries()) {
+      expectPayloadFields(changes[index]?.[1], {
+        phase: "model",
+        modelProvider: "selected",
+        model: "configured",
+        activeModelProvider: model === null ? null : "provider",
+        activeModel: model,
+        hasActiveRun: true,
+        activeRunIds: [runId],
+      });
+    }
+    expect(persistGatewaySessionLifecycleEventMock).not.toHaveBeenCalled();
+  });
+
   it("broadcasts terminal session status to session subscribers on lifecycle end", async () => {
     vi.mocked(loadGatewaySessionRow).mockReturnValue({
       key: "session-finished",
@@ -5969,6 +6024,47 @@ describe("agent event handler", () => {
     ).toBe(false);
     expect(clearAgentRunContext).toHaveBeenCalledWith("run-chat-send");
     expect(agentRunSeq.has("run-chat-send")).toBe(false);
+  });
+
+  it("publishes the selected saved partial with its terminal error and retains the backstop diagnostic", () => {
+    const { broadcast, chatRunState, handler } = createHarness({
+      resolveSessionKeyForRun: () => "session-saved-error",
+    });
+    const runId = "run-saved-error";
+    registerChatRun(chatRunState, runId, "session-saved-error", runId);
+    registerAgentRunContext(runId, { sessionKey: "session-saved-error" });
+    emitAgentEvent(handler, runId, "assistant", { itemId: "earlier", text: "Earlier candidate" });
+    emitAgentEvent(handler, runId, "assistant", { itemId: "later", text: "Saved partial" });
+    emitAgentEvent(handler, runId, "assistant", {
+      text: "Saved partial",
+      itemId: "saved-partial",
+      replace: true,
+      replaceable: true,
+    });
+    emitAgentEvent(handler, runId, "lifecycle", {
+      phase: "finishing",
+      error: "client closed",
+      assistantTranscriptIdempotencyKey: "saved-partial",
+    });
+    expect(
+      chatBroadcastCalls(broadcast).filter(([, payload]) => payload.state === "error"),
+    ).toHaveLength(0);
+    emitAgentEvent(handler, runId, "lifecycle", {
+      phase: "error",
+      executionSettled: true,
+      error: "client closed",
+      assistantTranscriptIdempotencyKey: "saved-partial",
+    });
+    const errors = chatBroadcastCalls(broadcast).filter(([, payload]) => payload.state === "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.[1]).toMatchObject({
+      errorMessage: "client closed",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Saved partial" }],
+        __openclaw: { runId, idempotencyKey: "saved-partial" },
+      },
+    });
   });
 
   it("emits lifecycle chat errors for active chat.send runs with a chat run link", () => {

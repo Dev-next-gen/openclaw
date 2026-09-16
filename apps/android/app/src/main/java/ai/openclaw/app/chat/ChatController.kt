@@ -1124,9 +1124,13 @@ class ChatController internal constructor(
   }
 
   /** Restores the selected gateway's local state without waiting for transport availability. */
-  fun restoreSelectedGatewayOfflineState() {
-    refresh()
-    scope.launch { publishOutbox() }
+  suspend fun restoreSelectedGatewayOfflineState() {
+    val cacheReady = CompletableDeferred<Unit>()
+    refreshCommands()
+    refreshHistoryForRecovery(forceHealth = true, cacheReady = cacheReady)
+    // Only local hydration gates the handoff. Never await live history or network health here.
+    cacheReady.await()
+    publishOutbox()
   }
 
   /** Purges cached transcripts and queued sends for one retired authentication scope. */
@@ -1611,12 +1615,6 @@ class ChatController internal constructor(
     Reconcile,
     FinalizeMutation,
   }
-
-  /** Rewinds the current transcript at one canonical history entry. */
-  suspend fun rewindSessionAtEntry(
-    sessionKey: String,
-    entryId: String,
-  ): String? = rewindSessionAtEntryResult(sessionKey, entryId)?.editorText
 
   suspend fun rewindSessionAtEntryResult(
     sessionKey: String,
@@ -4483,7 +4481,10 @@ class ChatController internal constructor(
    * owned until that authoritative snapshot resolves them; resetting healthOk here
    * would block sends after reconnect.
    */
-  private fun refreshHistoryForRecovery(forceHealth: Boolean = false) {
+  private fun refreshHistoryForRecovery(
+    forceHealth: Boolean = false,
+    cacheReady: CompletableDeferred<Unit>? = null,
+  ) {
     val (key, generation) =
       synchronized(gatewayScopeApplyLock) {
         // Automatic hydration retries history failures without dismissing unrelated action errors.
@@ -4509,7 +4510,7 @@ class ChatController internal constructor(
       synchronized(pendingRuns) {
         pendingRuns + optimisticMessagesByRunId.keys + unresolvedRepliesByRunId.keys
       }
-    bootstrap(sessionKey = key, generation = generation, runIdsToReconcile = runIdsToReconcile)
+    bootstrap(sessionKey = key, generation = generation, runIdsToReconcile = runIdsToReconcile, cacheReady = cacheReady)
   }
 
   // Once a chat is selected, cancelling its UI caller must not abandon hydration.
@@ -4517,38 +4518,47 @@ class ChatController internal constructor(
     sessionKey: String,
     generation: Long,
     runIdsToReconcile: Set<String> = emptySet(),
-  ) = scope.async {
-    val healthRefresh = synchronized(gatewayScopeApplyLock) { pendingHealthRefresh?.takeIf { it.historyGeneration == generation } }
-    try {
-      // Cache-first cold open: live history always replaces cached rows wholesale.
-      primeFromCache(sessionKey, generation)
-      val historyResult =
-        fetchAndApplyHistory(
-          sessionKey,
-          generation,
-          purpose = HistoryRefreshPurpose.RestoreSession,
-          runIdsToReconcile = runIdsToReconcile,
-          refreshBranches = true,
-        )
-      if (historyResult !is HistoryRefreshResult.Applied) return@async
-      if (isSwarmEnabled()) refreshSwarmSessions()
-    } catch (err: CancellationException) {
-      throw err
-    } catch (err: Throwable) {
-      synchronized(gatewayScopeApplyLock) {
-        if (!isCurrentHistoryLoad(sessionKey, _sessionKey.value, generation, historyLoadGeneration.get())) return@async
-        updateErrorText(err.message, historyGeneration = generation)
-      }
-    } finally {
-      finishHistoryHealth(healthRefresh, generation)
-      synchronized(gatewayScopeApplyLock) {
-        if (isCurrentHistoryLoad(sessionKey, _sessionKey.value, generation, historyLoadGeneration.get())) {
-          _historyLoading.value = false
-          scheduleRecoveryHistoryReconciliation(sessionKey, generation, runIdsToReconcile)
+    cacheReady: CompletableDeferred<Unit>? = null,
+  ) = scope
+    .async {
+      val healthRefresh = synchronized(gatewayScopeApplyLock) { pendingHealthRefresh?.takeIf { it.historyGeneration == generation } }
+      try {
+        // Cache-first cold open: live history always replaces cached rows wholesale.
+        try {
+          primeFromCache(sessionKey, generation)
+        } finally {
+          cacheReady?.complete(Unit)
+        }
+        val historyResult =
+          fetchAndApplyHistory(
+            sessionKey,
+            generation,
+            purpose = HistoryRefreshPurpose.RestoreSession,
+            runIdsToReconcile = runIdsToReconcile,
+            refreshBranches = true,
+          )
+        if (historyResult !is HistoryRefreshResult.Applied) return@async
+        if (isSwarmEnabled()) refreshSwarmSessions()
+      } catch (err: CancellationException) {
+        throw err
+      } catch (err: Throwable) {
+        synchronized(gatewayScopeApplyLock) {
+          if (!isCurrentHistoryLoad(sessionKey, _sessionKey.value, generation, historyLoadGeneration.get())) return@async
+          updateErrorText(err.message, historyGeneration = generation)
+        }
+      } finally {
+        finishHistoryHealth(healthRefresh, generation)
+        synchronized(gatewayScopeApplyLock) {
+          if (isCurrentHistoryLoad(sessionKey, _sessionKey.value, generation, historyLoadGeneration.get())) {
+            _historyLoading.value = false
+            scheduleRecoveryHistoryReconciliation(sessionKey, generation, runIdsToReconcile)
+          }
         }
       }
+    }.also { hydration ->
+      // A disposed controller may cancel a queued bootstrap before its body starts.
+      hydration.invokeOnCompletion { cacheReady?.complete(Unit) }
     }
-  }
 
   private fun finishHistoryHealth(
     refresh: HealthRefresh?,
@@ -7698,7 +7708,11 @@ class ChatController internal constructor(
       idempotencyKey = obj["idempotencyKey"].asStringOrNull(),
       runId =
         normalizeChatRunId(metadata?.get("runId"))
-          ?: if (role == "user") normalizeChatRunId(metadata?.get("idempotencyKey")) ?: normalizeChatRunId(obj["idempotencyKey"]) else null,
+          ?: if (role == "user") {
+            normalizeChatRunId(metadata?.get("idempotencyKey")) ?: normalizeChatRunId(obj["idempotencyKey"])
+          } else {
+            normalizeChatRunId(obj["runId"]) ?: normalizeChatRunId(obj["openclawStreamFallback"].asObjectOrNull()?.get("runId"))
+          },
       steerTargetRunId =
         metadata
           ?.get("steerTargetRunId")
@@ -7707,6 +7721,8 @@ class ChatController internal constructor(
           ?.takeIf(String::isNotEmpty),
       entryId = metadata?.get("id").asJsonStringOrNull()?.takeIf { it.isNotBlank() },
       turnBoundary = metadata?.get("turnBoundary") == JsonPrimitive(true),
+      phase = if (role == "assistant") parseChatAssistantPhase(obj) else null,
+      isError = isChatToolError(obj) || obj["stopReason"].asStringOrNull() in setOf("error", "aborted"),
       isSyntheticDisplay = obj["openclawMessageToolMirror"].asObjectOrNull() != null || obj["openclawStreamFallback"].asObjectOrNull() != null,
       truncated =
         truncated == JsonPrimitive(true) ||
@@ -7719,6 +7735,7 @@ class ChatController internal constructor(
       deliveryMirror = parseChatDeliveryMirror(obj["openclawDeliveryMirror"]),
       usage = parseChatMessageUsage(obj),
       cost = parseChatMessageCost(obj),
+      sourceTools = parseChatSourceTools(obj, role),
     )
   }
 
@@ -8426,7 +8443,8 @@ internal fun isCurrentHistoryLoad(
  */
 internal fun parseChatMessageContent(el: JsonElement): ChatMessageContent? {
   val obj = el.asObjectOrNull() ?: return null
-  return when (val type = obj["type"].asStringOrNull() ?: "text") {
+  val rawType = obj["type"].asStringOrNull() ?: "text"
+  return when (val type = normalizeChatToolContentType(rawType) ?: rawType) {
     "text", "input_text", "output_text" -> {
       ChatMessageContent(
         type = "text",
@@ -8479,11 +8497,11 @@ internal fun parseChatMessageContent(el: JsonElement): ChatMessageContent? {
       )
     }
 
-    "toolCall", "tool_call", "toolcall", "tool_use" -> {
+    "toolCall" -> {
       parseToolActivityContent(obj, resultBlock = false)
     }
 
-    "toolResult", "tool_result", "toolresult", "tool_result_block" -> {
+    "toolResult" -> {
       parseToolActivityContent(obj, resultBlock = true)
     }
 
@@ -8491,6 +8509,31 @@ internal fun parseChatMessageContent(el: JsonElement): ChatMessageContent? {
       null
     }
   }
+}
+
+private fun parseChatAssistantPhase(obj: JsonObject): String? {
+  if (!obj["openclawStreamFallback"]
+      .asObjectOrNull()
+      ?.get("itemId")
+      .asJsonStringOrNull()
+      .isNullOrBlank()
+  ) {
+    return "commentary"
+  }
+  val phases =
+    obj["content"].asArrayOrNull().orEmpty().mapNotNull { element ->
+      val block = element.asObjectOrNull() ?: return@mapNotNull null
+      if (block["type"].asStringOrNull() !in setOf("text", "input_text", "output_text")) return@mapNotNull null
+      val signature = block["textSignature"].asJsonStringOrNull() ?: return@mapNotNull null
+      val metadata = runCatching { Json.parseToJsonElement(signature).asObjectOrNull() }.getOrNull()
+      if (metadata?.get("v") != JsonPrimitive(1)) return@mapNotNull null
+      val phase = metadata["phase"].asStringOrNull()?.takeIf { it == "commentary" || it == "final_answer" } ?: return@mapNotNull null
+      phase to !block["text"].asStringOrNull().isNullOrBlank()
+    }
+  // Mixed-phase messages keep every explicit answer outside the work disclosure.
+  if (phases.any { (phase, visible) -> phase == "final_answer" && visible }) return "final_answer"
+  obj["phase"].asStringOrNull()?.takeIf { it == "commentary" || it == "final_answer" }?.let { return it }
+  return phases.map { it.first }.distinct().singleOrNull()
 }
 
 // Match gateway-client user-turn ownership, including the persisted user suffix.
@@ -8608,7 +8651,7 @@ private fun parseToolActivityContent(
         name = name.ifEmpty { "tool" },
         detail = toolDetail(args),
         result = result,
-        isError = obj["isError"] == JsonPrimitive(true),
+        isError = isChatToolError(obj),
         arguments = toolPresentationArguments(args),
       ),
   )
@@ -8618,7 +8661,7 @@ private fun parseTopLevelToolResult(obj: JsonObject): ChatMessageContent? {
   val synthetic =
     buildMap<String, JsonElement> {
       put("type", JsonPrimitive("toolResult"))
-      listOf("toolCallId", "tool_call_id", "toolUseId", "tool_use_id", "callId", "name", "toolName", "tool_name", "isError", "content", "result", "text").forEach { key ->
+      listOf("toolCallId", "tool_call_id", "toolUseId", "tool_use_id", "callId", "name", "toolName", "tool_name", "isError", "is_error", "content", "result", "text").forEach { key ->
         obj[key]?.let { put(key, it) }
       }
     }

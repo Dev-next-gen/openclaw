@@ -7,7 +7,7 @@ import {
   completeProviderModelAccess,
   type PreparedProviderModelAccess,
 } from "../../commands/models/auth-model-policy.js";
-import { runModelsAuthLoginFlowCore } from "../../commands/models/auth.js";
+import { runModelsAuthLoginFlowForGateway } from "../../commands/models/auth.js";
 import { resolveManifestDeclaredProviderAuthChoices } from "../../plugins/provider-auth-choices.js";
 import {
   formatProviderLoginChoiceRef,
@@ -22,7 +22,6 @@ import { WizardSession } from "../../wizard/session.js";
 import { refreshModelAuthStateAfterMutation } from "../model-auth-refresh.js";
 import { createProviderBrowserAuthSession } from "../provider-browser-auth.js";
 import { bindWizardLoginOwner } from "../server-wizard-sessions.js";
-import { getTailscalePublishedOrigin } from "../tailscale-published-origin.js";
 import {
   createAdmittedWizardSession,
   respondSetupAdmissionBusy,
@@ -105,22 +104,21 @@ export const modelsAuthLoginHandlers: GatewayRequestHandlers = {
             await prompter.openUrl?.(url);
             assertFlowCurrent();
           };
-          const published = getTailscalePublishedOrigin();
-          const browser =
-            published && client.browserOrigin?.origin === published.origin
-              ? createProviderBrowserAuthSession({
-                  signal: AbortSignal.any([signal, published.signal]),
-                  openUrl,
-                })
-              : undefined;
+          const browser = client.browserOrigin
+            ? createProviderBrowserAuthSession({
+                signal,
+                openUrl,
+                browserOrigin: client.browserOrigin,
+              })
+            : undefined;
           const assertFlowCurrent = () => {
             signal.throwIfAborted();
             assertCurrent();
             browser?.assertCurrent();
           };
-          let result: Awaited<ReturnType<typeof runModelsAuthLoginFlowCore>>;
+          let result: Awaited<ReturnType<typeof runModelsAuthLoginFlowForGateway>>;
           try {
-            result = await runModelsAuthLoginFlowCore({
+            result = await runModelsAuthLoginFlowForGateway({
               provider: choice.providerId,
               method: choice.methodId,
               ownerPluginId: choice.pluginId,
@@ -135,7 +133,7 @@ export const modelsAuthLoginHandlers: GatewayRequestHandlers = {
               signal: browser?.signal ?? signal,
               isRemote: true,
               openUrl,
-              browserAuthorization: browser?.authorize,
+              browserAuthorization: browser?.available ? browser.authorize : undefined,
               assertCurrent: assertFlowCurrent,
               beforePersistentEffect: () => {
                 assertFlowCurrent();

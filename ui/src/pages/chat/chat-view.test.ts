@@ -592,6 +592,7 @@ function createChatModelControlsProps(state: ChatHeaderTestState): ChatModelCont
   );
   return {
     activeRunId: state.chatRunId,
+    activeRunSessionKey: state.chatRunId ? state.sessionKey : undefined,
     connected: state.connected,
     gatewayAvailable: Boolean(state.client),
     loading: state.chatLoading,
@@ -612,11 +613,12 @@ function createChatModelControlsProps(state: ChatHeaderTestState): ChatModelCont
         value,
         targetSessionKey,
       ),
-    onModelSelect: (value, targetSessionKey) =>
+    onModelSelect: (value, targetSessionKey, agentRuntime) =>
       switchChatModel(
         state as unknown as Parameters<typeof switchChatModel>[0],
         value,
         targetSessionKey,
+        agentRuntime,
       ),
     onThinkingSelect: (value, targetSessionKey) =>
       switchChatThinkingLevel(
@@ -1556,6 +1558,9 @@ describe("chat history pagination", () => {
       "earlier history action",
     ) as HTMLButtonElement;
     expect(button.textContent).toContain("Show earlier");
+    expect(button.getAttribute("aria-label")).toBe("Show earlier");
+    expect(button.getAttribute("aria-busy")).toBe("false");
+    expect(button.disabled).toBe(false);
     expect(button.closest(".chat-thread")).not.toBeNull();
     button.click();
     expect(onShowEarlier).toHaveBeenCalledOnce();
@@ -1568,10 +1573,13 @@ describe("chat history pagination", () => {
       ".chat-history-boundary__action",
       "loading earlier history action",
     ) as HTMLButtonElement;
-    expect(loadingButton.textContent).toContain("Loading earlier history");
+    expect(loadingButton.textContent?.trim()).toBe("Loading earlier…");
+    expect(loadingButton.getAttribute("aria-label")).toBe("Loading earlier…");
     expect(loadingButton.getAttribute("aria-busy")).toBe("true");
     expect(loadingButton.disabled).toBe(true);
     expect(loadingButton.closest(".chat-history-boundary--loading")).not.toBeNull();
+    loadingButton.click();
+    expect(onShowEarlier).toHaveBeenCalledOnce();
 
     renderChatInto(container, {
       historyPagination: { hasMore: true, loading: false, onShowEarlier },
@@ -1581,6 +1589,9 @@ describe("chat history pagination", () => {
       ".chat-history-boundary__action",
       "retry earlier history action",
     ) as HTMLButtonElement;
+    expect(retryButton.textContent?.trim()).toBe("Show earlier");
+    expect(retryButton.getAttribute("aria-label")).toBe("Show earlier");
+    expect(retryButton.getAttribute("aria-busy")).toBe("false");
     expect(retryButton.disabled).toBe(false);
     retryButton.click();
     expect(onShowEarlier).toHaveBeenCalledTimes(2);
@@ -7557,6 +7568,20 @@ describe("chat model controls", () => {
     expect(modelSelect.getAttribute("aria-disabled")).toBe("true");
   });
 
+  it("shows the selected model for an idle session with stale running status", () => {
+    const { state } = createChatHeaderState({
+      model: "primary",
+      modelProvider: "example",
+      models: [{ id: "primary", name: "Primary", provider: "example" }],
+    });
+    const session = expectDefined(state.sessionsResult?.sessions[0], "selected session");
+    Object.assign(session, { status: "running", hasActiveRun: false });
+    const trigger = getChatModelSelect(renderModelControls(state));
+    expect(trigger.textContent).toContain("Primary");
+    expect(trigger.textContent).not.toContain("Model pending");
+    expect(trigger.dataset.chatSelectValue).toBe("example/primary");
+  });
+
   it("shows the session's active fallback model without changing its selected preference", () => {
     const { state } = createChatHeaderState({
       model: "gpt-5.5",
@@ -7583,6 +7608,104 @@ describe("chat model controls", () => {
         .querySelector('[data-chat-model-option="codex/gpt-5.5"]')
         ?.getAttribute("aria-selected"),
     ).toBe("true");
+  });
+
+  it("tracks the current run's primary and fallback model without changing its selection", () => {
+    const { state } = createChatHeaderState({
+      model: "primary",
+      modelProvider: "example",
+      models: [
+        { id: "primary", name: "Primary", provider: "example" },
+        { id: "fallback", name: "Fallback", provider: "example" },
+      ],
+    });
+    state.chatRunId = "current-run";
+    const session = expectDefined(state.sessionsResult?.sessions[0], "selected session");
+    Object.assign(session, {
+      hasActiveRun: true,
+      activeRunIds: ["current-run"],
+      activeModel: "primary",
+      activeModelProvider: "example",
+    });
+    const container = renderModelControls(state);
+    expect(getChatModelSelect(container).textContent).toContain("Primary");
+
+    session.activeModel = "fallback";
+    renderModelControls(state, {}, container);
+    expect(getChatModelSelect(container).textContent).toContain("Fallback");
+    expect(getChatModelSelect(container).dataset.chatSelectValue).toBe("example/primary");
+    expect(
+      container
+        .querySelector('[data-chat-model-option="example/primary"]')
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+  });
+
+  it("preserves the executing provider when its model id exists in another provider's catalog", () => {
+    const { state } = createChatHeaderState({
+      model: "shared",
+      modelProvider: "example",
+      models: [{ id: "shared", name: "Configured model", provider: "example" }],
+    });
+    state.chatRunId = "current-run";
+    Object.assign(expectDefined(state.sessionsResult?.sessions[0], "selected session"), {
+      hasActiveRun: true,
+      activeRunIds: ["current-run"],
+      activeModel: "shared",
+      activeModelProvider: "fallback-provider",
+    });
+    const trigger = getChatModelSelect(renderModelControls(state));
+    expect(trigger.textContent).toContain("fallback-provider/shared");
+    expect(trigger.dataset.chatSelectValue).toBe("example/shared");
+  });
+
+  it.each([
+    {
+      name: "previous idle fallback",
+      hasActiveRun: false,
+      activeRunIds: [],
+      activeModel: "fallback",
+    },
+    {
+      name: "previous run",
+      hasActiveRun: true,
+      activeRunIds: ["previous-run"],
+      activeModel: "fallback",
+    },
+    {
+      name: "previous run without exact identities",
+      hasActiveRun: true,
+      activeRunIds: undefined,
+      activeModel: "fallback",
+    },
+    {
+      name: "unreported executing model",
+      hasActiveRun: true,
+      activeRunIds: ["current-run"],
+      activeModel: undefined,
+    },
+  ])("shows a pending model instead of the $name during a new run", (row) => {
+    const { state } = createChatHeaderState({
+      model: "primary",
+      modelProvider: "example",
+      models: [
+        { id: "primary", name: "Primary", provider: "example" },
+        { id: "fallback", name: "Fallback", provider: "example" },
+      ],
+    });
+    state.chatRunId = "current-run";
+    const session = expectDefined(state.sessionsResult?.sessions[0], "selected session");
+    Object.assign(session, {
+      hasActiveRun: row.hasActiveRun,
+      activeRunIds: row.activeRunIds,
+      activeModel: row.activeModel,
+      activeModelProvider: row.activeModel ? "example" : undefined,
+    });
+    const trigger = getChatModelSelect(renderModelControls(state));
+    expect(trigger.getAttribute("aria-label")).toBe("Chat model: Model pending");
+    expect(trigger.textContent).not.toContain("Primary");
+    expect(trigger.textContent).not.toContain("Fallback");
+    expect(trigger.dataset.chatSelectValue).toBe("example/primary");
   });
 
   it("does not borrow selected-model metadata for an unknown active fallback", () => {
@@ -7813,7 +7936,7 @@ describe("chat model controls", () => {
     expect(modelOption).toBeInstanceOf(HTMLButtonElement);
     modelOption?.click();
 
-    expect(onModelSelect).toHaveBeenCalledWith(modelOption?.dataset.chatModelOption, "main");
+    expect(onModelSelect).toHaveBeenCalledWith(modelOption?.dataset.chatModelOption, "main", null);
   });
 
   it.each([
@@ -7846,7 +7969,11 @@ describe("chat model controls", () => {
       ).find((button) => button.getAttribute("aria-selected") === "false");
       modelOption?.click();
 
-      expect(onModelSelect).toHaveBeenCalledWith(modelOption?.dataset.chatModelOption, "main");
+      expect(onModelSelect).toHaveBeenCalledWith(
+        modelOption?.dataset.chatModelOption,
+        "main",
+        null,
+      );
     },
   );
 
@@ -8036,7 +8163,7 @@ describe("chat model controls", () => {
     getThinkingSlider(container)?.dispatchEvent(new Event("change", { bubbles: true }));
 
     expect(onFastModeSelect).not.toHaveBeenCalled();
-    expect(onModelSelect).toHaveBeenCalledWith(modelOption?.dataset.chatModelOption, "main");
+    expect(onModelSelect).toHaveBeenCalledWith(modelOption?.dataset.chatModelOption, "main", null);
     expect(onThinkingSelect).not.toHaveBeenCalled();
   });
 
@@ -8070,7 +8197,7 @@ describe("chat model controls", () => {
     expect(reset?.textContent).toContain("Default");
     reset?.focus();
     reset?.click();
-    expect(onModelSelect).toHaveBeenCalledWith("", "main");
+    expect(onModelSelect).toHaveBeenCalledWith("", "main", null);
     expect(details?.open).toBe(false);
     expect(document.activeElement).toBe(modelSelect);
     container.remove();
@@ -8095,7 +8222,7 @@ describe("chat model controls", () => {
     expect(defaultRow?.getAttribute("aria-selected")).toBe("false");
     expect(defaultRow?.parentElement?.querySelector("[data-chat-model-option]")).toBe(defaultRow);
     defaultRow?.click();
-    expect(onModelSelect).toHaveBeenCalledWith("", "main");
+    expect(onModelSelect).toHaveBeenCalledWith("", "main", null);
   });
 
   it("keeps the Default row selectable when the default model needs sign-in", () => {
@@ -8123,7 +8250,7 @@ describe("chat model controls", () => {
     expect(defaultRow?.disabled).toBe(false);
     expect(defaultRow?.querySelector("[data-chat-model-auth-warning]")).not.toBeNull();
     defaultRow?.click();
-    expect(onModelSelect).toHaveBeenCalledWith("", "main");
+    expect(onModelSelect).toHaveBeenCalledWith("", "main", null);
     expect(onModelSetup).not.toHaveBeenCalled();
   });
 
@@ -8152,7 +8279,7 @@ describe("chat model controls", () => {
     expect(defaultRow?.getAttribute("aria-selected")).toBe("true");
     expect(defaultRow?.disabled).toBe(false);
     defaultRow?.click();
-    expect(onModelSelect).toHaveBeenCalledWith("", "main");
+    expect(onModelSelect).toHaveBeenCalledWith("", "main", null);
     expect(onModelSetup).not.toHaveBeenCalled();
   });
 
@@ -8180,7 +8307,7 @@ describe("chat model controls", () => {
     expect(defaultRow?.getAttribute("aria-selected")).toBe("false");
     defaultRow?.click();
 
-    expect(onModelSelect).toHaveBeenCalledWith("", "main");
+    expect(onModelSelect).toHaveBeenCalledWith("", "main", null);
   });
 
   it.each(["agent", "global"] as const)(
@@ -8207,7 +8334,7 @@ describe("chat model controls", () => {
       expect(reset?.textContent).toContain("Default");
       reset?.click();
 
-      expect(onModelSelect).toHaveBeenCalledWith("", "main");
+      expect(onModelSelect).toHaveBeenCalledWith("", "main", null);
     },
   );
 
@@ -8241,7 +8368,7 @@ describe("chat model controls", () => {
     // Pre-fix this row was already the selected "inherited" sentinel, so the click
     // was swallowed and the stored pin survived forever.
     defaultRow?.click();
-    expect(onModelSelect).toHaveBeenCalledWith("", "main");
+    expect(onModelSelect).toHaveBeenCalledWith("", "main", null);
 
     // The default moves away again; the untouched pin is still a pin.
     onModelSelect.mockClear();
@@ -8255,7 +8382,7 @@ describe("chat model controls", () => {
     };
     renderModelControls(state, { onModelSelect }, container);
     container.querySelector<HTMLButtonElement>('[data-chat-model-default="true"]')?.click();
-    expect(onModelSelect).toHaveBeenCalledWith("", "main");
+    expect(onModelSelect).toHaveBeenCalledWith("", "main", null);
     container.remove();
   });
 
@@ -8508,13 +8635,17 @@ describe("chat model controls", () => {
       expect(search?.getAttribute("aria-activedescendant")).toBe(highlighted?.id);
 
       search!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-      expect(onModelSelect).toHaveBeenCalledWith("anthropic/claude-sonnet-4-6", "main");
+      expect(onModelSelect).toHaveBeenCalledWith("anthropic/claude-sonnet-4-6", "main", null);
       expect(details?.open).toBe(false);
 
       onModelSelect.mockClear();
       details!.open = true;
       details!.dispatchEvent(new KeyboardEvent("keydown", { key: "3", bubbles: true }));
-      expect(onModelSelect).toHaveBeenCalledExactlyOnceWith("anthropic/claude-sonnet-4-6", "main");
+      expect(onModelSelect).toHaveBeenCalledExactlyOnceWith(
+        "anthropic/claude-sonnet-4-6",
+        "main",
+        null,
+      );
       expect(details?.open).toBe(false);
       container.remove();
     },
@@ -8581,7 +8712,7 @@ describe("chat model controls", () => {
     expect(onModelSelect).not.toHaveBeenCalled();
 
     details!.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
-    expect(onModelSelect).toHaveBeenCalledWith("anthropic/claude-sonnet-4-6", "main");
+    expect(onModelSelect).toHaveBeenCalledWith("anthropic/claude-sonnet-4-6", "main", null);
     container.remove();
   });
 
@@ -9097,7 +9228,7 @@ describe("chat model controls", () => {
     defaultOption?.click();
 
     await waitForFast(() => {
-      expect(onModelSelect).toHaveBeenCalledWith("", sessionKey);
+      expect(onModelSelect).toHaveBeenCalledWith("", sessionKey, null);
     });
   });
 
@@ -9312,7 +9443,7 @@ describe("chat model controls", () => {
     );
     expect(modelOption).toBeInstanceOf(HTMLButtonElement);
     modelOption?.click();
-    expect(onModelSelect).toHaveBeenCalledWith(modelOption?.dataset.chatModelOption, "main");
+    expect(onModelSelect).toHaveBeenCalledWith(modelOption?.dataset.chatModelOption, "main", null);
 
     const slider = getThinkingSlider(container);
     expect(slider).toBeInstanceOf(HTMLInputElement);
@@ -9662,7 +9793,7 @@ describe("chat model controls", () => {
       ?.click();
 
     await waitForFast(() => {
-      expect(onModelSelect).toHaveBeenCalledWith("openai/gpt-5.4", "main");
+      expect(onModelSelect).toHaveBeenCalledWith("openai/gpt-5.4", "main", null);
     });
     render(renderChatModelControls(props), container);
     expect(

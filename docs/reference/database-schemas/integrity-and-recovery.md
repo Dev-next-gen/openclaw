@@ -104,6 +104,20 @@ Integrity-child timeout and incomplete-exit errors include `lastObservedPhase`:
 
 These phases describe messages the parent received, not the child's exact current location or native CPU time. `checking` does not distinguish the integrity check from the foreign-key check. A final result can report failure; phase messages never establish successful validation or release ownership.
 
+Slow asynchronous agent-database opens include optional wall-time measurements:
+
+| Field                       | Measured interval                                                                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `integrityWorkerCheckMs`    | Full integrity and foreign-key checks inside the child, excluding opening and closing the connection.                                 |
+| `integrityWorkerLifetimeMs` | Parent-observed time from forking the child through its close event, including startup, IPC, cleanup and event delivery.              |
+| `integrityOutsideWorkerMs`  | The integrity gate's remaining time outside that child lifetime, including parent preparation, scheduling and admission revalidation. |
+
+Missing measurements stay absent, including a child check killed before reporting
+its duration. These fields are distinct from the calling driver's synchronous
+`integrityCheckSyncMs` and `integrityOutsideCheckMs`. None measures CPU time or
+isolates storage waiting. The parent still waits for child closure and revalidates
+the database and current authority before admission continues.
+
 Startup errors containing `state lease heartbeat did not become ready` include `phase=startup`, the settlement trigger (`timeout` or `message`), and the status observed before the parent marks failure. `status=starting` distinguishes readiness still pending from `status=lost`, where loss was already recorded. `elapsedMs` measures monotonic time since heartbeat startup began; `timeoutMs` is the startup wait budget, capped at five seconds or the remaining initial lease lifetime. These fields do not establish why startup stalled or ownership was lost.
 
 The heartbeat proves ownership, not migration progress. A live but stuck maintenance process can keep its lease; stop that process before retrying Doctor.
@@ -111,6 +125,21 @@ The heartbeat proves ownership, not migration progress. A live but stuck mainten
 ## Troubleshooting
 
 `SQLite read-only worker` failures append `code` and numeric SQLite `errcode` diagnostics when the underlying error supplies valid values, including through a bounded cause chain. Report the full code suffix when investigating a failure. Snapshot and integrity-child timeout errors include the applied budget and source file size; snapshot timeouts report an unknown size if the source stat failed. Integrity-child timeouts also retain `lastObservedPhase`. A generic `disk I/O error` or `SQLITE_IOERR` alone does not prove the disk is full.
+
+### A legacy Workshop index prevents shared-state reads
+
+The `legacy-workshop-review-index` error requires `openclaw doctor --fix`.
+Ordinary Gateway reads and automatic migration do not enter the legacy catalog
+repair path. Healthy reads retain their prepared SQLite queries.
+
+With OpenClaw 2026.9.4, run Doctor before retrying `openclaw update`: the installed
+updater checks database integrity before it can launch the target version.
+
+Doctor checks database versions and active owners before repairing the exact
+known index. It restores catalog readability before loading dependent config
+and plugin state, then continues its normal migration and verification flow.
+The readability repair preserves review rows and schema-version markers;
+unrecognized damage and newer databases remain refused.
 
 ### The shared-state WAL keeps growing
 

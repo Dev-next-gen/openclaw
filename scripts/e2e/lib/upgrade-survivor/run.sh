@@ -103,6 +103,7 @@ FAILURE_MESSAGE=""
 FAILURE_SIGNAL=""
 gateway_pid=""
 plugin_registry_pid=""
+missing_plugin_registry_pid=""
 clawhub_fixture_pid=""
 mock_openai_pid=""
 restart_mock_pid=""
@@ -132,6 +133,7 @@ update_restart_source=""
 update_repair_required="0"
 initial_update_observation_root=""
 last_update_observation_root=""
+workshop_doctor_observation_root=""
 idempotence_seconds=""
 run_completed="0"
 update_outcome=""
@@ -246,6 +248,13 @@ validate_update_restart_mode() {
       return 1
       ;;
   esac
+  if [ "$SCENARIO" = "workshop-doctor-recovery" ] && {
+    [ "$LIVE_OPENAI" != "0" ] || [ "$ROOT_MANAGED_VPS" != "0" ] ||
+    [ "$UPDATE_RESTART_MODE" != "manual" ] || [ "$CANDIDATE_KIND" != "tarball" ];
+  }; then
+    echo "workshop-doctor-recovery requires a candidate tarball, manual restart, and no live provider or managed VPS" >&2
+    return 1
+  fi
 }
 
 json_event() {
@@ -279,6 +288,7 @@ write_summary() {
     SUMMARY_UPDATE_OUTCOME="${update_outcome:-success}" \
     SUMMARY_UPDATE_REPAIR_REQUIRED="$update_repair_required" \
     SUMMARY_UPDATE_RESTART_SOURCE="$update_restart_source" \
+    SUMMARY_INITIAL_UPDATE_OBSERVATION_ROOT="$initial_update_observation_root" \
     SUMMARY_START_SECONDS="$start_seconds" \
     SUMMARY_UPDATE_RESTART_SECONDS="$update_restart_seconds" \
     SUMMARY_IDEMPOTENCE_SECONDS="$idempotence_seconds" \
@@ -297,8 +307,10 @@ write_summary() {
     SUMMARY_RESTART_FIXTURE="$restart_fixture_evidence" \
     SUMMARY_RESTART_RUNTIME_FIXTURE="$restart_runtime_evidence" \
     SUMMARY_RESTART_INFERENCE="$restart_inference" \
-    node <<'NODE'
-const fs = require("node:fs");
+    node --input-type=module <<'NODE'
+import fs from "node:fs";
+import path from "node:path";
+import { readPostCoreSnapshot } from "./scripts/e2e/lib/upgrade-survivor/diagnostics.mjs";
 const phaseLog = process.env.SUMMARY_PHASE_LOG;
 const phases = fs.existsSync(phaseLog)
   ? fs.readFileSync(phaseLog, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line))
@@ -312,6 +324,15 @@ const readJsonOrNull = (file) => {
   if (!file || !fs.existsSync(file)) return null;
   return JSON.parse(fs.readFileSync(file, "utf8"));
 };
+let firstHopPostCore = { availability: "unavailable" };
+if (process.env.SUMMARY_INITIAL_UPDATE_OBSERVATION_ROOT) {
+  try {
+    const snapshot = readPostCoreSnapshot(process.env.SUMMARY_INITIAL_UPDATE_OBSERVATION_ROOT);
+    if (snapshot !== null) firstHopPostCore = { availability: "captured", ...snapshot };
+  } catch {
+    // Missing initial evidence must not be replaced by a later recovery invocation.
+  }
+}
 const summary = {
   status: process.env.SUMMARY_STATUS,
   baseline: {
@@ -330,6 +351,10 @@ const summary = {
   updateOutcome: process.env.SUMMARY_UPDATE_OUTCOME || "success",
   updateRecovery: process.env.SUMMARY_UPDATE_REPAIR_REQUIRED === "1" ? "capability-consent" : null,
   updateRestartSource: process.env.SUMMARY_UPDATE_RESTART_SOURCE || null,
+  firstHopPostCore,
+  workshopDoctorRecovery: process.env.SUMMARY_SCENARIO === "workshop-doctor-recovery"
+    ? readJsonOrNull(path.join(path.dirname(process.env.SUMMARY_JSON), "workshop-doctor-recovery.json"))
+    : undefined,
   restartFixture: readJsonOrNull(process.env.SUMMARY_RESTART_FIXTURE),
   restartRuntimeFixture: readJsonOrNull(process.env.SUMMARY_RESTART_RUNTIME_FIXTURE),
   restartInference: process.env.SUMMARY_RESTART_INFERENCE || null,
@@ -343,7 +368,7 @@ const summary = {
   },
   config: readJsonOrNull(process.env.SUMMARY_CONFIG_COVERAGE),
   recovery: process.env.SUMMARY_SCENARIO === "recovery-cleanup"
-    ? readJsonOrNull(require("node:path").join(require("node:path").dirname(process.env.SUMMARY_JSON), "recovery-evidence.json"))
+    ? readJsonOrNull(path.join(path.dirname(process.env.SUMMARY_JSON), "recovery-evidence.json"))
     : undefined,
   watchosDirectNode: process.env.SUMMARY_SCENARIO === "watchos-direct-node"
     ? {
@@ -473,6 +498,7 @@ watchos_reconnect_restarted_candidate() {
 cleanup() {
   stop_gateway
   openclaw_e2e_stop_process "${plugin_registry_pid:-}"
+  openclaw_e2e_stop_process "${missing_plugin_registry_pid:-}"
   openclaw_e2e_stop_process "${clawhub_fixture_pid:-}"
   openclaw_e2e_stop_process "${mock_openai_pid:-}"
   openclaw_e2e_stop_process "${restart_mock_pid:-}"
@@ -1393,9 +1419,14 @@ update_candidate() {
   if [ "$ROOT_MANAGED_VPS" != "1" ]; then
     update_env+=(OPENCLAW_ALLOW_ROOT=1)
   fi
+  local update_node_options="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$PWD/scripts/e2e/lib/upgrade-survivor/diagnostics.mjs"
+  if [ "$SCENARIO" = "workshop-doctor-recovery" ]; then
+    update_node_options+=" --import=$PWD/scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs"
+    update_env+=("OPENCLAW_UPGRADE_SURVIVOR_WORKSHOP_STATE_DIR=$OPENCLAW_STATE_DIR")
+  fi
   update_env+=(
     "OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT=$observation_root"
-    "NODE_OPTIONS=${NODE_OPTIONS:+$NODE_OPTIONS }--import=$PWD/scripts/e2e/lib/upgrade-survivor/diagnostics.mjs"
+    "NODE_OPTIONS=$update_node_options"
   )
   local update_status=0
   if [ "$SCENARIO" = "recovery-cleanup" ]; then
@@ -1449,6 +1480,25 @@ update_candidate() {
     echo "update did not leave the selected target installed: $installed_version (expected $expected_version)" >&2
     return 1
   fi
+}
+
+assert_workshop_published_refusal() {
+  local refusal_exit=0
+  update_candidate || refusal_exit=$?
+  node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs refusal \
+    "$initial_update_observation_root" "$(package_root)" "$refusal_exit" || return "$?"
+  update_outcome="refused-before-candidate"
+}
+
+run_workshop_doctor() {
+  local stage="$1" log="$2"
+  workshop_doctor_observation_root="$(mktemp -d "$ARTIFACT_ROOT/workshop-$stage-doctor.XXXXXX")"
+  local doctor_node_options="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$PWD/scripts/e2e/lib/upgrade-survivor/diagnostics.mjs --import=$PWD/scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs"
+  openclaw_e2e_maybe_timeout "$COMMAND_TIMEOUT" env -u OPENCLAW_UPDATE_IN_PROGRESS \
+    "OPENCLAW_UPGRADE_SURVIVOR_WORKSHOP_STATE_DIR=$OPENCLAW_STATE_DIR" \
+    "OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT=$workshop_doctor_observation_root" \
+    "NODE_OPTIONS=$doctor_node_options" \
+    openclaw doctor --fix --non-interactive >"$log" 2>&1
 }
 
 replace_historical_mobile_pairing_candidate() {
@@ -1892,6 +1942,30 @@ phase validate-update-restart-mode validate_update_restart_mode
 phase reset-run-state reset_run_state
 phase install-baseline install_baseline
 phase initialize-state initialize_state
+if [ "$SCENARIO" = "workshop-doctor-recovery" ]; then
+  if [ "$baseline_spec" != "openclaw@2026.9.4" ]; then
+    echo "workshop-doctor-recovery requires the exact published openclaw@2026.9.4 baseline" >&2
+    exit 2
+  fi
+  phase configure-workshop-baseline node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs configure
+  phase prepare-workshop-baseline openclaw_e2e_maybe_timeout "$COMMAND_TIMEOUT" openclaw doctor --fix --non-interactive
+  phase resolve-workshop-candidate resolve_candidate_version
+  phase capture-workshop-baseline node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs baseline "$(package_root)"
+  phase capture-workshop-candidate node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs candidate "$CANDIDATE_SPEC" "$candidate_version"
+  phase seed-workshop-baseline-index node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs seed baseline
+  phase assert-workshop-published-refusal assert_workshop_published_refusal
+  phase repair-workshop-baseline run_workshop_doctor baseline "$ARTIFACT_ROOT/baseline-doctor.log"
+  phase assert-workshop-baseline-repair node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs doctor "$workshop_doctor_observation_root" baseline
+  phase update-workshop-recovered-state update_candidate 1
+  phase assert-workshop-recovered-upgrade node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs upgrade "$last_update_observation_root" "$(package_root)"
+  phase seed-workshop-candidate-index node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs seed candidate
+  phase repair-workshop-candidate run_workshop_doctor candidate "$DOCTOR_LOG"
+  phase assert-workshop-candidate-repair node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs doctor "$workshop_doctor_observation_root" candidate
+  phase assert-workshop-recovery node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs complete
+  run_completed="1"
+  echo "Workshop Doctor recovery passed: published updater refused unchanged malformed state; explicit baseline Doctor, recovered upgrade, and explicit candidate Doctor succeeded."
+  exit 0
+fi
 if [ "$SCENARIO" = "custom-plugin-siblings" ]; then
   phase seed-sibling-plugin node scripts/e2e/lib/upgrade-survivor/custom-plugin-siblings.mjs seed
   phase validate-baseline-config validate_baseline_config
@@ -1917,6 +1991,12 @@ fi
 phase validate-baseline-config validate_baseline_config
 phase resolve-candidate resolve_candidate_version
 phase resolve-candidate-install-mode resolve_candidate_install_mode
+if [ "$SCENARIO" = "missing-configured-plugin-migration" ]; then
+  source scripts/e2e/lib/upgrade-survivor/missing-configured-plugin-migration.sh
+  run_missing_configured_plugin_migration
+  run_completed="1"
+  exit 0
+fi
 if companion_survivor_scenario || [ "$SCENARIO" = "legacy-operator-state" ]; then
   unset OPENCLAW_CLAWHUB_URL CLAWHUB_URL
 else

@@ -3,7 +3,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import {
+  createTempDirTracker,
+  useAutoCleanupTempDirTracker,
+} from "../../../test/helpers/temp-dir.js";
 import type { HostedGatewayStop } from "../../daemon/hosted-stop.js";
 import { LAUNCH_AGENT_EXIT_TIMEOUT_SECONDS } from "../../daemon/launchd-plist.js";
 import { buildSystemdUnit } from "../../daemon/systemd-unit.js";
@@ -17,6 +20,8 @@ import { SUPERVISOR_HINT_ENV_VARS } from "../../infra/supervisor-markers.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveGlobalMap } from "../../shared/global-singleton.js";
 import { captureEnv, deleteTestEnvValue } from "../../test-utils/env.js";
+
+const closeLogTempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 const acquireGatewayLock = vi.fn(async (_opts?: { port?: number }) => ({
   release: vi.fn(async () => {}),
@@ -150,6 +155,7 @@ const restartGatewayProcessWithFreshPid = vi.fn<
   (_opts?: { env?: NodeJS.ProcessEnv }) => {
     mode: "supervised" | "disabled" | "failed";
     detail?: string;
+    exitCode?: number;
     handoffSpawned?: Promise<boolean>;
   }
 >(() => ({ mode: "disabled" }));
@@ -590,6 +596,84 @@ afterEach(() => {
 });
 
 describe("runGatewayLoop", () => {
+  it.each([
+    { signal: "SIGTERM", restartReason: undefined, reason: "stop (SIGTERM)" },
+    { signal: "SIGINT", restartReason: undefined, reason: "stop (SIGINT)" },
+    { signal: "SIGUSR1", restartReason: undefined, reason: "restart (SIGUSR1)" },
+    {
+      signal: "SIGUSR1",
+      restartReason: "config reload: gateway.bind",
+      reason: "restart (SIGUSR1: config reload: gateway.bind)",
+    },
+    {
+      signal: "SIGTERM",
+      restartReason: "update.run",
+      reason: "restart (SIGTERM: update.run)",
+    },
+  ] as const)("names the shutdown trigger: $reason", async ({ signal, restartReason, reason }) => {
+    vi.clearAllMocks();
+    if (signal === "SIGTERM" && restartReason) {
+      consumeGatewayRestartIntentPayloadSync.mockReturnValueOnce({ reason: restartReason });
+    } else {
+      peekGatewaySigusr1RestartReason.mockReturnValueOnce(restartReason);
+    }
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      const close = createCloseMock();
+      const { start, started } = createSignaledStart(close);
+      const { runtime, exited } = createRuntimeWithExitSignal();
+      const completeBoot = vi.fn();
+      await runLoopWithStart({ start, runtime, completeBoot });
+      await waitForStart(started);
+      captureSignal(signal)();
+      if (signal === "SIGUSR1") {
+        await waitForLoopCondition(() => start.mock.calls.length === 2, "restart did not finish");
+        captureSignal("SIGINT")();
+      }
+      await expect(exited).resolves.toBe(0);
+      expect(gatewayLog.info).toHaveBeenCalledWith(`admission closed: ${reason}`);
+      expect(gatewayLog.info).not.toHaveBeenCalledWith("admission closed: restart drain");
+      expect(completeBoot).toHaveBeenCalledWith({
+        outcome: reason.startsWith("restart") ? "planned_restart" : "clean_stop",
+        reason,
+      });
+    });
+  });
+
+  it.each([false, true])(
+    "hints on three repeated signals within five minutes (expired: %s)",
+    async (expired) => {
+      vi.clearAllMocks();
+      await withIsolatedSignals(async ({ captureSignal }) => {
+        const { close, exited } = await createSignaledLoopHarness();
+        const closing = createDeferredCore();
+        close.mockImplementationOnce(() => closing.promise);
+        const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+        try {
+          const sigterm = captureSignal("SIGTERM");
+          sigterm();
+          await waitForLoopCondition(() => close.mock.calls.length === 1, "close did not start");
+          now.mockReturnValue(1_000_000 + (expired ? 300_001 : 1_000));
+          sigterm();
+          sigterm();
+          await new Promise<void>((resolve) => {
+            setImmediate(resolve);
+          });
+          const hint =
+            "received SIGTERM 3 times in 5 min: another supervisor may be managing this Gateway — see `openclaw gateway status --deep`";
+          if (expired) {
+            expect(gatewayLog.warn).not.toHaveBeenCalledWith(hint);
+          } else {
+            expect(gatewayLog.warn).toHaveBeenCalledWith(hint);
+          }
+        } finally {
+          now.mockRestore();
+          closing.resolve();
+          await expect(exited).resolves.toBe(0);
+        }
+      });
+    },
+  );
+
   it.each([false, true])(
     "joins external restart cleanup without creating a successor (close failure: %s)",
     async (fails) => {
@@ -1299,8 +1383,9 @@ describe("runGatewayLoop", () => {
     vi.clearAllMocks();
 
     await withIsolatedSignals(async ({ captureSignal }) => {
+      const error = new TypeError("close owner failed");
       const close = vi.fn<GatewayCloseFn>(async () => {
-        throw new TypeError("close owner failed");
+        throw error;
       });
       const { start, started } = createSignaledStart(close);
       const { runtime, exited } = createRuntimeWithExitSignal();
@@ -1318,7 +1403,90 @@ describe("runGatewayLoop", () => {
       expect(gatewayLog.error).toHaveBeenCalledWith(
         "shutdown step failed (gateway server close): close owner failed",
       );
+      expect(writeDiagnosticStabilityBundleForFailureSync).toHaveBeenCalledWith(
+        "gateway.stop_close_failed",
+        error,
+        { shutdownStep: "gateway-server-close" },
+      );
     });
+  });
+
+  it.each(["close", "native stop"])(
+    "records the thrown %s error during a hosted stop",
+    async (step) => {
+      await withIsolatedSignals(async () => {
+        const error = new TypeError("fixture hosted stop failed");
+        const { close, start, exited } = await createSignaledLoopHarness(undefined, true);
+        if (step === "close") {
+          close.mockRejectedValueOnce(error);
+        } else {
+          hostedStopExecute.mockRejectedValueOnce(error);
+        }
+        const host = start.mock.calls[0]?.[0]?.hostLifecycle;
+        expect(host).toBeDefined();
+        await expect(host?.request("stop", () => {})).resolves.toMatchObject({ ok: true });
+        await expect(exited).resolves.toBe(1);
+        expect(writeDiagnosticStabilityBundleForFailureSync).toHaveBeenCalledWith(
+          step === "close" ? "gateway.stop_close_failed" : "gateway.stop_native_unconfirmed",
+          error,
+          { shutdownStep: step === "close" ? "gateway-server-close" : "hosted-gateway-stop" },
+        );
+      });
+    },
+  );
+
+  it("persists an issued close-error log append before forced exit", async () => {
+    const logger =
+      await vi.importActual<typeof import("../../logging/logger.js")>("../../logging/logger.js");
+    const { fileLogTransport } = await import("../../logging/logger-file-transport.js");
+    const { appendRegularFile } = await import("../../infra/regular-file.js");
+    const logFile = join(closeLogTempDirs.make("openclaw-close-log-"), "gateway.jsonl");
+    const appendAllowed = createDeferredCore();
+    logger.setLoggerOverride({ level: "info", file: logFile });
+    const fileLogger = logger.getChildLogger({ subsystem: "gateway" });
+    fileLogTransport.setAppenderForTests(async (options) => {
+      await appendAllowed.promise;
+      return appendRegularFile(options);
+    });
+    gatewayLog.error.mockImplementation((message: string) => {
+      fileLogger.error(message);
+      void logger.flushLogger();
+    });
+    flushLogger.mockImplementation(() => logger.flushLogger());
+    try {
+      await withIsolatedSignals(async ({ captureSignal }) => {
+        const close = vi.fn<GatewayCloseFn>(() => {
+          throw new TypeError("close owner failed");
+        });
+        const { start, started } = createSignaledStart(close);
+        const { runtime, exited } = createRuntimeWithExitSignal();
+        const exit = runtime.exit.getMockImplementation();
+        let persistedAtExit = "";
+        runtime.exit.mockImplementation((code) => {
+          persistedAtExit = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
+          exit?.(code);
+        });
+        await runLoopWithStart({ start, runtime });
+        await waitForStart(started);
+        captureSignal("SIGUSR1")();
+        await waitForLoopCondition(
+          () => runtime.exit.mock.calls.length > 0 || flushLogger.mock.calls.length > 0,
+          "close failure did not reach exit or log flush",
+        );
+        appendAllowed.resolve();
+        await expect(exited).resolves.toBe(1);
+        expect(persistedAtExit).toContain(
+          "shutdown step failed (gateway server close): close owner failed",
+        );
+      });
+    } finally {
+      appendAllowed.resolve();
+      await logger.flushLogger();
+      logger.resetLogger();
+      fileLogTransport.resetForTests();
+      gatewayLog.error.mockReset();
+      flushLogger.mockReset().mockResolvedValue(undefined);
+    }
   });
 
   it.each(["ordinary", "managed restoration"] as const)(
@@ -1734,6 +1902,11 @@ describe("runGatewayLoop", () => {
           expect(runtime.exit).not.toHaveBeenCalled();
           await vi.advanceTimersByTimeAsync(1);
           expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(1);
+          expect(writeDiagnosticStabilityBundleForFailureSync).toHaveBeenLastCalledWith(
+            "gateway.stop_shutdown_timeout",
+            expect.objectContaining({ message: "close owner failed" }),
+            { shutdownStep: "gateway-server-close" },
+          );
         } finally {
           vi.clearAllTimers();
           vi.useRealTimers();
@@ -1846,22 +2019,28 @@ describe("runGatewayLoop", () => {
     });
   });
 
-  it("bounds the file-log flush before a graceful SIGTERM exit", async () => {
+  it.each([
+    { signal: "SIGTERM", timeoutMs: 4_000 },
+    { signal: "SIGUSR1", timeoutMs: 1_000 },
+  ] as const)("bounds the file-log flush before a $signal exit", async ({ signal, timeoutMs }) => {
     vi.clearAllMocks();
 
     await withIsolatedSignals(async ({ captureSignal }) => {
-      const { runtime, exited } = await createSignaledLoopHarness();
-      const sigterm = captureSignal("SIGTERM");
+      const { close, runtime, exited } = await createSignaledLoopHarness();
+      if (signal === "SIGUSR1") {
+        close.mockRejectedValueOnce(new Error("close owner failed"));
+      }
+      const signalExit = captureSignal(signal);
       flushLogger.mockReturnValueOnce(new Promise<void>(() => {}));
       vi.useFakeTimers();
       try {
-        sigterm();
-        await vi.advanceTimersByTimeAsync(4_000);
+        signalExit();
+        await vi.advanceTimersByTimeAsync(timeoutMs);
 
-        await expect(exited).resolves.toBe(0);
-        expect(runtime.exit).toHaveBeenCalledWith(0);
+        await expect(exited).resolves.toBe(signal === "SIGUSR1" ? 1 : 0);
+        expect(runtime.exit).toHaveBeenCalledWith(signal === "SIGUSR1" ? 1 : 0);
         expect(gatewayLog.warn).toHaveBeenCalledWith(
-          "log flush did not settle within 4000ms; continuing shutdown",
+          `log flush did not settle within ${timeoutMs}ms; continuing shutdown`,
         );
       } finally {
         vi.useRealTimers();
@@ -1903,7 +2082,7 @@ describe("runGatewayLoop", () => {
       expectRestartCloseCall(close, DEFAULT_RESTART_DEFERRAL_TIMEOUT_MS);
       expect(completeBoot).toHaveBeenCalledWith({
         outcome: "planned_restart",
-        reason: "gateway.restart",
+        reason: "restart (SIGTERM: gateway.restart)",
       });
       expect(restartGatewayProcessWithFreshPid).not.toHaveBeenCalled();
       expect(respawnGatewayProcessForUpdate).not.toHaveBeenCalled();
@@ -2446,10 +2625,12 @@ describe("runGatewayLoop", () => {
     }
   });
 
-  it.each(["stop", "restart-then-stop", "cleanup-failure"] as const)(
+  it.each(["stop", "restart-then-stop", "worker-interrupted", "cleanup-failure"] as const)(
     "joins admitted startup cleanup for %s before exiting",
     async (scenario) => {
       vi.clearAllMocks();
+      const { SqliteIntegrityWorkerInterruptedError } =
+        await import("../../infra/sqlite-integrity-worker-error.js");
       await withIsolatedSignals(async ({ captureSignal }) => {
         const entered = createDeferredCore<AbortSignal>();
         const cleanup = createDeferredCore();
@@ -2470,7 +2651,11 @@ describe("runGatewayLoop", () => {
               signal.addEventListener("abort", () => resolve(), { once: true });
             });
             await cleanup.promise;
-            throw scenario === "cleanup-failure" ? cleanupFailure : signal.reason;
+            throw scenario === "cleanup-failure"
+              ? cleanupFailure
+              : scenario === "worker-interrupted"
+                ? new SqliteIntegrityWorkerInterruptedError("SIGINT", "starting")
+                : signal.reason;
           });
           return createGatewayServer(close);
         };
@@ -2518,7 +2703,7 @@ describe("runGatewayLoop", () => {
             expect(await settled).toEqual([{ status: "fulfilled", value: undefined }]);
             expect(completeBoot).toHaveBeenCalledExactlyOnceWith({
               outcome: "clean_stop",
-              reason: "gateway.stop",
+              reason: "stop (SIGINT)",
             });
           }
           expect(close).not.toHaveBeenCalled();
@@ -2529,6 +2714,82 @@ describe("runGatewayLoop", () => {
           cleanup.resolve();
           activeDrain.resolve();
           await settled;
+        }
+      });
+    },
+  );
+
+  it.each([
+    { stop: true, signal: "SIGTERM", cleanStop: true },
+    { stop: true, signal: "SIGKILL", cleanStop: false },
+    { stop: false, signal: "SIGTERM", cleanStop: false },
+  ] as const)(
+    "joins an accepted stop before classifying an independent startup worker: $stop / $signal",
+    async ({ stop, signal, cleanStop }) => {
+      const { SqliteIntegrityWorkerInterruptedError } =
+        await import("../../infra/sqlite-integrity-worker-error.js");
+      await withIsolatedSignals(async ({ captureSignal }) => {
+        const entered = createDeferredCore();
+        const inspection = createDeferredCore();
+        const drainEntered = createDeferredCore();
+        const drain = createDeferredCore();
+        waitForGatewayActiveWork.mockImplementationOnce(async () => {
+          drainEntered.resolve();
+          await drain.promise;
+          return { drained: true, snapshot: idleActiveWorkSnapshot };
+        });
+        const failure = new SqliteIntegrityWorkerInterruptedError(signal, "starting");
+        const completeBoot = vi.fn();
+        const close = createCloseMock();
+        const { runtime, exited } = createRuntimeWithExitSignal();
+        const { runGatewayLoop } = await import("./run-loop.js");
+        const loop = runGatewayLoop({
+          start: async () => {
+            entered.resolve();
+            await inspection.promise;
+            return createGatewayServer(close);
+          },
+          runtime,
+          completeBoot,
+        });
+        const settled = Promise.allSettled([loop]);
+        try {
+          await entered.promise;
+          if (stop) {
+            captureSignal("SIGTERM")();
+            await drainEntered.promise;
+          }
+          inspection.reject(failure);
+          await new Promise<void>((resolve) => {
+            setImmediate(resolve);
+          });
+          expect(runtime.exit).not.toHaveBeenCalled();
+          if (cleanStop) {
+            expect(completeBoot).not.toHaveBeenCalled();
+          }
+          drain.resolve();
+          if (cleanStop) {
+            await expect(exited).resolves.toBe(0);
+            expect(await settled).toEqual([{ status: "fulfilled", value: undefined }]);
+            expect(completeBoot).toHaveBeenCalledExactlyOnceWith({
+              outcome: "clean_stop",
+              reason: "stop (SIGTERM)",
+            });
+          } else {
+            expect(await settled).toEqual([{ status: "rejected", reason: failure }]);
+            expect(completeBoot).toHaveBeenCalledWith({
+              outcome: "startup_failed",
+              reason: failure.message,
+            });
+          }
+          expect(close).not.toHaveBeenCalled();
+        } finally {
+          inspection.reject(failure);
+          drain.resolve();
+          await settled;
+          if (stop) {
+            await exited;
+          }
         }
       });
     },
@@ -3107,6 +3368,32 @@ describe("runGatewayLoop", () => {
     }
   });
 
+  it("returns the supervisor-owned restart code after releasing the lock", async () => {
+    vi.clearAllMocks();
+    peekGatewaySigusr1RestartReason.mockReturnValue(undefined);
+    process.env.OPENCLAW_WINDOWS_TASK_NAME = "OpenClaw Gateway";
+
+    try {
+      await withIsolatedSignals(async ({ captureSignal }) => {
+        const lockRelease = vi.fn(async () => {});
+        acquireGatewayLock.mockResolvedValueOnce({ release: lockRelease });
+        restartGatewayProcessWithFreshPid.mockReturnValueOnce({
+          mode: "supervised",
+          exitCode: 75,
+        });
+
+        const { runtime, exited } = await createSignaledLoopHarness();
+        captureSignal("SIGUSR1")();
+
+        await expect(exited).resolves.toBe(75);
+        expect(lockRelease).toHaveBeenCalledOnce();
+        expect(runtime.exit).toHaveBeenCalledWith(75);
+      });
+    } finally {
+      delete process.env.OPENCLAW_WINDOWS_TASK_NAME;
+    }
+  });
+
   it("waits briefly before exiting on launchd supervised restart", async () => {
     vi.clearAllMocks();
     peekGatewaySigusr1RestartReason.mockReturnValue(undefined);
@@ -3548,7 +3835,7 @@ describe("runGatewayLoop", () => {
           await expect(exited).resolves.toBe(0);
           expect(completeBoot).toHaveBeenCalledWith({
             outcome: "planned_restart",
-            reason: "gateway.restart",
+            reason: "restart (SIGTERM: gateway.restart)",
           });
           expect(restartGatewayProcessWithFreshPid).not.toHaveBeenCalled();
           expect(respawnGatewayProcessForUpdate).not.toHaveBeenCalled();

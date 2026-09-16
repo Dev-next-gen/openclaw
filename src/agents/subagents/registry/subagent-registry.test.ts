@@ -39,6 +39,12 @@ import {
   finalizeTaskRunByRunId,
   getDetachedTaskLifecycleRuntime,
 } from "../../../tasks/detached-task-runtime.js";
+import { getTaskFlowById } from "../../../tasks/task-flow-registry.js";
+import { readTaskRegistryRevision } from "../../../tasks/task-registry-state.js";
+import {
+  configureTaskRegistryRuntime,
+  getTaskRegistryStore,
+} from "../../../tasks/task-registry.store.js";
 import {
   resetDetachedTaskLifecycleRuntimeForTests,
   resetTaskFlowRegistryForTests,
@@ -182,7 +188,9 @@ const mocks = vi.hoisted(() => ({
   clearSubagentRunsReadCacheForTest: vi.fn(),
   persistSubagentRunsToDisk: vi.fn(),
   persistSubagentRunsToDiskOrThrow: vi.fn(),
-  restoreSubagentRunsFromDisk: vi.fn(() => 0),
+  restoreSubagentRunsFromDisk: vi.fn<
+    typeof import("./subagent-registry-state.js").restoreSubagentRunsFromDisk
+  >(() => 0),
   getSubagentRunsSnapshotForRead: vi.fn(
     (runs: Map<string, import("./subagent-registry.types.js").SubagentRunRecord>) => new Map(runs),
   ),
@@ -253,6 +261,7 @@ vi.mock("../../../config/sessions.js", () => ({
 }));
 
 vi.mock("../../../config/sessions/session-accessor.js", () => ({
+  findTranscriptEvent: vi.fn(async () => undefined),
   listSessionEntriesCore: mocks.listSessionEntriesCore,
   listSessionEntriesReadOnly: mocks.listSessionEntriesCore,
   loadSessionEntry: mocks.loadSessionEntry,
@@ -269,6 +278,8 @@ vi.mock("./subagent-registry-state.js", () => ({
   getSubagentRunsSnapshotForChildSession: mocks.getSubagentRunsSnapshotForChildSession,
   getSubagentRunsSnapshotForController: mocks.getSubagentRunsSnapshotForController,
   getSubagentRunsSnapshotForRead: mocks.getSubagentRunsSnapshotForRead,
+  getSubagentRunsSnapshotForSessions: mocks.getSubagentRunsSnapshotForRead,
+  getSubagentMaintenanceRunsSnapshotForRead: mocks.getSubagentRunsSnapshotForRead,
   persistSubagentRunsToDisk: mocks.persistSubagentRunsToDisk,
   persistSubagentRunsToDiskOrThrow: mocks.persistSubagentRunsToDiskOrThrow,
   restoreSubagentRunsFromDisk: mocks.restoreSubagentRunsFromDisk,
@@ -1279,32 +1290,6 @@ describe("subagent registry seam flow", () => {
     ]);
   });
 
-  it("uses the disk-aware run snapshot for maintenance preservation", () => {
-    const now = Date.now();
-    mocks.getSubagentRunsSnapshotForRead.mockReturnValueOnce(
-      new Map([
-        [
-          "run-restored",
-          {
-            runId: "run-restored",
-            childSessionKey: "agent:main:subagent:restored",
-            requesterSessionKey: "agent:main:main",
-            requesterDisplayKey: "main",
-            task: "restored pending task",
-            cleanup: "delete",
-            expectsCompletionMessage: true,
-            createdAt: now,
-            execution: { status: "running" as const },
-          },
-        ],
-      ]),
-    );
-
-    expect(mod.listSessionMaintenanceProtectedSubagentSessionKeys()).toEqual([
-      "agent:main:subagent:restored",
-    ]);
-  });
-
   it("retries registry restore after a transient partial-merge failure", () => {
     const runId = "run-restore-retry";
     const restored = createSubagentRunRecord({
@@ -1342,7 +1327,7 @@ describe("subagent registry seam flow", () => {
     expect(mocks.restoreSubagentRunsFromDisk).toHaveBeenCalledOnce();
   });
 
-  it("replays a terminal task projection after registry restore", async () => {
+  it("repairs a terminal task projection on restore and preserves it on repeated restore", async () => {
     resetTaskRegistryForTests({ persist: false });
     resetTaskFlowRegistryForTests({ persist: false });
     try {
@@ -1363,9 +1348,7 @@ describe("subagent registry seam flow", () => {
           }),
         ),
       ).not.toBeNull();
-      mocks.restoreSubagentRunsFromDisk.mockImplementation(((params: {
-        runs: Map<string, SubagentRunRecord>;
-      }) => {
+      mocks.restoreSubagentRunsFromDisk.mockImplementation((params) => {
         params.runs.set(
           runId,
           createSubagentRunRecord({
@@ -1380,10 +1363,11 @@ describe("subagent registry seam flow", () => {
             outcome: { status: "ok" },
             completion: { required: false, resultText: "restored result" },
             cleanupCompletedAt: endedAt,
+            suppressCompletionDelivery: true,
           }),
         );
         return 1;
-      }) as never);
+      });
 
       hydrateAndActivateRegistry();
 
@@ -1394,6 +1378,25 @@ describe("subagent registry seam flow", () => {
           progressSummary: "restored result",
         }),
       );
+      const restored = expectDefined(findTaskByRunIdForStatus(runId), "restored task");
+      const flowId = expectDefined(restored.parentFlowId, "mirrored flow ID");
+      const firstFlow = expectDefined(getTaskFlowById(flowId), "restored mirrored flow");
+      expect(firstFlow.status).toBe("succeeded");
+      const store = getTaskRegistryStore();
+      const upsertTask = vi.fn(store.upsertTaskWithDeliveryState);
+      configureTaskRegistryRuntime({
+        store: { ...store, upsertTaskWithDeliveryState: upsertTask },
+      });
+      const taskRevision = readTaskRegistryRevision();
+
+      mod.resetSubagentRegistryForTests({ persist: false });
+      hydrateAndActivateRegistry();
+
+      expect(mocks.restoreSubagentRunsFromDisk).toHaveBeenCalledTimes(2);
+      expect(findTaskByRunIdForStatus(runId)).toEqual(restored);
+      expect(getTaskFlowById(flowId)).toEqual(firstFlow);
+      expect(upsertTask).not.toHaveBeenCalled();
+      expect(readTaskRegistryRevision()).toBe(taskRevision);
     } finally {
       resetTaskRegistryForTests({ persist: false });
       resetTaskFlowRegistryForTests({ persist: false });

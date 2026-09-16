@@ -117,6 +117,7 @@ const realGatewayFiles = [
   "chat-project-media.real-gateway",
   "chat-stop-finished-run.real-gateway",
   "chat-thinking-metadata.real-gateway",
+  "chat-tts-supplement.real-gateway",
   "chat-widget-sandbox.real-gateway",
   "command-palette-catalog.real-gateway",
   "control-ui-auth-transports",
@@ -130,6 +131,7 @@ const realGatewayFiles = [
   "model-catalog-partial-refresh.real-gateway",
   "model-picker-search.real-gateway",
   "profile-page.real-gateway",
+  "provider-browser-login.real-gateway",
   "quota-reset-status.real-gateway",
   "session-progress-hovercard.real-gateway",
   "usage-sessions-owner-attribution",
@@ -334,7 +336,14 @@ describe("Control UI E2E resource ownership", () => {
       leases: 1,
     },
     { filters: [standaloneFile, bundledFile], files: [standaloneFile, bundledFile], leases: 1 },
-    { filters: ["ui/src/pages/tasks"], files: ["ui/src/pages/tasks/tasks.e2e.test.ts"], leases: 1 },
+    {
+      filters: ["ui/src/pages/tasks"],
+      files: [
+        "ui/src/pages/tasks/tasks-transcript.e2e.test.ts",
+        "ui/src/pages/tasks/tasks.e2e.test.ts",
+      ],
+      leases: 1,
+    },
     {
       include: [standaloneFile, bundledFile],
       files: [standaloneFile, bundledFile],
@@ -532,6 +541,13 @@ describe("Control UI E2E resource ownership", () => {
       }
       expect(result.files.filter((entry) => entry.phase === 1)).toEqual([
         {
+          file: "ui/src/e2e/chat-tts-supplement.real-gateway.e2e.test.ts",
+          project: "ui-e2e-serial-standalone",
+          phase: 1,
+          workers: 1,
+          fileParallelism: false,
+        },
+        {
           file: "ui/src/e2e/desktop-resize.real-gateway.e2e.test.ts",
           project: "ui-e2e-serial-standalone",
           phase: 1,
@@ -547,6 +563,13 @@ describe("Control UI E2E resource ownership", () => {
         },
         {
           file: mcpFile,
+          project: "ui-e2e-serial-standalone",
+          phase: 1,
+          workers: 1,
+          fileParallelism: false,
+        },
+        {
+          file: "ui/src/e2e/provider-browser-login.real-gateway.e2e.test.ts",
           project: "ui-e2e-serial-standalone",
           phase: 1,
           workers: 1,

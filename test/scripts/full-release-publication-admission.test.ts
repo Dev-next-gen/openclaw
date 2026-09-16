@@ -27,11 +27,13 @@ import {
   type PublicationSourceFact,
 } from "../../scripts/full-release-publication-contract.mjs";
 import { resolveReleaseContextIdentity } from "../../scripts/lib/release-context.mjs";
+import { requireNodeTool } from "../helpers/node-toolchain.js";
 import { writePublishablePluginFixture } from "../helpers/publishable-plugin-fixture.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const temps = useAutoCleanupTempDirTracker(afterEach);
 const repo = resolve(".");
+const nodeExecutable = realpathSync(requireNodeTool("node"));
 const workflowPath = ".github/workflows/full-release-validation.yml";
 type Step = {
   name: string;
@@ -496,15 +498,25 @@ function fixture(
     rmSync(join(target, "extensions/demo-plugin/README.md"));
     symlinkSync("package.json", join(target, "extensions/demo-plugin/README.md"));
   }
-  if (options.fault === "non-utf8") {
-    const directory = Buffer.concat([
-      Buffer.from(join(target, "extensions") + "/"),
-      Buffer.from([0xff]),
-    ]);
-    mkdirSync(directory);
-    writeFileSync(Buffer.concat([directory, Buffer.from("/package.json")]), "{}");
-  }
   let targetSha = commit(target);
+  if (options.fault === "non-utf8") {
+    const blobSha = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+      cwd: target,
+      encoding: "utf8",
+      input: "{}",
+    }).trim();
+    execFileSync("git", ["update-index", "--add", "-z", "--index-info"], {
+      cwd: target,
+      input: Buffer.concat([
+        Buffer.from(`100644 ${blobSha}\t`),
+        Buffer.from("extensions/"),
+        Buffer.from([0xff]),
+        Buffer.from("/package.json\0"),
+      ]),
+    });
+    git(target, "commit", "-qm", "non-utf8 fixture");
+    targetSha = git(target, "rev-parse", "HEAD");
+  }
   git(tooling, "init", "-q", "-b", "main");
   for (const path of toolingPaths) {
     write(tooling, path, readFileSync(join(repo, path)));
@@ -1180,7 +1192,7 @@ globalThis.Date = class extends OriginalDate {
   }
   if (workerBoundary) {
     expect(workerBoundary).toMatchObject({
-      executable: process.execPath,
+      executable: nodeExecutable,
       args: ["--import", pathToFileURL(join(tooling, "scripts/tsx.mjs")).href],
       cwd: tooling,
       snapshotPresent: true,
@@ -1194,6 +1206,7 @@ globalThis.Date = class extends OriginalDate {
         "LANG",
         "LC_ALL",
         "TSX_DISABLE_CACHE",
+        ...(process.platform === "darwin" ? ["__CF_USER_TEXT_ENCODING"] : []),
       ].toSorted(),
     });
     for (const path of [

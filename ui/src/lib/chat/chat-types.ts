@@ -7,6 +7,7 @@ import type {
   ChatSendIntent,
   QueueMode,
 } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
+import type { MessageClientSource } from "../../../../src/chat/message-client-source.js";
 import type { ClawHubRecommendation } from "../../../../src/shared/clawhub-recommendations.js";
 import type { BrowserTabTarget } from "../../components/browser/browser-target.ts";
 import type { toolIcons } from "../../components/icons-tools.ts";
@@ -22,6 +23,20 @@ export type BrowserAnnotationAttachment = {
   inspectedElement: boolean;
 };
 
+export type ChatSelectionSource = {
+  text: string;
+  messageId?: string;
+  entryId?: string;
+  /** UTF-16 offsets in the source bubble’s concatenated DOM text nodes. */
+  start: number;
+  end: number;
+};
+
+export type ChatSelectionAnnotation = ChatSelectionSource & {
+  comment: string;
+  sessionKey: string;
+};
+
 export type ChatAttachment = {
   id: string;
   dataUrl?: string;
@@ -31,6 +46,7 @@ export type ChatAttachment = {
   sizeBytes?: number;
   /** UI-local context that must remain coupled to its annotated screenshot. */
   browserAnnotation?: BrowserAnnotationAttachment;
+  selectionAnnotation?: ChatSelectionAnnotation;
 };
 
 // Shared payload contract: draft and outbox storage must not import each other's runtime.
@@ -40,6 +56,7 @@ export type DurableComposerDraftAttachment = {
   fileName?: string;
   sizeBytes?: number;
   browserAnnotation?: BrowserAnnotationAttachment;
+  selectionAnnotation?: ChatSelectionAnnotation;
 };
 
 export type ChatComposerDraftRetry = {
@@ -253,6 +270,7 @@ export type MessageGroup = {
   senderLabel?: string | null;
   senderSession?: { sessionKey?: string; agentId?: string } | null;
   sender?: SenderIdentity;
+  sourceClients?: MessageClientSource[];
   replyToSender?: SenderIdentity;
   messages: Array<{
     message: unknown;
@@ -348,6 +366,7 @@ export type NormalizedMessage = {
   senderLabel?: string | null;
   senderSession?: { sessionKey?: string; agentId?: string } | null;
   sender?: SenderIdentity;
+  sourceClients?: MessageClientSource[];
   audioAsVoice?: boolean;
   replyPreview?: { text: string; senderLabel?: string | null };
   replyTarget?:

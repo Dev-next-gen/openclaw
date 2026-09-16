@@ -57,11 +57,14 @@ import {
   createTaskFlowForTask as createTaskFlowForTaskOrNull,
   createManagedTaskFlow as createManagedTaskFlowOrNull,
   getTaskFlowById,
+  reloadTaskFlowRegistryFromStore,
   requestFlowCancel,
+  updateFlowRecordByIdExpectedRevision,
 } from "./task-flow-registry.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
 import { getTaskActivitySnapshot } from "./task-registry-activity.js";
 import { updateTaskStateByRunId } from "./task-registry-record-api.js";
+import { readTaskRegistryRevision } from "./task-registry-state.js";
 import {
   cancelTaskById,
   deleteTaskRecordById,
@@ -97,7 +100,7 @@ import {
   stopTaskRegistryMaintenance,
   sweepTaskRegistry,
 } from "./task-registry.maintenance.js";
-import { configureTaskRegistryRuntime } from "./task-registry.store.js";
+import { configureTaskRegistryRuntime, getTaskRegistryStore } from "./task-registry.store.js";
 import { summarizeTaskRecords } from "./task-registry.summary.js";
 import { createAcpTaskRecord, createTaskFixture } from "./task-registry.test-support.js";
 import type { TaskDeliveryState, TaskRecord } from "./task-registry.types.js";
@@ -603,15 +606,35 @@ describe("task-registry", () => {
           maxEntries: 10,
         });
         await store.register("expired", { value: "stale" }, { ttlMs: 100 });
-        seedPluginStateEntriesForTests(
-          Array.from({ length: 2_049 }, (_, index) => ({
+        const { db } = openOpenClawStateDatabase();
+        expect(
+          executeSqliteQueryTakeFirstSync(
+            db,
+            getNodeSqliteKysely<Pick<OpenClawStateKyselyDatabase, "plugin_state_entries">>(db)
+              .selectFrom("plugin_state_entries")
+              .select((eb) => eb("expires_at", "-", eb.ref("created_at")).as("ttlMs"))
+              .where("plugin_id", "=", "fixture-plugin")
+              .where("namespace", "=", "maintenance-restart")
+              .where("entry_key", "=", "expired"),
+          ),
+        ).toEqual({ ttlMs: 100 });
+        // The worker owns registration time; seed expiry for the maintenance clock separately.
+        seedPluginStateEntriesForTests([
+          {
+            pluginId: "fixture-plugin",
+            namespace: "maintenance-restart",
+            key: "expired",
+            value: { value: "stale" },
+            expiresAt: 1_100,
+          },
+          ...Array.from({ length: 2_049 }, (_, index) => ({
             pluginId: "fixture-plugin",
             namespace: "maintenance-restart",
             key: `expired-${index}`,
             value: { index },
             expiresAt: 1_100,
           })),
-        );
+        ]);
 
         // Close plugin-state's process-local handle while preserving the shared SQLite file.
         resetPluginStateStoreForTests();
@@ -1824,6 +1847,123 @@ describe("task-registry", () => {
         "Task registry restore failed: SQLITE_IOERR: task startup restore failed",
       );
     });
+  });
+
+  it("replays an equivalent terminal task without writes and repairs a stale mirrored flow", async () => {
+    await withTaskRegistryTempDir(
+      async () => {
+        resetTaskFlowRegistryForTests({ persist: false });
+
+        const task = createTaskFixture("subagent", {
+          runId: "run-equivalent-terminal-replay",
+          childSessionKey: "agent:main:subagent:equivalent-terminal-replay",
+          task: "Replay equivalent terminal projection",
+          deliveryStatus: "pending",
+          startedAt: 100,
+          lastEventAt: 100,
+        });
+        const flow = createTaskFlowForTask({ task });
+        const linked = linkTaskToFlowById({
+          taskId: task.taskId,
+          flowId: flow.flowId,
+        });
+        expect(linked?.parentFlowId).toBe(flow.flowId);
+
+        finalizeSubagentTask(task, {
+          status: "succeeded",
+          endedAt: 200,
+          lastEventAt: 200,
+          progressSummary: "restored result",
+          terminalSummary: null,
+          suppressDelivery: true,
+        });
+        const first = requireTaskById(task.taskId);
+        const firstFlow = getTaskFlowById(flow.flowId);
+        expect(first.status).toBe("succeeded");
+        expect(first.deliveryStatus).toBe("not_applicable");
+        expect(firstFlow?.status).toBe("succeeded");
+        expect(firstFlow?.revision).toBeGreaterThan(flow.revision);
+
+        // Reopen both registries so the replay compares the SQL-decoded shape:
+        // nullable columns omitted by SQLite must remain equivalent to undefined.
+        resetTaskRegistryForTests({ persist: false });
+        resetTaskFlowRegistryForTests({ persist: false });
+        reloadTaskFlowRegistryFromStore();
+        reloadTaskRegistryFromStore();
+        const store = getTaskRegistryStore();
+        const upsertTask = vi.fn(store.upsertTaskWithDeliveryState);
+        configureTaskRegistryRuntime({
+          store: { ...store, upsertTaskWithDeliveryState: upsertTask },
+        });
+        const restoredTaskRevision = readTaskRegistryRevision();
+
+        finalizeSubagentTask(task, {
+          status: "succeeded",
+          endedAt: 200,
+          lastEventAt: 200,
+          progressSummary: "restored result",
+          terminalSummary: null,
+          suppressDelivery: true,
+        });
+        const replayed = requireTaskById(task.taskId);
+        const replayedFlow = getTaskFlowById(flow.flowId);
+        expect(replayed).toMatchObject({
+          status: "succeeded",
+          endedAt: 200,
+          lastEventAt: 200,
+          progressSummary: "restored result",
+          deliveryStatus: "not_applicable",
+        });
+        expect(replayedFlow?.revision).toBe(firstFlow?.revision);
+        expect(replayedFlow?.status).toBe("succeeded");
+        expect(upsertTask).not.toHaveBeenCalled();
+        expect(readTaskRegistryRevision()).toBe(restoredTaskRevision);
+
+        const stale = updateFlowRecordByIdExpectedRevision({
+          flowId: flow.flowId,
+          expectedRevision: replayedFlow!.revision,
+          patch: {
+            status: "failed",
+            updatedAt: 999,
+            endedAt: 999,
+          },
+        });
+        expect(stale.applied).toBe(true);
+        if (!stale.applied) {
+          throw new Error("expected stale mirrored flow patch to apply");
+        }
+        expect(getTaskFlowById(flow.flowId)?.status).toBe("failed");
+
+        finalizeSubagentTask(task, {
+          status: "succeeded",
+          endedAt: 200,
+          lastEventAt: 200,
+          progressSummary: "restored result",
+          terminalSummary: null,
+          suppressDelivery: true,
+        });
+        const repaired = getTaskFlowById(flow.flowId);
+        expect(repaired?.status).toBe("succeeded");
+        expect(repaired?.endedAt).toBe(200);
+        expect(repaired?.revision).toBe(stale.flow.revision + 1);
+        expect(upsertTask).not.toHaveBeenCalled();
+        expect(readTaskRegistryRevision()).toBe(restoredTaskRevision);
+
+        finalizeSubagentTask(task, {
+          status: "succeeded",
+          endedAt: 200,
+          lastEventAt: 200,
+          progressSummary: "corrected result",
+          terminalSummary: null,
+          suppressDelivery: true,
+        });
+        expect(upsertTask).toHaveBeenCalledOnce();
+        expect(readTaskRegistryRevision()).toBeGreaterThan(restoredTaskRevision);
+        reloadTaskRegistryFromStore();
+        expect(requireTaskById(task.taskId).progressSummary).toBe("corrected result");
+      },
+      { durableStore: true },
+    );
   });
 
   it("reports task update success and retries when task-mirrored flow sync persistence fails", async () => {
@@ -5668,20 +5808,21 @@ describe("task-registry", () => {
 
   it.each([
     {
-      name: "cancels harness-owned tasks without routing through OpenClaw subagent sessions",
+      name: "refuses harness-owned cancellation without changing the task record",
       taskKind: "external-harness",
       sourceId: "harness:child",
       task: "Harness-owned child",
-      cancellable: true,
+      reason:
+        "This subagent is controlled by its native harness. Use the parent session's native collaboration tools to stop it.",
     },
     {
       name: "does not cancel childless subagent tasks without a harness task kind",
       taskKind: undefined,
       sourceId: "openclaw-subagent:child",
       task: "Childless OpenClaw row",
-      cancellable: false,
+      reason: "Task has no cancellable child session.",
     },
-  ])("$name", async ({ taskKind, sourceId, task: taskName, cancellable }) => {
+  ])("$name", async ({ taskKind, sourceId, task: taskName, reason }) => {
     await withTaskRegistryTempDir(async () => {
       resetTaskRegistryForTests({ persist: false });
       const task = createTaskFixture("subagent", {
@@ -5693,24 +5834,8 @@ describe("task-registry", () => {
       });
       const result = await cancelTask(task.taskId);
 
-      if (!cancellable) {
-        expect(result).toEqual({
-          found: true,
-          cancelled: false,
-          reason: "Task has no cancellable child session.",
-          task,
-        });
-      } else {
-        expectRecordFields(result, { found: true, cancelled: true });
-        expectRecordFields(result.task, {
-          taskId: task.taskId,
-          status: "cancelled",
-          endedAt: expect.any(Number),
-          lastEventAt: expect.any(Number),
-          cleanupAfter: expect.any(Number),
-          error: "Cancelled by operator.",
-        });
-      }
+      expect(result).toEqual({ found: true, cancelled: false, reason, task });
+      expect(getTaskById(task.taskId)).toEqual(task);
       expect(hoisted.killSubagentRunAdminMock).not.toHaveBeenCalled();
     });
   });

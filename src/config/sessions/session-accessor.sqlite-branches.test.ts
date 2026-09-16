@@ -9,11 +9,9 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
-  closeOpenClawAgentDatabasesForTest,
   isOpenClawAgentDatabaseOpen,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import {
   appendTranscriptMessage,
   forkSessionAtMessage,
@@ -53,8 +51,6 @@ afterEach(() => {
     cleanup();
   }
   vi.restoreAllMocks();
-  closeOpenClawAgentDatabasesForTest();
-  closeOpenClawStateDatabaseForTest();
 });
 
 function trackFullTranscriptLoads(env: NodeJS.ProcessEnv): () => number {
@@ -163,15 +159,26 @@ describe("SQLite session branches", () => {
       ...sourceExpectedState,
     };
     await closeOpenClawAgentDatabaseByPathAsync(database.path, agentId);
-    const counters: Array<{ loads: number }> = [];
+    const counters: Array<{ loads: number; watermarks: number }> = [];
     const openSqlite = sqliteRuntime.openNodeSqliteDatabase;
     vi.spyOn(sqliteRuntime, "openNodeSqliteDatabase").mockImplementation((pathname, options) => {
       const connection = openSqlite(pathname, options);
       if (pathname === database.path && options?.readOnly) {
-        const tracked = trackSqliteStatementExecutions(connection, ["loads"], (sqlText) =>
-          sqlText.includes('from "transcript_events"') && sqlText.includes('order by "seq" asc')
-            ? "loads"
-            : null,
+        const tracked = trackSqliteStatementExecutions(
+          connection,
+          ["loads", "watermarks"],
+          (sqlText) => {
+            if (
+              (sqlText.includes('from "transcript_events"') && sqlText.includes("max(")) ||
+              sqlText.includes('from "transcript_rewrite_watermarks"')
+            ) {
+              return "watermarks";
+            }
+            return sqlText.includes('from "transcript_events"') &&
+              sqlText.includes('order by "seq" asc')
+              ? "loads"
+              : null;
+          },
         );
         counters.push(tracked.counts);
         diagnosticCleanups.push(tracked.restore);
@@ -191,10 +198,14 @@ describe("SQLite session branches", () => {
         }),
       ]),
     });
+    const watermarkReads = () => counters.reduce((total, counter) => total + counter.watermarks, 0);
+    const beforeRepeatedReads = watermarkReads();
     for (let index = 0; index < 7; index++) {
       expect(readSessionBranchSummariesInWorker(request)).toEqual(first);
     }
     expect(rawLoads()).toBe(1);
+    expect(watermarkReads() - beforeRepeatedReads).toBeGreaterThan(0);
+    expect(watermarkReads() - beforeRepeatedReads).toBeLessThanOrEqual(7);
     if (first.status !== "ok" || !first.branches[0]) {
       throw new Error("expected worker branch summaries");
     }

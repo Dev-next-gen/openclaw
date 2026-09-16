@@ -30,10 +30,8 @@ import {
   OPENCLAW_STATE_SCHEMA_VERSION,
   type OpenClawStateDatabase,
 } from "./openclaw-state-db-contract.js";
-import { hasDanglingSkillWorkshopCollectionReviewIndex } from "./openclaw-state-db-dangling-workshop-index.js";
 import { openTrackedStateDatabase } from "./openclaw-state-db-handle.js";
 import { ensureOpenClawStatePermissions } from "./openclaw-state-db-permissions.js";
-import { OpenClawStateDatabaseSchemaMigrationRequiredError } from "./openclaw-state-db-schema-migration-required.js";
 import {
   assertSupportedStateSchemaVersion,
   readStateSchemaMigrationVersion,
@@ -85,12 +83,6 @@ export function openUnpublishedStateDatabase(params: {
       db,
       busyTimeoutMs,
       () => {
-        if (hasDanglingSkillWorkshopCollectionReviewIndex(db)) {
-          throw new OpenClawStateDatabaseSchemaMigrationRequiredError(
-            "legacy-workshop-review-index",
-            params.pathname,
-          );
-        }
         assertSupportedStateSchemaVersion(db, params.pathname);
         assertStateDatabaseIntegrityBeforeMutation(db, params.pathname);
         configureSqlitePreSchemaPragmas(db, { busyTimeoutMs });
@@ -126,7 +118,7 @@ export function openUnpublishedStateDatabase(params: {
     return { db, path: params.pathname, walMaintenance: maintenance };
   } catch (error) {
     // Acquisition owns the native handle until every setup and hardening step returns.
-    const errors = openClawStateDatabaseCache.closeOpenClawStateDatabaseHandle({
+    const errors = openClawStateDatabaseCache.closeUnpublishedOpenClawStateDatabaseHandle({
       db,
       path: params.pathname,
       walMaintenance,

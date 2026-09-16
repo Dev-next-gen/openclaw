@@ -9,6 +9,7 @@ import type { ImageLightboxItem } from "../../../components/image-lightbox.ts";
 import type { MarkdownRenderOptions } from "../../../components/markdown-render-options.ts";
 import { toSanitizedMarkdownHtml } from "../../../components/markdown.ts";
 import { t } from "../../../i18n/index.ts";
+import { registerChatMessageMetadataEnglish } from "../../../i18n/locales/en-chat-message-metadata.ts";
 import type { BoardProvider } from "../../../lib/board/provider.ts";
 import type {
   MessageContentItem,
@@ -30,9 +31,9 @@ import {
 } from "../../../lib/chat/tool-cards.ts";
 import { type EmbedSandboxMode, resolveToolDisplay } from "../../../lib/chat/tool-display.ts";
 import { isPendingSendMessage } from "../chat-thread-items.ts";
+import type { PluginToolIcons } from "../chat-tool-icon-controller.ts";
 import "../../../styles/chat/reply-preview.css";
 import "./chat-clawhub-card.ts";
-import type { PluginToolIcons } from "../chat-tool-icon-controller.ts";
 import type { LinkFaviconFetcher } from "../link-favicon-loader.ts";
 import { workspaceResultConflictFromTranscript } from "../workspace-conflict.ts";
 import { readAsyncQuestions, type AsyncQuestionPresentation } from "./chat-async-question.ts";
@@ -59,6 +60,7 @@ import {
   renderMessageMarkdown,
   type AssistantMessageDisclosure,
 } from "./chat-message-text.ts";
+import { isSentCommentAttachment } from "./chat-sent-comments.ts";
 import type { SidebarContent } from "./chat-sidebar.ts";
 import {
   renderToolApprovalReviews,
@@ -76,6 +78,8 @@ import {
   renderToolOutcome,
 } from "./chat-tool-content.ts";
 import { renderWorkspaceConflictTranscriptMessage } from "./chat-workspace-conflict.ts";
+
+registerChatMessageMetadataEnglish();
 
 function imageMessageIdentity(message: unknown, sessionKey: string | undefined) {
   const identity = readSessionMessageIdentity(message);
@@ -309,7 +313,9 @@ export function renderGroupedMessage(
   const cardAttachments = visibleAttachments.filter((item) => !videoPreviews.includes(item));
   const hasUserFiles =
     normalizedRole === "user" &&
-    cardAttachments.some((item) => item.attachment.kind === "document");
+    cardAttachments.some(
+      (item) => item.attachment.kind === "document" && !isSentCommentAttachment(item),
+    );
   const imageRenderOptions = {
     sessionKey: opts.sessionKey,
     agentId: opts.agentId,

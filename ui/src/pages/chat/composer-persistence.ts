@@ -693,6 +693,10 @@ export class ChatComposerPersistence {
     return this.ready;
   }
 
+  get draftRevision(): number {
+    return this.latestDraftRevision;
+  }
+
   start() {
     const state = this.getState();
     if (!state) {
@@ -973,6 +977,9 @@ export class ChatComposerPersistence {
         attachment,
         attachment.browserAnnotation
           ? { browserAnnotation: Object.assign({}, attachment.browserAnnotation) }
+          : {},
+        attachment.selectionAnnotation
+          ? { selectionAnnotation: Object.assign({}, attachment.selectionAnnotation) }
           : {},
       ),
     );

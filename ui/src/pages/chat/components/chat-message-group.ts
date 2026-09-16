@@ -10,6 +10,7 @@ import {
 } from "../../../components/person-activity-link.ts";
 import { t } from "../../../i18n/index.ts";
 import type { MessageGroup, ToolCard } from "../../../lib/chat/chat-types.ts";
+import { messageClientSourcesLabel } from "../../../lib/chat/message-client-source.ts";
 import { normalizeRoleForGrouping } from "../../../lib/chat/message-normalizer.ts";
 import { formatSenderLabel } from "../../../lib/chat/sender-label.ts";
 import {
@@ -25,6 +26,7 @@ import {
 import { resolveToolCallView } from "../../../lib/chat/tool-call-view.ts";
 import { extractToolCardsCached, isToolCardError } from "../../../lib/chat/tool-cards.ts";
 import { fnv1aUtf16 } from "../../../lib/fnv1a.ts";
+import { gatewayClientKind } from "../../../lib/gateway-client-kind.ts";
 import { resolveIdentityHue } from "../../../lib/identity-avatar.ts";
 import { renderChatAvatar, renderForwardedAvatar } from "../chat-avatar.ts";
 import type { TurnRecap } from "../chat-progress.ts";
@@ -100,6 +102,7 @@ type RenderMessageGroupOptions = Omit<
     onToggleAssistantMessageExpanded?: (messageId: string) => void;
     userId?: string | null;
     userName?: string | null;
+    showOwnSenderName?: boolean;
     /** Routing for peer sender names; absent leaves them plain text. */
     personActivity?: PersonActivityRouting;
     userAvatar?: string | null;
@@ -188,14 +191,12 @@ function renderPreparedGroupMessage(
   );
 }
 
-function isPeerSenderGroup(
+function isOwnSenderGroup(
   group: Pick<MessageGroup, "sender">,
   userId: string | null | undefined,
 ): boolean {
   const identity = group.sender?.identity;
-  return Boolean(
-    group.sender && !(userId && identity?.type === "profile" && identity.id === userId),
-  );
+  return identity?.type === "profile" && identity.id === userId;
 }
 
 export function renderActivityGroup(
@@ -366,13 +367,27 @@ export function renderActivityGroup(
       `;
 }
 
+function isSourceOnlyUserGroup(
+  group: Pick<MessageGroup, "role" | "sender" | "senderLabel" | "sourceClients">,
+): boolean {
+  return (
+    normalizeRoleForGrouping(group.role) === "user" &&
+    Boolean(group.sourceClients?.length) &&
+    !group.sender &&
+    !group.senderLabel?.trim()
+  );
+}
+
 export function resolveMessageGroupSenderLabel(
-  group: Pick<MessageGroup, "role" | "sender" | "senderLabel"> & {
+  group: Pick<MessageGroup, "role" | "sender" | "senderLabel" | "sourceClients"> & {
     messages: ReadonlyArray<{ message: unknown }>;
   },
-  opts: Pick<RenderMessageGroupOptions, "assistantName" | "userId" | "userName" | "userAvatar">,
+  opts: Pick<RenderMessageGroupOptions, "assistantName" | "userId" | "userName">,
 ): string {
   const normalizedRole = normalizeRoleForGrouping(group.role);
+  if (isSourceOnlyUserGroup(group)) {
+    return messageClientSourcesLabel(group.sourceClients ?? []);
+  }
   if (normalizedRole === "custom") {
     const isError = group.messages.every(({ message }) => {
       const customType = asNullableRecord(message)?.customType;
@@ -387,20 +402,14 @@ export function resolveMessageGroupSenderLabel(
       ? t("chat.workspaceConflict.eventSender")
       : t("common.system");
   }
-  const assistantName = opts.assistantName ?? "Assistant";
-  const resolvedUserName = resolveLocalUserName({
-    name: opts.userName ?? null,
-    avatar: opts.userAvatar ?? null,
-  });
+  const resolvedUserName = resolveLocalUserName({ name: opts.userName });
   const userLabel = group.senderLabel?.trim();
-  const isPeerGroup = normalizedRole === "user" && isPeerSenderGroup(group, opts.userId);
-  const isCurrentUser = normalizedRole === "user" && Boolean(group.sender) && !isPeerGroup;
   return normalizedRole === "user"
-    ? isCurrentUser
+    ? isOwnSenderGroup(group, opts.userId)
       ? resolvedUserName
       : (userLabel ?? resolvedUserName)
     : normalizedRole === "assistant"
-      ? (userLabel ?? assistantName)
+      ? (userLabel ?? opts.assistantName ?? "Assistant")
       : normalizedRole === "tool"
         ? t("chat.messages.toolSender")
         : normalizedRole;
@@ -432,9 +441,20 @@ export function renderMessageGroupContent(group: MessageGroup, opts: RenderMessa
 
 export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroupOptions) {
   const normalizedRole = normalizeRoleForGrouping(group.role);
+  const sourceOnly = isSourceOnlyUserGroup(group);
   const assistantName = opts.assistantName ?? "Assistant";
-  const isPeerGroup = normalizedRole === "user" && isPeerSenderGroup(group, opts.userId);
+  const isPeerGroup =
+    normalizedRole === "user" &&
+    Boolean(opts.userId && group.sender) &&
+    !isOwnSenderGroup(group, opts.userId);
   const isForwarded = normalizedRole === "assistant" && hasForwardedSource(group);
+  const showSenderName =
+    !isForwarded &&
+    !sourceOnly &&
+    (normalizedRole !== "user" || isPeerGroup || opts.showOwnSenderName !== false);
+  const visibleSources = group.sourceClients?.filter(
+    (source) => gatewayClientKind(source) !== "web",
+  );
   const sourceSessionKey = group.senderSession?.sessionKey;
   const who = resolveMessageGroupSenderLabel(group, opts);
   const roleClass =
@@ -516,6 +536,7 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
     avatarPlacement === "gutter" &&
     Boolean(preparedMessages[lastMessageIndex]?.source.displayMarkdown);
   const avatar =
+    !sourceOnly &&
     normalizedRole !== "tool" &&
     avatarPlacement === "gutter" &&
     (isForwarded || normalizedRole !== "assistant" || opts.showAssistantAvatar !== false)
@@ -614,7 +635,10 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
           ? nothing
           : html`<div
               class="chat-group-footer ${
-                normalizedRole === "user" && (isPeerGroup || avatarPlacement !== "footer")
+                normalizedRole === "user" &&
+                (visibleSources?.length ||
+                  isPeerGroup ||
+                  (showSenderName && avatarPlacement !== "footer"))
                   ? "chat-group-footer--persistent-identity"
                   : ""
               }${sendStatus ? " chat-group-footer--send-status" : ""}"
@@ -622,12 +646,12 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
               <div class="chat-group-footer__meta">
                 ${isPeerGroup ? nothing : userFooterActions}
                 ${
-                  normalizedRole === "user" && avatarPlacement === "footer"
+                  normalizedRole === "user" && !sourceOnly && avatarPlacement === "footer"
                     ? renderChatAuthorAvatar(group.sender)
                     : nothing
                 }
                 ${
-                  isForwarded
+                  !showSenderName
                     ? nothing
                     : renderPersonName(
                         who,
@@ -637,6 +661,13 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
                           : null,
                         "chat-sender-name",
                       )
+                }
+                ${
+                  visibleSources?.length
+                    ? html`<span class="chat-message-source"
+                        >${messageClientSourcesLabel(visibleSources)}</span
+                      >`
+                    : nothing
                 }
                 ${renderChatSendStatus(sendStatus, opts)}
                 ${renderMessageMeta(group.timestamp, meta)}
