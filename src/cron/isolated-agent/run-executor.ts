@@ -1,10 +1,6 @@
 /** Executes isolated cron prompts with model fallbacks and interim-ack retries. */
 import { createHash } from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import {
-  createOperationalRunInstanceRef,
-  prepareAgentRunAdmission,
-} from "../../agents/admitted-run-context.js";
 import { resolveGroupToolPolicyOutcome } from "../../agents/agent-tools.policy.js";
 import type { BootstrapContextMode } from "../../agents/bootstrap-files.js";
 import { resolveCliBackendConfig } from "../../agents/cli-backends.js";
@@ -33,7 +29,6 @@ import { resolveScheduledToolPolicyContext } from "../../agents/scheduled-tool-p
 import { withLocalSessionPlacementTurnSettlement } from "../../agents/session-placement-admission.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../../agents/session-runtime-compat.js";
 import { needsThinkHydration } from "../../agents/thinking-runtime.js";
-import { withPostAdmissionExecutionOwnerBinding } from "../../audit/execution-owner-binding.js";
 import {
   resolveAgentLifecycleTerminalMetadata,
   type AgentLifecycleTerminalBackstop,
@@ -65,6 +60,7 @@ import {
   resolveCurrentChannelTarget,
 } from "./channel-output-policy.js";
 import { resolveCronPayloadOutcome } from "./helpers.js";
+import { prepareCronPromptRunAdmission } from "./run-admission.js";
 import { appendCronDeliveryInstruction } from "./run-delivery-trace.js";
 import {
   getCliSessionBinding,
@@ -448,26 +444,21 @@ function createCronPromptExecutor(
           });
     pendingUserTurn = { promptText, recorder: userTurnTranscriptRecorder };
     const runId = params.cronSession.sessionEntry.sessionId;
-    const basePreparedRunAdmission = prepareAgentRunAdmission({
-      operationalRunInstance: createOperationalRunInstanceRef(runId),
+    const {
+      preparedRunAdmission,
+      messageActionTurnCapability,
+      close: closePromptAdmission,
+    } = prepareCronPromptRunAdmission({
       cfg: params.cfgWithAgentDefaults,
-      facts: {
-        runId,
-        agentId: params.agentId,
-        ingress: params.executionIdentity?.ingress ?? {
-          kind: "schedule",
-          boundary: "cron.isolated-agent",
-          state: "present",
-        },
-        ...(params.executionIdentity?.invoker ? { invoker: params.executionIdentity.invoker } : {}),
-      },
+      agentId: params.agentId,
+      runId,
+      sessionKey: params.runSessionKey,
+      jobId: params.job.id,
+      toolsAllow: params.agentPayload?.toolsAllow,
+      scheduledToolPolicy,
+      executionIdentity: params.executionIdentity,
+      timeoutMs: params.timeoutMs,
     });
-    const preparedRunAdmission = params.executionIdentity?.onPostAdmission
-      ? withPostAdmissionExecutionOwnerBinding(
-          basePreparedRunAdmission,
-          params.executionIdentity.onPostAdmission,
-        )
-      : basePreparedRunAdmission;
     const onExecutionStarted = (info?: CronRunnerStartedInfo) => {
       params.onExecutionStarted?.(info);
       params.executionIdentity?.onExecutionStarted?.();
@@ -714,6 +705,7 @@ function createCronPromptExecutor(
                   agentId: params.agentId,
                   trigger: "cron",
                   jobId: params.job.id,
+                  messageActionTurnCapability,
                   cleanupCliLiveSessionOnRunEnd: params.usesDetachedRunSession === true,
                   sessionFile,
                   storePath: params.cronSession.storePath,
@@ -881,6 +873,7 @@ function createCronPromptExecutor(
           scheduledRuntimeAuthorityRecoveryRequired:
             params.job.runtimeAuthorityRecoveryRequired === true,
           scheduledToolPolicy,
+          messageActionTurnCapability,
           execOverrides: params.suppressExecNotifyOnExit
             ? {
                 notifyOnExit: false,
@@ -927,7 +920,7 @@ function createCronPromptExecutor(
       })
       .finally(() => {
         unregisterCronRunExecSource();
-        preparedRunAdmission.close();
+        closePromptAdmission();
       });
     const executionError =
       params.lifecycle.getDeferredError() ??

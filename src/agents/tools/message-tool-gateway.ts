@@ -3,6 +3,8 @@ import {
   GATEWAY_CLIENT_MODES,
 } from "../../../packages/gateway-protocol/src/client-info.js";
 import type { ConversationReadInvocationOrigin } from "../../channels/plugins/conversation-read-origin.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { withMessageActionInvocationConfig } from "../../gateway/message-action-turn-capability.js";
 import type { MessageActionGateway } from "../../infra/outbound/message-action-contracts.js";
 import type {
   OutboundGatewayRequest,
@@ -31,12 +33,17 @@ export function createMessageToolGateway(
     sessionId?: string;
   },
   signal?: AbortSignal,
+  resolveInvocationConfig?: () => OpenClawConfig,
 ): MessageActionGateway | undefined {
   if (options?.conversationReadOrigin === "direct-operator") {
     return undefined;
   }
   const boundRequest = shouldUseInProcessGatewayTool(gatewayOpts)
-    ? bindAgentToolGatewayRequest()
+    ? withMessageActionInvocationConfig(
+        options?.messageActionTurnCapability,
+        resolveInvocationConfig,
+        () => bindAgentToolGatewayRequest(),
+      )
     : undefined;
   const { target, ...connection } = resolveGatewayOptions(gatewayOpts);
   const callerOwnsTerminalReceipt =

@@ -4,6 +4,7 @@
  * Runs plugin-owned message actions from the shared agent tool with sender trust checks.
  */
 import type { AgentToolResult } from "../../agents/runtime/index.js";
+import type { MessageActionAuthorization } from "../../gateway/message-action-turn-capability.js";
 import { withChannelReadAuthority } from "../../shared/channel-read-authority.js";
 import { normalizeConversationReadInvocationOrigin } from "./conversation-read-origin.js";
 import {
@@ -31,6 +32,8 @@ type ServerOwnedConversationReadOrigin = ReturnType<
 
 type ChannelMessageActionDispatchContext = Omit<ChannelMessageActionContext, "action"> & {
   action: unknown;
+  /** Host-only authority, removed before invoking any plugin callback. */
+  messageActionAuthorization?: MessageActionAuthorization;
 };
 
 type PreparedMessageActionReadContext = {
@@ -39,6 +42,7 @@ type PreparedMessageActionReadContext = {
   origin: ServerOwnedConversationReadOrigin;
   actionPolicy: ChannelMessageActionReadPolicy;
   enforcement: MessageActionReadEnforcement;
+  scheduledAccess?: ScheduledMessageActionAccess;
   assertReadAuthorityCurrent?: () => void;
   assertAliasAuthorityCurrent: () => void;
 };
@@ -136,7 +140,7 @@ type MessageActionReadEnforcement =
     };
 
 // Context retrieval only. The broader conversation-read class also contains mutations.
-const FENCED_PROVIDER_READ_ACTIONS = new Set<ChannelMessageActionName>([
+const FENCED_PROVIDER_READ_ACTIONS: ReadonlySet<string> = new Set<ChannelMessageActionName>([
   "read",
   "search",
   "reactions",
@@ -154,6 +158,34 @@ const FENCED_PROVIDER_READ_ACTIONS = new Set<ChannelMessageActionName>([
   "download-file",
 ]);
 
+export function isFencedProviderReadAction(action: string): action is ChannelMessageActionName {
+  return FENCED_PROVIDER_READ_ACTIONS.has(action);
+}
+
+type ScheduledMessageActionAccess = {
+  kind: "trusted-operator";
+  assertCurrent: () => void;
+};
+
+/** Validates a live scheduled grant's scope; each action consumer owns admission. */
+function resolveScheduledMessageActionAccess(params: {
+  authorization?: MessageActionAuthorization;
+  action: ChannelMessageActionName;
+  channel: string;
+}): ScheduledMessageActionAccess | undefined {
+  const authority = params.authorization?.scheduled;
+  if (!authority) {
+    return undefined;
+  }
+  authority.assertCurrent();
+  if (authority.policy.mode !== "trusted") {
+    throw new Error(
+      `Scheduled ${params.channel}:${params.action} requires an operator-created job.`,
+    );
+  }
+  return { kind: "trusted-operator", assertCurrent: authority.assertCurrent };
+}
+
 function resolveMessageActionReadEnforcement(params: {
   action: ChannelMessageActionName;
   actions: ChannelPlugin["actions"];
@@ -164,7 +196,7 @@ function resolveMessageActionReadEnforcement(params: {
   if (providerOwnedReadGates === true || providerOwnedReadGates?.includes(params.action) === true) {
     const fencedReadAction =
       params.actions?.readAuthorityActions?.includes(params.action) === true &&
-      FENCED_PROVIDER_READ_ACTIONS.has(params.action);
+      isFencedProviderReadAction(params.action);
     if (params.pluginOrigin === "bundled") {
       // Bundled admission stays provider-owned, but an opted-in read must use
       // its registered lifecycle owner rather than an unfenced artifact fallback.
@@ -263,14 +295,6 @@ function prepareMessageActionReadContext(
     return undefined;
   }
   const action = ctx.action as ChannelMessageActionName;
-  const origin = normalizeConversationReadInvocationOrigin(
-    ctx.conversationReadOrigin,
-  ) as ServerOwnedConversationReadOrigin;
-  const actionContext: ChannelMessageActionContext = {
-    ...ctx,
-    action,
-    conversationReadOrigin: origin,
-  };
   const authority = registration.captureReadAuthority?.();
   const enforcement = resolveMessageActionReadEnforcement({
     action,
@@ -278,11 +302,35 @@ function prepareMessageActionReadContext(
     pluginOrigin: registration.origin,
     hasReadAuthority: authority?.() === true,
   });
+  const scheduledAccess =
+    isFencedProviderReadAction(action) &&
+    enforcement.kind === "provider-owned" &&
+    enforcement.fenced
+      ? resolveScheduledMessageActionAccess({
+          authorization: ctx.messageActionAuthorization,
+          action,
+          channel: ctx.channel,
+        })
+      : undefined;
+  const origin = (
+    scheduledAccess
+      ? "direct-operator"
+      : normalizeConversationReadInvocationOrigin(ctx.conversationReadOrigin)
+  ) as ServerOwnedConversationReadOrigin;
+  const { messageActionAuthorization: _authorization, ...pluginContext } = ctx;
+  const actionContext: ChannelMessageActionContext = {
+    ...pluginContext,
+    action,
+    conversationReadOrigin: origin,
+  };
   const assertCallerCurrent = ctx.assertDirectAdapterHandoff;
   const assertReadAuthorityCurrent =
-    origin !== "direct-operator" && enforcement.kind === "provider-owned" && enforcement.fenced
+    (origin !== "direct-operator" || scheduledAccess) &&
+    enforcement.kind === "provider-owned" &&
+    enforcement.fenced
       ? () => {
           assertCallerCurrent?.();
+          scheduledAccess?.assertCurrent();
           if (!authority?.()) {
             throw new Error(`Plugin ${ctx.channel} read authority is no longer active.`);
           }
@@ -294,9 +342,11 @@ function prepareMessageActionReadContext(
     origin,
     actionPolicy,
     enforcement,
+    scheduledAccess,
     assertReadAuthorityCurrent,
     assertAliasAuthorityCurrent: () => {
       assertCallerCurrent?.();
+      scheduledAccess?.assertCurrent();
       const current =
         registration.captureReadAuthority && !authority?.()
           ? undefined
@@ -331,6 +381,7 @@ type MessageActionConversationReadGateParams = {
   origin: ServerOwnedConversationReadOrigin;
   actionPolicy: ChannelMessageActionReadPolicy;
   enforcement: MessageActionReadEnforcement;
+  scheduledAccess?: ScheduledMessageActionAccess;
 };
 
 /** The shared host decision before any read-capable plugin callback runs. */
@@ -345,6 +396,7 @@ function resolveMessageActionConversationReadGate(
     if (
       params.enforcement.fenced &&
       params.enforcement.pluginTrust === "external" &&
+      !params.scheduledAccess &&
       (!hasMatchingCurrentProviderContext(params.ctx) ||
         !hasMatchingCurrentAccountContext(params.ctx) ||
         !hasCurrentConversationTarget(params.ctx))

@@ -94,6 +94,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/state/openclaw-state-db.test.ts",
   "src/state/openclaw-state-maintenance-resources.test.ts",
   "src/tasks/task-registry.test.ts",
+  "test/cron-message-read.integration.test.ts",
   "test/imessage-reply-alias.integration.test.ts",
   "test/matrix-channel-read-authority.integration.test.ts",
   "test/plugins/beam-http-identity.test.ts",
