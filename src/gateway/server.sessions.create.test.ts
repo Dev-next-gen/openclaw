@@ -2371,20 +2371,20 @@ test("sessions.create rolls back failed provisioning before a same-key creator p
   const { storePath } = await createSessionStoreDir();
   const key = "agent:main:dashboard:worktree-rollback";
   const adminClient = { connect: { scopes: ["operator.admin"] } } as never;
-  const originalRemove = managedWorktrees.remove.bind(managedWorktrees);
+  const originalRollback = managedWorktrees.rollbackPreparation.bind(managedWorktrees);
   let failedWorktreeId: string | undefined;
   let successorWorktreeId: string | undefined;
   const { promise: rollbackGate, resolve: releaseRollback } = createDeferredCore();
   const { promise: rollbackStarted, resolve: markRollbackStarted } = createDeferredCore();
-  const removeSpy = vi.spyOn(managedWorktrees, "remove").mockImplementation(async (params) => {
-    if (params.reason === "session-create-failed") {
-      failedWorktreeId = params.id;
+  const rollbackSpy = vi
+    .spyOn(managedWorktrees, "rollbackPreparation")
+    .mockImplementation(async (record, withRollback) => {
+      failedWorktreeId = record.id;
       markRollbackStarted();
       expect(isSessionLifecycleMutationActive(storePath, [key])).toBe(true);
       await rollbackGate;
-    }
-    return await originalRemove(params);
-  });
+      await originalRollback(record, withRollback);
+    });
   try {
     const failedPromise = directSessionReq(
       "sessions.create",
@@ -2457,16 +2457,13 @@ test("sessions.create rolls back failed provisioning before a same-key creator p
       ok: false,
       error: { message: "sessions.create visibility requires a new session" },
     });
-    expect(
-      removeSpy.mock.calls.some(
-        ([params]) =>
-          params.reason === "session-create-failed" && params.id === successorWorktree.id,
-      ),
-    ).toBe(false);
+    expect(rollbackSpy.mock.calls.some(([record]) => record.id === successorWorktree.id)).toBe(
+      false,
+    );
     expect(getRegistryWorktree(process.env, successorWorktree.id)?.removedAt).toBeUndefined();
   } finally {
     releaseRollback();
-    removeSpy.mockRestore();
+    rollbackSpy.mockRestore();
     if (
       successorWorktreeId &&
       getRegistryWorktree(process.env, successorWorktreeId)?.removedAt === undefined

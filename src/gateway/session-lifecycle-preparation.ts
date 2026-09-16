@@ -1,6 +1,6 @@
 import type { Result } from "@openclaw/normalization-core/result";
 import type { ErrorShape } from "../../packages/gateway-protocol/src/index.js";
-import type { SessionEntry } from "../config/sessions/types.js";
+import type { InternalSessionEntry as SessionEntry } from "../config/sessions/types.js";
 
 export type GatewaySessionTitleModelSelection = Pick<
   SessionEntry,
@@ -12,6 +12,9 @@ export type PreparedGatewaySessionLifecycle = {
   sessionRoot?: string;
   worktree?: NonNullable<SessionEntry["worktree"]>;
   repositoryWorkspaceId?: string;
+  pendingWorktree?: SessionEntry["pendingWorktree"];
+  /** Reacquire source custody only around the final persistence operation. */
+  withCommit?: <T>(run: (assertSourceCurrent: () => void) => Promise<T>) => Promise<T>;
   rollback?: () => Promise<void>;
 };
 
