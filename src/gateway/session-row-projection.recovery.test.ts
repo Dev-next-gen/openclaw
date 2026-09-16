@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { setRuntimeConfigSnapshot } from "../config/config.js";
 import {
   persistSessionTranscriptTurn,
+  replaceSessionEntrySync,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import {
@@ -19,6 +20,7 @@ import {
   requestContext,
 } from "./server-methods/sessions-read-cache.test-support.js";
 import { getSessionRowProjection } from "./session-row-projection-access.js";
+import { createSessionRowProjection } from "./session-row-projection.js";
 import * as titles from "./session-transcript-title-reader.js";
 
 afterEach(() => vi.restoreAllMocks());
@@ -117,6 +119,27 @@ it("heals resident titles after reconciliation without a transcript mutation or 
       stop();
       getSessionRowProjection(context)?.dispose();
       vi.restoreAllMocks();
+    }
+  });
+});
+
+it("captures the committed replacement before background materialization", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const cfg = { agents: { list: [{ id: "main", default: true }] } };
+    const query = { agentId: "main", key: "agent:main:replaced" };
+    const target = { agentId: query.agentId, sessionKey: query.key };
+    replaceSessionEntrySync(target, { sessionId: "previous", updatedAt: 1 });
+    const projection = await createSessionRowProjection({ cfg });
+    try {
+      const previous = projection.capture(query)!;
+      replaceSessionEntrySync(target, { sessionId: "current", updatedAt: 2 });
+      const captured = projection.capture(query)!;
+      expect(captured.entry?.sessionId).toBe("current");
+      await projection.ensureMaterialized();
+      expect(projection.isCurrent(captured)).toBe(true);
+      expect(projection.isCurrent(previous)).toBe(false);
+    } finally {
+      projection.dispose();
     }
   });
 });

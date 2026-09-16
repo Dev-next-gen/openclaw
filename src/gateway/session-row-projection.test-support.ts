@@ -157,7 +157,6 @@ export function createSessionRowProjectionFixture(params: {
       cfg,
       modelCatalog,
       rowContext,
-      storePath,
       scope: (options) => ({
         paths: new Map([...rows.values()].map((row, index) => [row.storeTarget.storePath, index])),
         path: storePath,

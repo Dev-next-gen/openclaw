@@ -30,6 +30,7 @@ import { sessionChanges, type SessionRowChange } from "../sessions/session-row-c
 import { onInternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { readOpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
+import { listOpenIncognitoAgentDatabases } from "../state/openclaw-agent-db.js";
 import {
   isIncognitoOpenClawAgentSqlitePath,
   resolveIncognitoOpenClawAgentSqlitePath,
@@ -73,8 +74,7 @@ export async function createSessionRowProjection(params: {
     catalogDirty = params.getModelCatalog ? Symbol("catalog") : undefined,
     disposed = false;
   let epoch = 0,
-    preparedEpoch = -1,
-    storePath = "";
+    preparedEpoch = -1;
   let materializedCount = 0;
   let scope: ReturnType<typeof prepareSessionRowScopes>;
   let pending: Promise<void> | undefined;
@@ -141,7 +141,7 @@ export async function createSessionRowProjection(params: {
   function acquireEntry(row: records.Row, storedEntry: SessionEntry | undefined) {
     if (!storedEntry || storedEntry.incognito) {
       remove(records.identity(row));
-      return;
+      return undefined;
     }
     const entry = projectGatewaySessionEntry(cfg, storedEntry);
     const parents = new Set(
@@ -172,6 +172,7 @@ export async function createSessionRowProjection(params: {
     if (changed) {
       related(next);
     }
+    return next;
   }
   function inScope(row: records.Row, query: records.Query) {
     return (
@@ -216,6 +217,9 @@ export async function createSessionRowProjection(params: {
     });
     if (isIncognitoSessionKey(key)) {
       const ephemeralPath = resolveIncognitoOpenClawAgentSqlitePath({ agentId });
+      if (!listOpenIncognitoAgentDatabases().some((store) => store.storePath === ephemeralPath)) {
+        return undefined;
+      }
       const row = records.create({
         key,
         agentId,
@@ -288,7 +292,6 @@ export async function createSessionRowProjection(params: {
         }
       },
     });
-    storePath = loaded.storePath;
     for (const [key, target] of loaded.targetsBySessionKey) {
       const entry = loaded.store[key];
       if (!entry || entry.incognito || isIncognitoSessionKey(key)) {
@@ -621,7 +624,10 @@ export async function createSessionRowProjection(params: {
       if (!disposed && topologyDirty) {
         topology();
       }
-      return lookup(query);
+      const row = lookup(query);
+      return row && dirty.has(records.identity(row))
+        ? (acquireEntry(row, readEntry(row)) ?? row)
+        : row;
     },
     findBySessionId(query: { sessionId: string; agentId?: string; storePath?: string }) {
       if (
@@ -648,7 +654,7 @@ export async function createSessionRowProjection(params: {
       return !disposed && (topologyDirty || Boolean(catalogDirty) || dirty.size > 0);
     },
     get state() {
-      return { cfg, modelCatalog, rowContext: context, storePath, scope: scope.select };
+      return { cfg, modelCatalog, rowContext: context, scope: scope.select };
     },
     isCurrent,
     select(query: records.Query = {}) {

@@ -5,7 +5,6 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import { projectSessionActivitySummary } from "../session-activity-summary-state.js";
 import { isSessionPermissionChangePending } from "../session-permission-change.js";
-import type { WorkerPlacementMoveIntent } from "../worker-environments/placement-move-intent.js";
 import {
   projectWorkerPlacementMove,
   projectWorkerSessionPlacement,
@@ -14,7 +13,6 @@ import {
   type WorkerPlacementDiskSpaceReader,
   type WorkerPlacementRunnerAvailabilityReader,
 } from "../worker-environments/placement-projector.js";
-import type { WorkerSessionPlacementRecord } from "../worker-environments/placement-store.js";
 import { isFailedWorkerPlacementEnvironmentGone } from "../worker-environments/session-placement-lifecycle.js";
 
 type PlacementReadContext = {
@@ -24,12 +22,21 @@ type PlacementReadContext = {
   workerEnvironmentService?: Parameters<typeof readWorkerPlacementIdentity>[1];
 };
 
-function prepareSessionPlacementFields(
-  context: PlacementReadContext,
-  placement: WorkerSessionPlacementRecord | undefined,
-  move: WorkerPlacementMoveIntent | undefined,
-  workspaceResultReconciling: boolean,
-) {
+/** Acquire cold facts only for this dirty physical row; presentation reads live memory. */
+export function readSessionRowFacts(params: {
+  cfg: OpenClawConfig;
+  target: Pick<GatewayStoredSessionTarget, "agentId" | "storeTarget"> & { key: string };
+  entry: SessionEntry;
+  context?: PlacementReadContext;
+}) {
+  const { cfg, target, entry } = params;
+  const context = params.context ?? {};
+  const placements = context.workerSessionPlacementService;
+  const placement = placements?.getMany([entry.sessionId]).get(entry.sessionId);
+  const move = placements?.getPlacementMoves?.([entry.sessionId]).get(entry.sessionId);
+  const workspaceResultReconciling =
+    placements?.getWorkspaceResultReconcilingSessionIds?.([entry.sessionId]).has(entry.sessionId) ??
+    false;
   const environment = placement?.environmentId
     ? context.workerEnvironmentService?.get(placement.environmentId)
     : undefined;
@@ -45,40 +52,6 @@ function prepareSessionPlacementFields(
         ? "restart"
         : "stop-first"
       : undefined;
-  return () => ({
-    ...(placement
-      ? {
-          placement: projectWorkerSessionPlacement(
-            placement,
-            context.workerPlacementDiskSpaceReader?.read(placement),
-            context.workerPlacementRunnerAvailabilityReader?.read(placement, environment ?? null),
-            identity,
-            failedRecoveryAction,
-            workspaceResultReconciling,
-          ),
-        }
-      : {}),
-    ...(move ? { placementMove: projectWorkerPlacementMove(move) } : {}),
-  });
-}
-
-/** Acquire cold facts only for this dirty physical row; presentation reads live memory. */
-export function readSessionRowFacts(params: {
-  cfg: OpenClawConfig;
-  target: Pick<GatewayStoredSessionTarget, "agentId" | "storeTarget"> & { key: string };
-  entry: SessionEntry;
-  context?: PlacementReadContext;
-}) {
-  const { cfg, target, entry } = params;
-  const context = params.context ?? {};
-  const placements = context.workerSessionPlacementService;
-  const placement = prepareSessionPlacementFields(
-    context,
-    placements?.getMany([entry.sessionId]).get(entry.sessionId),
-    placements?.getPlacementMoves?.([entry.sessionId]).get(entry.sessionId),
-    placements?.getWorkspaceResultReconcilingSessionIds?.([entry.sessionId]).has(entry.sessionId) ??
-      false,
-  );
   const activitySummary = projectSessionActivitySummary({ ...target, cfg, entry });
   const board = withOpenClawAgentDatabaseReadOnly(
     (database) => readBoardSessionKeys(database, target.key).length > 0,
@@ -87,7 +60,19 @@ export function readSessionRowFacts(params: {
   return {
     hasBoard: board.found && board.value,
     present: () => ({
-      ...placement(),
+      ...(placement
+        ? {
+            placement: projectWorkerSessionPlacement(
+              placement,
+              context.workerPlacementDiskSpaceReader?.read(placement),
+              context.workerPlacementRunnerAvailabilityReader?.read(placement, environment ?? null),
+              identity,
+              failedRecoveryAction,
+              workspaceResultReconciling,
+            ),
+          }
+        : {}),
+      ...(move ? { placementMove: projectWorkerPlacementMove(move) } : {}),
       permissionModePending: isSessionPermissionChangePending(entry.sessionId),
       activitySummary: activitySummary ? { ...activitySummary } : undefined,
     }),

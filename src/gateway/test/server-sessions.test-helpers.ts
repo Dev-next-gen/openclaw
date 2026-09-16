@@ -3,14 +3,17 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
-import { beforeEach, expect, vi } from "vitest";
+import { afterEach, beforeEach, expect, vi } from "vitest";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
 import type { InternalHookEvent } from "../../hooks/internal-hooks.js";
 import { resetSystemEventsForTest } from "../../infra/system-events.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { flushPendingSessionsChangedEvents } from "../server-methods/session-change-event.js";
-import { initializeSessionReadContext } from "../server-methods/sessions-read-cache.test-support.js";
+import {
+  disposeSessionReadContexts,
+  initializeSessionReadContext,
+} from "../server-methods/sessions-read-cache.test-support.js";
 import type { GatewayRequestContext } from "../server-methods/types.js";
 import { embeddedRunMock, agentDiscoveryMock, testState } from "../test-helpers.runtime-state.js";
 import * as gatewayTestHelpers from "../test-helpers.server.js";
@@ -317,6 +320,7 @@ export function setupGatewaySessionsTestHarness(setup?: GatewaySessionsSuiteSetu
 function createGatewaySessionsTestHarness(startServer: boolean, setup?: GatewaySessionsSuiteSetup) {
   const { defaultAgentWorkspace, requireHarness, requireSharedSessionStoreDir } =
     installGatewaySessionsTestResources(startServer, setup);
+  afterEach(disposeSessionReadContexts);
   let sessionStoreCaseSeq = 0;
 
   beforeEach(async () => {
@@ -641,6 +645,7 @@ export async function directSessionReq<TPayload = unknown>(
       "sessions.list",
       "sessions.describe",
       "sessions.resolve",
+      "sessions.create",
       "sessions.patch",
       "sessions.patchMany",
       "sessions.compact",

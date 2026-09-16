@@ -42,6 +42,7 @@ import {
   resolveSessionVisibility,
 } from "../session-sharing.js";
 import { capArrayByJsonBytes } from "../session-transcript-readers.js";
+import { resolveGatewayModelThinkingProfile } from "../session-utils-model.js";
 import { buildGatewaySessionRow } from "../session-utils-row.js";
 import {
   getSessionDefaults,
@@ -551,7 +552,22 @@ export async function handleChatHistoryRequest({
       catalog && provider && model
         ? findModelCatalogEntry(catalog, { provider, modelId: model })
         : undefined;
-    if (typeof catalogEntry?.reasoning === "boolean") {
+    if (typeof catalogEntry?.reasoning === "boolean" && provider && model) {
+      // Chat metadata carries the selected session auth route's capabilities.
+      Object.assign(
+        projection,
+        resolveGatewayModelThinkingProfile({
+          cfg,
+          agentId: sessionAgentId,
+          provider,
+          model,
+          modelCatalog: catalog,
+          agentRuntime: projection.agentRuntime?.id,
+          sessionKey: projection === sessionInfo ? canonicalKey : undefined,
+          providerPolicySource: "active",
+        }),
+      );
+      projection.thinkingOptions = projection.thinkingLevels?.map(({ label }) => label);
       continue;
     }
     delete projection.thinkingLevels;

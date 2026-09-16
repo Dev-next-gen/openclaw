@@ -1,3 +1,4 @@
+import { existsSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -27,12 +28,14 @@ const getGatewayServerHarnessModule = createLazyRuntimeModule(
 
 /** Deselect before disposal so topology publication cannot reopen a fixture store. */
 export async function releaseGatewaySessionStoreFixture(dir: string) {
-  const root = path.resolve(dir);
-  if (testState.sessionStorePath && isPathInside(root, testState.sessionStorePath)) {
+  const root = existsSync(dir) ? realpathSync(dir) : path.resolve(dir);
+  const ownsPath = (candidate: string) =>
+    isPathInside(root, candidate) || isPathInside(path.resolve(dir), candidate);
+  if (testState.sessionStorePath && ownsPath(testState.sessionStorePath)) {
     testState.sessionStorePath = undefined;
   }
   const cfg = getRuntimeConfigSnapshot();
-  if (cfg?.session?.store && isPathInside(root, cfg.session.store)) {
+  if (cfg?.session?.store && ownsPath(cfg.session.store)) {
     const session = { ...cfg.session };
     delete session.store;
     setRuntimeConfigSnapshot({ ...cfg, session });

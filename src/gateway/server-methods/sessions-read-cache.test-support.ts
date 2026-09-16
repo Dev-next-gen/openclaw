@@ -30,7 +30,7 @@ export { sessionReadHandlers };
 const projections = new Set<SessionRowProjection>();
 const profileSubscriptions = new Set<() => void>();
 const initializing = new WeakMap<GatewayRequestContext, Promise<void>>();
-afterEach(() => {
+export function disposeSessionReadContexts() {
   for (const projection of projections) {
     projection.dispose();
   }
@@ -39,7 +39,8 @@ afterEach(() => {
   }
   projections.clear();
   profileSubscriptions.clear();
-});
+}
+afterEach(disposeSessionReadContexts);
 export function initializeSessionReadContext(context: GatewayRequestContext) {
   if (getSessionRowProjection(context)) {
     return Promise.resolve();

@@ -35,6 +35,11 @@ import type {
   RespondFn,
 } from "./server-methods/types.js";
 import {
+  bindSessionRowProjection,
+  getSessionRowProjection,
+} from "./session-row-projection-access.js";
+import { createSessionRowProjection } from "./session-row-projection.js";
+import {
   createGatewaySuiteHarness,
   dispatchInboundMessageMock,
   gatewayReplyMock,
@@ -83,6 +88,12 @@ beforeEach(async () => {
   });
   await prepareGatewayReplyRuntimeForTest({ force: true });
   context = createDirectChatContext({ getRuntimeConfig });
+  const projection = await createSessionRowProjection({
+    cfg: getRuntimeConfig(),
+    getConfig: getRuntimeConfig,
+    context,
+  });
+  bindSessionRowProjection(context, () => projection);
   // Keep reply admission and its cleanup real; only the embedded model execution is mocked.
   gatewayReplyMock.mockImplementation(getReplyFromConfig);
   dispatchInboundMessageMock.mockReset();
@@ -108,6 +119,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  getSessionRowProjection(context)?.dispose();
   testState.sessionStorePath = undefined;
   gatewayReplyMock.mockReset();
   runEmbeddedAgent.mockReset();

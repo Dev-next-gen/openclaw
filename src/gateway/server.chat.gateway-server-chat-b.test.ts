@@ -33,6 +33,10 @@ import {
   replaceTranscriptEvents,
   replaceSessionEntry,
 } from "../config/sessions/session-accessor.js";
+import {
+  resolveSqliteTranscriptScope,
+  toDatabaseOptions,
+} from "../config/sessions/session-accessor.sqlite-scope.js";
 import { SessionTranscriptProjectionUnavailableError } from "../config/sessions/session-transcript-projection-error.js";
 import {
   waitForSessionTranscriptIndexReconcile,
@@ -64,6 +68,7 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { assertPluginMetadataSnapshotConsistency } from "./plugin-metadata.test-helpers.js";
 import {
+  createChatVisionModelCatalogSnapshot,
   createDirectChatContext,
   createTextTranscriptEvent,
 } from "./server-chat.agent-events.test-helpers.js";
@@ -167,27 +172,6 @@ function waitForFast<T>(
   options: { timeout?: number; interval?: number } = {},
 ) {
   return vi.waitFor(callback, { interval: 1, ...options });
-}
-
-function createChatVisionModelCatalogSnapshot(): Awaited<
-  ReturnType<GatewayRequestContext["loadGatewayModelCatalogSnapshot"]>
-> {
-  return {
-    agentId: "main",
-    agentDir: "/tmp/chat-attachment-vision-agent",
-    catalogComplete: false,
-    workspaceDir: "/tmp/chat-attachment-vision-workspace",
-    config: {},
-    entries: [
-      {
-        id: "vision-model",
-        name: "Vision Model",
-        provider: "test-provider",
-        input: ["text", "image"],
-      },
-    ],
-    routeVariants: [],
-  };
 }
 
 type GatewayHarness = Awaited<ReturnType<typeof createGatewaySuiteHarness>>;
@@ -1911,7 +1895,7 @@ describe("gateway server chat", () => {
             ? { entries: [] }
             : fixture.preparedReasoning === undefined && !fixture.preparedUnknown
               ? undefined
-              : { entries: preparedCatalog },
+              : { entries: preparedCatalog, pluginRegistry: { providers: [] } },
         readChatStartupProjection: async () =>
           fixture.preparedEmpty
             ? {
@@ -2577,14 +2561,6 @@ describe("gateway server chat", () => {
     async (method) => {
       openDirectChatSession();
       try {
-        await writeSessionStore({
-          entries: {
-            "agent:work:main": {
-              sessionId: "sess-work",
-              updatedAt: Date.now(),
-            },
-          },
-        });
         const config = {
           agents: {
             defaults: {
@@ -2621,6 +2597,14 @@ describe("gateway server chat", () => {
           },
         } as unknown as OpenClawConfig;
         await writeGatewayConfig(config);
+        await writeSessionStore({
+          entries: {
+            "agent:work:main": {
+              sessionId: "sess-work",
+              updatedAt: Date.now(),
+            },
+          },
+        });
         const responses: Array<{ ok: boolean; payload?: unknown; error?: unknown }> = [];
         const metadata = {
           models: [
@@ -7583,14 +7567,13 @@ describe("gateway server chat", () => {
 
   test("chat.history returns retryable unavailable while a dirty projection rebuilds", async () => {
     await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
-      const sessionDir = await prepareMainHistoryHarness({ ws, createSessionDir });
+      await prepareMainHistoryHarness({ ws, createSessionDir });
       await writeMainSessionTranscript([
         JSON.stringify({ message: { role: "user", content: "ready after rebuild" } }),
       ]);
-      const databaseOptions = {
-        agentId: "main",
-        path: path.join(sessionDir, "openclaw-agent.sqlite"),
-      };
+      const databaseOptions = toDatabaseOptions(
+        resolveSqliteTranscriptScope(makeMainSessionScope(testState.sessionStorePath)),
+      );
       const database = openOpenClawAgentDatabase(databaseOptions);
       database.db
         .prepare("UPDATE session_transcript_index_state SET needs_rebuild = 1 WHERE session_id = ?")

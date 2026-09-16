@@ -2534,7 +2534,7 @@ describe("gateway agent handler", () => {
           storePath: "/tmp/sessions.json",
         },
       );
-      vi.advanceTimersByTime(100);
+      await vi.advanceTimersByTimeAsync(100);
       expect(broadcastToConnIds.mock.calls.map((callValue) => callValue[1]?.reason)).toEqual([
         "create",
         "agent.input.settled",
@@ -2885,7 +2885,7 @@ describe("gateway agent handler", () => {
           storePath: "/tmp/sessions.json",
         },
       );
-      vi.advanceTimersByTime(100);
+      await vi.advanceTimersByTimeAsync(100);
       expect(broadcastToConnIds.mock.calls.map((callLocal) => callLocal[1]?.reason)).toEqual([
         "create",
         "agent.input.settled",

@@ -8,6 +8,7 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
+import { clearAgentRunContext, registerAgentRunContext } from "../infra/agent-run-registry.js";
 import { subscribePluginSessionsChanged } from "../plugins/gateway-events.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
@@ -717,16 +718,26 @@ test("sessions.list distinguishes proven idle from unavailable run identities", 
   const idleSession = findSession(expectRespondPayload(idle.respond), "agent:main:main");
   expect(idleSession).toMatchObject({ hasActiveRun: false, activeRunIds: [] });
 
-  embeddedRunMock.activeIds.add("sess-main");
-  const unavailable = await invokeSessionsList({
-    requestId: "req-sessions-list-unavailable-runs",
+  const runId = "list-unavailable-exact-identities";
+  registerAgentRunContext(runId, {
+    agentId: "main",
+    sessionId: "sess-main",
+    sessionKey: "agent:main:main",
+    projectSessionActive: true,
   });
-  const unavailableSession = findSession(
-    expectRespondPayload(unavailable.respond),
-    "agent:main:main",
-  );
-  expect(unavailableSession).toMatchObject({ hasActiveRun: true });
-  expect(unavailableSession).not.toHaveProperty("activeRunIds");
+  try {
+    const unavailable = await invokeSessionsList({
+      requestId: "req-sessions-list-unavailable-runs",
+    });
+    const unavailableSession = findSession(
+      expectRespondPayload(unavailable.respond),
+      "agent:main:main",
+    );
+    expect(unavailableSession).toMatchObject({ hasActiveRun: true });
+    expect(unavailableSession).not.toHaveProperty("activeRunIds");
+  } finally {
+    clearAgentRunContext(runId);
+  }
 });
 
 test("sessions.changed publishes visible active run ids", async () => {
