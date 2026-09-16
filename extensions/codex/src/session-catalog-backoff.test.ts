@@ -8,10 +8,53 @@ import {
   createCodexTestBindingStore,
   createGatewayApi,
   createRuntime,
+  idleThread,
   registerCodexSessionCatalog,
 } from "./session-catalog.test-helpers.js";
 
 describe("Codex catalog failure recovery", () => {
+  it.each([true, false])(
+    "backs off a whole title search without intermediate or cached recovery (runtime config %s)",
+    async (hasConfig) => {
+      let now = 0;
+      let recovered = false;
+      const failure = new Error("third native page failed");
+      const control = createCodexSessionCatalogControlFactory({
+        getPluginConfig: () => ({ supervision: { enabled: true } }),
+        getRuntimeConfig: () => (hasConfig ? config : undefined),
+        now: () => now,
+      }).forRequest("main");
+      commandRpcMocks.codexControlRequest.mockImplementation(async (_plugin, _method, params) => {
+        if (params.cursor === "page-three") {
+          if (!recovered) {
+            throw failure;
+          }
+          return { data: [idleThread({ id: "match", source: "cli", name: "Wanted" })] };
+        }
+        return {
+          data: [
+            idleThread({ id: params.cursor ? "second" : "head", source: "cli", name: "Other" }),
+          ],
+          nextCursor: params.cursor ? "page-three" : "page-two",
+        };
+      });
+      const search = () => control.listPage({ limit: 1, searchTerm: "Wanted" });
+      await expect(search()).rejects.toBe(failure);
+      expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledTimes(3);
+      await expect(search()).rejects.toBe(failure);
+      expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledTimes(5);
+
+      expect((await control.listPage({ limit: 1 })).sessions[0]?.threadId).toBe("head");
+      await expect(search()).rejects.toBe(failure);
+      expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledTimes(5);
+
+      now += 5_000;
+      recovered = true;
+      expect((await search()).sessions[0]?.threadId).toBe("match");
+      expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledTimes(7);
+    },
+  );
+
   it("ignores an older page failure after a successful recovery", async () => {
     const control = createCodexSessionCatalogControlFactory({
       getPluginConfig: () => ({ supervision: { enabled: true } }),
@@ -62,12 +105,29 @@ describe("Codex catalog failure recovery", () => {
       getRuntimeConfig: () => config,
       now: () => now,
     });
-    const home = control.homesForAgent("main")[0]!;
+    const home = (await control.homesForAgent("main"))[0]!;
     const { api, getProvider } = createGatewayApi(createRuntime().runtime, config);
+    const allPagesStarted = createDeferred<void>();
+    let startedPages = 0;
     registerCodexSessionCatalog({
       api,
       bindingStore: createCodexTestBindingStore(),
-      control,
+      control: {
+        ...control,
+        forRequest(...args) {
+          const request = control.forRequest(...args);
+          return {
+            ...request,
+            listPage(...pageArgs) {
+              const pending = request.listPage(...pageArgs);
+              if (++startedPages === 18) {
+                allPagesStarted.resolve();
+              }
+              return pending;
+            },
+          };
+        },
+      },
       getRuntimeConfig: () => config,
     });
     const provider = getProvider()!;
@@ -82,6 +142,8 @@ describe("Codex catalog failure recovery", () => {
     const calls = Array.from({ length: 18 }, () => list());
     try {
       await started.promise;
+      // Home discovery can still be pending after the first native request starts.
+      await allPagesStarted.promise;
       now += 60_000;
       failed.reject(new Error("native host timed out"));
       const hosts = await Promise.all(calls);
