@@ -5,6 +5,7 @@ import {
   extractErrorCode,
 } from "@openclaw/normalization-core/error-coercion";
 import { slugifyWorktreeTitle } from "../agents/worktrees/name.js";
+import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { sha256HexPrefixCore } from "../infra/crypto-digest.js";
@@ -63,7 +64,7 @@ export async function materializeProjectClone(
       "Use a GitHub HTTPS or git@github.com repository URL. Local paths and file URLs are not accepted.",
     );
   }
-  const env = { ...(options.env ?? process.env) };
+  const env = cloneEnvWithPlatformSemantics(options.env ?? process.env);
   const context = captureOpenClawStateWorkerContext({ path: options.path, env });
   const databaseOptions = { path: context.admission.databasePath, env };
   const fingerprint = sha256HexPrefixCore(parsed.url, 16);
@@ -185,7 +186,7 @@ export async function refreshProjectClone(
     originUrl: project.originUrl,
   };
   const { signal, timeoutMs, token } = options;
-  const env = { ...(options.env ?? process.env) };
+  const env = cloneEnvWithPlatformSemantics(options.env ?? process.env);
   const context = captureOpenClawStateWorkerContext({ path: options.path, env });
   await withProjectCheckoutLifecycle(
     selectedProject.repoRoot,
