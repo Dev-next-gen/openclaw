@@ -53,6 +53,7 @@ import { collectCronHistoryOverflowTaskIds } from "./cron-history-retention.js";
 import { CRON_TASK_KIND } from "./cron-task-contract.js";
 import { SUBAGENT_KILL_TASK_ERROR } from "./detached-task-runtime-contract.js";
 import { ensureTaskRuntimeStateReady } from "./runtime-internal.js";
+import { createAcpTaskBackingDetailForTest } from "./task-backing-authority.test-support.js";
 import {
   createTaskFlowForTask as createTaskFlowForTaskOrNull,
   createManagedTaskFlow as createManagedTaskFlowOrNull,
@@ -4824,12 +4825,14 @@ describe("task-registry", () => {
     await withTaskRegistryTempDir(async () => {
       hoisted.cancelSessionMock.mockResolvedValue(undefined);
 
+      const instanceId = "instance-cancel-acp";
       const task = createTaskFixture("acp", {
         requesterOrigin: NOTIFYCHAT_ORIGIN,
         childSessionKey: "agent:codex:acp:child",
         runId: "run-cancel-acp",
         task: "Investigate issue",
         deliveryStatus: "pending",
+        detail: createAcpTaskBackingDetailForTest(instanceId),
       });
 
       const result = await cancelTask(task.taskId);
@@ -4839,6 +4842,8 @@ describe("task-registry", () => {
         cfg: {},
         sessionKey: "agent:codex:acp:child",
         reason: "task-cancel",
+        expectedRunId: "run-cancel-acp",
+        expectedInstanceId: instanceId,
       });
       expectRecordFields(result, {
         found: true,
@@ -4864,11 +4869,13 @@ describe("task-registry", () => {
     async (status) => {
       await withTaskRegistryTempDir(async () => {
         const runId = "run-acp-cancel-race";
+        const instanceId = "instance-acp-cancel-race";
         const task = createTaskFixture("acp", {
           childSessionKey: "agent:codex:acp:cancel-race",
           runId,
           task: "Finish during cancellation",
           notifyPolicy: "silent",
+          detail: createAcpTaskBackingDetailForTest(instanceId),
         });
         hoisted.cancelSessionMock.mockImplementationOnce(async () => {
           updateTaskStateByRunId({
@@ -4882,6 +4889,10 @@ describe("task-registry", () => {
 
         const result = await cancelTask(task.taskId);
 
+        expectRecordFields(firstMockArg(hoisted.cancelSessionMock, "cancelSession"), {
+          expectedRunId: runId,
+          expectedInstanceId: instanceId,
+        });
         expectRecordFields(result, {
           found: true,
           cancelled: status === "cancelled",
