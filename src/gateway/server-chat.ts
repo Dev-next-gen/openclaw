@@ -20,7 +20,6 @@ import { isTimeoutError, resolveFailoverReasonFromError } from "../agents/failov
 import type { FailoverReason } from "../agents/failover/signal.js";
 import { resolveToolSearchCodeDisplayTarget } from "../agents/tool-display-common.js";
 import { readToolValidationErrorSummary } from "../agents/tool-error-summary.js";
-import { DEFAULT_HEARTBEAT_ACK_MAX_CHARS, stripHeartbeatToken } from "../auto-reply/heartbeat.js";
 import { normalizeVerboseLevel } from "../auto-reply/thinking.js";
 import { normalizeAgentPlanSteps } from "../channels/streaming.js";
 import { getRuntimeConfig } from "../config/io.js";
@@ -31,7 +30,6 @@ import {
 } from "../infra/agent-events.js";
 import { getAgentRunContext, getAgentRunContextOwnerStatus } from "../infra/agent-run-registry.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import { resolveHeartbeatVisibility } from "../infra/heartbeat-visibility.js";
 import { boundedJsonUtf8Bytes } from "../infra/json-utf8-bytes.js";
 import { logError, logWarn } from "../logger.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
@@ -58,6 +56,12 @@ import type {
   GatewayBroadcastOpts,
   GatewayBroadcastToConnIdsFn,
 } from "./server-broadcast-types.js";
+import {
+  normalizeHeartbeatChatFinalText,
+  resolveHeartbeatFlag,
+  shouldHideHeartbeatChatOutput,
+} from "./server-chat-heartbeat.js";
+import { resolveBroadcastDelta } from "./server-chat-live-text.js";
 import { isChatAbortMarkerCurrent } from "./server-chat-state.js";
 import type {
   BufferedAgentEvent,
@@ -145,38 +149,6 @@ function projectToolSearchCodeEventForChannelPayload<T extends { data?: unknown 
   return { ...payload, data: projectedData };
 }
 
-function resolveHeartbeatFlag(runId: string, sourceRunId?: string, captured?: boolean) {
-  const primary = getAgentRunContext(runId);
-  const source = sourceRunId && sourceRunId !== runId ? getAgentRunContext(sourceRunId) : primary;
-  if (primary?.isHeartbeat || source?.isHeartbeat) {
-    return true;
-  }
-  // Captured source facts fill cleanup gaps; a live client heartbeat still wins.
-  return source ? primary?.isHeartbeat : (captured ?? primary?.isHeartbeat);
-}
-
-/**
- * Check if heartbeat ACK/noise should be hidden from interactive chat surfaces.
- */
-function shouldHideHeartbeatChatOutput(
-  runId: string,
-  sourceRunId?: string,
-  captured?: boolean,
-): boolean {
-  if (!resolveHeartbeatFlag(runId, sourceRunId, captured)) {
-    return false;
-  }
-
-  try {
-    const cfg = getRuntimeConfig();
-    const visibility = resolveHeartbeatVisibility({ cfg, channel: "webchat" });
-    return !visibility.showOk;
-  } catch {
-    // Default to suppressing if we can't load config
-    return true;
-  }
-}
-
 function shouldMirrorAssistantEventToHiddenSessionMessages(data: unknown): boolean {
   if (!data || typeof data !== "object") {
     return false;
@@ -192,29 +164,6 @@ function shouldMirrorAssistantEventToHiddenSessionMessages(data: unknown): boole
 
 function shouldMirrorAgentEventToHiddenSessionMessages(evt: AgentEventPayload): boolean {
   return evt.stream === "thinking" || evt.stream === "approval" || evt.stream === "lifecycle";
-}
-
-function normalizeHeartbeatChatFinalText(params: {
-  runId: string;
-  sourceRunId?: string;
-  text: string;
-  isHeartbeat?: boolean;
-}): { suppress: boolean; text: string } {
-  if (!shouldHideHeartbeatChatOutput(params.runId, params.sourceRunId, params.isHeartbeat)) {
-    return { suppress: false, text: params.text };
-  }
-
-  const stripped = stripHeartbeatToken(params.text, {
-    mode: "heartbeat",
-    maxAckChars: DEFAULT_HEARTBEAT_ACK_MAX_CHARS,
-  });
-  if (!stripped.didStrip) {
-    return { suppress: false, text: params.text };
-  }
-  if (stripped.shouldSkip) {
-    return { suppress: true, text: "" };
-  }
-  return { suppress: false, text: stripped.text };
 }
 
 const LIVE_TEXT_PACING_MS = 75;
@@ -299,23 +248,6 @@ function excludeConnIds(
     }
   }
   return filtered;
-}
-
-type BroadcastDelta = { deltaText: string; replace?: true };
-
-function resolveBroadcastDelta(params: {
-  text: string;
-  previousBroadcastText: string | undefined;
-}): BroadcastDelta | undefined {
-  const previous = params.previousBroadcastText;
-  if (previous === undefined) {
-    return params.text ? { deltaText: params.text } : undefined;
-  }
-  if (!params.text.startsWith(previous)) {
-    return { deltaText: params.text, replace: true };
-  }
-  const deltaText = params.text.slice(previous.length);
-  return deltaText ? { deltaText } : undefined;
 }
 
 export type AgentEventHandlerOptions = {

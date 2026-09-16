@@ -116,7 +116,9 @@ function preparePlacementProjection(
   const snapshot = vi.spyOn(projection, "snapshot");
   const update = () => {
     const record = projection.describe({ key: sessionKey, agentId: "main" });
-    if (!record) throw new Error("missing resident placement row");
+    if (!record) {
+      throw new Error("missing resident placement row");
+    }
     const placement = placements.get(record.entry.sessionId);
     // Simulate committed owner facts without reading the placement store during event snapshots.
     if (placement) {

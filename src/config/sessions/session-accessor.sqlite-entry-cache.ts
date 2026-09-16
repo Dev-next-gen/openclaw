@@ -57,8 +57,7 @@ type SqliteSessionEntryCacheWriteGeneration = {
 const sessionEntryCaches = new WeakMap<DatabaseSync, SqliteSessionEntryCache>();
 /** Commit-driven projections borrow owner memory; ordinary reads still validate SQLite. */
 export function readCommittedSessionEntryCache(database: DatabaseSync) {
-  const cached = sessionEntryCaches.get(database);
-  return cached?.selectedKeys ? undefined : cached?.entries;
+  return sessionEntryCaches.get(database)?.entries;
 }
 const sessionNodesGenerationTrackerSchemaVersions = new WeakMap<DatabaseSync, number>();
 

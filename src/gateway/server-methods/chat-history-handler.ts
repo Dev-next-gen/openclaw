@@ -1,10 +1,8 @@
 // Read-side chat handlers own history projection, startup metadata, and message lookup.
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   ErrorCodes,
   errorShape,
   validateChatHistoryParams,
-  validateChatStartupParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { CHAT_HISTORY_MAX_ENTRIES } from "../../../packages/gateway-protocol/src/schema/chat-history-constants.js";
 import { resolveAgentConfig } from "../../agents/agent-scope.js";
@@ -50,7 +48,6 @@ import {
   loadGatewaySessionEntryReadOnly,
   resolveSessionModelRef,
 } from "../session-utils.js";
-import { resolveSessionKeyFromResolveParams } from "../sessions-resolve.js";
 import { prepareSessionWorkspaceIcon } from "../workspace-icon-http.js";
 import {
   CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES,
@@ -70,6 +67,7 @@ import { resolveEmbeddedAgentRunRecoverySnapshot } from "./chat-history-recovery
 import { handleChatMetadataRequest } from "./chat-metadata-handler.js";
 import { validateChatSelectedAgent } from "./chat-origin-routing.js";
 import { readChatPendingInputs } from "./chat-pending-inputs.js";
+import { handleChatStartupRequest } from "./chat-startup-handler.js";
 import { normalizeOptionalChatText as normalizeOptionalText } from "./chat-text-normalization.js";
 import { resolveVisibleActiveSessionRunState } from "./session-active-runs.js";
 import { resolveGatewayModelSelectionPolicy } from "./session-model-selection-policy.js";
@@ -79,7 +77,7 @@ import { assertValidParams } from "./validation.js";
 
 type ChatHistoryMethod = "chat.history" | "chat.startup";
 
-function respondChatHistoryUnavailable(
+export function respondChatHistoryUnavailable(
   method: ChatHistoryMethod,
   respond: GatewayRequestHandlerOptions["respond"],
   message: string,
@@ -709,64 +707,7 @@ export async function handleChatHistoryRequest({
 
 export const chatHistoryHandlers: GatewayRequestHandlers = {
   "chat.history": (opts) => handleChatHistoryRequest({ ...opts, method: "chat.history" }),
-  "chat.startup": async (opts) => {
-    if (!assertValidParams(opts.params, validateChatStartupParams, "chat.startup", opts.respond)) {
-      return;
-    }
-    if ("sessionKey" in opts.params) {
-      await handleChatHistoryRequest({ ...opts, method: "chat.startup" });
-      return;
-    }
-    const connId = opts.client?.connId?.trim();
-    if (connId) {
-      // This snapshot precedes pane mount. Enroll the connection before any read
-      // so a concurrent sessions.subscribe cannot leave a gap in live delivery.
-      opts.context.subscribeSessionEvents(connId);
-      if (!opts.context.getSessionEventSubscriberConnIds().has(connId)) {
-        opts.respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.UNAVAILABLE, "connection closed before chat startup"),
-        );
-        return;
-      }
-    }
-    const { shortId, slugHint, agentId, limit, maxBytes } = opts.params;
-    const projection = opts.context.getSessionRowProjection?.();
-    if (!projection) {
-      respondChatHistoryUnavailable(
-        "chat.startup",
-        opts.respond,
-        "session rows are initializing; reload the conversation",
-      );
-      return;
-    }
-    const resolution = await resolveSessionKeyFromResolveParams({
-      projection,
-      cfg: opts.context.getRuntimeConfig(),
-      client: opts.client,
-      p: { shortId, slugHint, agentId, allowMissing: true },
-    });
-    if (!resolution.ok) {
-      opts.respond(false, undefined, resolution.error);
-      return;
-    }
-    if ("missing" in resolution || "ambiguous" in resolution) {
-      opts.respond(true, {
-        resolution: {
-          ok: false,
-          ...("ambiguous" in resolution ? { candidates: resolution.candidates } : {}),
-        },
-      });
-      return;
-    }
-    await handleChatHistoryRequest({
-      ...opts,
-      params: { sessionKey: resolution.key, agentId: resolution.agentId, limit, maxBytes },
-      method: "chat.startup",
-      respond: (ok, payload, error, meta) =>
-        opts.respond(ok, ok ? { ...asOptionalRecord(payload), resolution } : payload, error, meta),
-    });
-  },
+  "chat.startup": (opts) =>
+    handleChatStartupRequest(opts, handleChatHistoryRequest, respondChatHistoryUnavailable),
   "chat.metadata": handleChatMetadataRequest,
 };

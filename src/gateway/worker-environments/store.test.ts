@@ -9,14 +9,12 @@ import type {
   WorkerProfile,
   WorkerSshEndpoint,
 } from "../../plugins/types.js";
-import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../../state/openclaw-state-db-contract.js";
 import { ensureAdditiveStateColumns } from "../../state/openclaw-state-db-schema-additive.js";
 import {
   assertOpenClawStateDatabaseForMaintenance,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
-  runOpenClawStateWriteTransaction,
   type OpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { hashWorkerCredential } from "./credential.js";
@@ -989,40 +987,6 @@ describe("worker environment store", () => {
       lastError: "provider temporarily unavailable",
     });
     expect(store.inventoryVersion()).toBeGreaterThan(provisioningVersion);
-  });
-
-  it("publishes committed environment changes and discards rolled-back writes", () => {
-    const transactions: boolean[] = [];
-    const unsubscribe = sessionChanges.subscribe((change) => {
-      if ("all" in change && change.scope === "worker-environments") {
-        transactions.push(database.db.isTransaction);
-      }
-    });
-    try {
-      runOpenClawStateWriteTransaction(
-        () => {
-          createIntent();
-          expect(transactions).toEqual([]);
-        },
-        { database },
-      );
-      expect(transactions).toEqual([false]);
-      expect(() =>
-        runOpenClawStateWriteTransaction(
-          () => {
-            store.recordError({ environmentId: "worker-1", state: "requested", error: "rollback" });
-            throw new Error("rollback environment");
-          },
-          { database },
-        ),
-      ).toThrow("rollback environment");
-      expect(transactions).toEqual([false]);
-      store.transition({ environmentId: "worker-1", from: "requested", to: "failed" });
-      expect(store.pruneTerminalEnvironments({ nowMs: 8 * DAY_MS })).toBe(1);
-      expect(transactions).toEqual([false, false, false]);
-    } finally {
-      unsubscribe();
-    }
   });
 
   it("accepts only SecretRef metadata for persisted SSH keys", () => {

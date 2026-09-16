@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { registerAgentRunCapacityWait } from "../infra/agent-run-capacity-wait.js";
 import {
   clearAgentRunContext,
@@ -12,6 +13,7 @@ import {
   createLifecycleEventBroadcastHandler,
   expectPrivateSessionInvalidation,
   fixedStoreRuntimeConfig,
+  loadGatewaySessionEntryReadOnlyMock,
   loadGatewaySessionRowMock,
   ownerGoal,
   resolveEmbeddedAgentSessionProgressStateMock,
@@ -20,6 +22,7 @@ import {
   subscribePluginSessionsChanged,
 } from "./server-session-events.test-support.js";
 import { GatewayClientRegistry } from "./server/client-registry.js";
+import type { SessionRowProjection } from "./session-row-projection.js";
 
 describe("createLifecycleEventBroadcastHandler", () => {
   beforeEach(() => {
@@ -28,6 +31,7 @@ describe("createLifecycleEventBroadcastHandler", () => {
     loadGatewaySessionRowMock.mockReturnValue(sessionRow);
     runtimeConfigState.value = {};
     sessionRow.key = "agent:main:main";
+    loadGatewaySessionEntryReadOnlyMock.mockReset().mockReturnValue({ entry: sessionRow });
   });
   it.each([
     "participants",
@@ -50,6 +54,63 @@ describe("createLifecycleEventBroadcastHandler", () => {
       session: { key: sessionRow.key, sessionId: sessionRow.sessionId },
     });
   });
+  it.each([
+    {
+      name: "missing capture followed by a successor",
+      captured: false,
+      projection: true,
+      delivered: false,
+    },
+    { name: "current capture", captured: true, projection: true, delivered: true },
+    { name: "no-projection fallback", captured: false, projection: false, delivered: true },
+  ])("keeps lifecycle publication identity for $name", async (scenario) => {
+    const prepared = createDeferred();
+    const query = { key: "agent:main:late-successor", agentId: "main" };
+    const original = { ...query, entry: { sessionId: "original", lifecycleRevision: "first" } };
+    let current = scenario.captured ? original : undefined;
+    const snapshot = vi.fn(() => ({
+      row: current ? { ...current.entry, key: query.key, kind: "direct" } : null,
+    }));
+    const projection = {
+      state: { rowContext: { projectedAgentRuns: undefined } },
+      capture: () => current,
+      ensureMaterialized: () => prepared.promise,
+      isCurrent: (record: typeof original) => record === current,
+      snapshot,
+    } as unknown as SessionRowProjection;
+    const broadcastToConnIds = vi.fn();
+    const handler = createLifecycleEventBroadcastHandler({
+      broadcastToConnIds,
+      sessionEventSubscribers: { getAll: () => new Set(["reader"]) },
+      chatAbortControllers: new Map(),
+      getSessionRowProjection: () => (scenario.projection ? projection : undefined),
+    });
+    const pending = handler({ sessionKey: query.key, agentId: query.agentId, reason: "updated" });
+    if (scenario.projection) {
+      expect(broadcastToConnIds).not.toHaveBeenCalled();
+    }
+    if (!scenario.captured) {
+      current = { ...query, entry: { sessionId: "successor", lifecycleRevision: "next" } };
+    }
+    prepared.resolve();
+    await pending;
+    if (!scenario.delivered) {
+      expect(snapshot).not.toHaveBeenCalled();
+      expect(broadcastToConnIds).not.toHaveBeenCalled();
+    } else {
+      expect(broadcastToConnIds).toHaveBeenCalledOnce();
+      const payload = broadcastToConnIds.mock.calls[0]?.[1];
+      expect(payload).toMatchObject({ sessionKey: query.key, reason: "updated" });
+      if (scenario.projection) {
+        expect(payload).toMatchObject({
+          session: { sessionId: "original", lifecycleRevision: "first" },
+        });
+      } else {
+        expect(payload).not.toHaveProperty("session");
+      }
+    }
+  });
+
   it("keeps delayed key-only deletes as invalidations without borrowing a replacement", async () => {
     const broadcastToConnIds = vi.fn();
     const handler = createLifecycleEventBroadcastHandler({

@@ -57,7 +57,6 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   mergeAssistantText,
   resolveAssistantTextInput,
-  type AssistantTextSnapshot,
 } from "../gateway/agent-event-assistant-text.js";
 import { isChatStopCommandText } from "../gateway/chat-abort.js";
 import { resolveEffectiveChatHistoryMaxChars } from "../gateway/chat-display-projection.js";
@@ -117,14 +116,16 @@ import {
 } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
+import { applyQueueDropPolicy, waitForQueueDebounce } from "../utils/queue-helpers.js";
 import {
-  applyQueueDropPolicy,
-  buildCollectPrompt,
-  previewQueueSummaryPrompt,
-  waitForQueueDebounce,
-} from "../utils/queue-helpers.js";
+  buildLocalQueuedPrompt,
+  createQueuedRunReadiness,
+  waitForLocalRunShutdown,
+  waitForQueuedLocalRun,
+  type LocalRunState,
+  type QueuedSessionRun,
+} from "./embedded-local-run.js";
 import { EmbeddedPreparedModelRuntimeHost } from "./embedded-prepared-runtime.js";
-import { resolveLocalRunShutdownGraceMs } from "./local-run-shutdown.js";
 import type {
   ChatSendOptions,
   TuiAgentsList,
@@ -146,43 +147,6 @@ const TUI_STATE_BY_TERMINAL_CLASSIFICATION = {
   cancellation: "aborted",
   failure: "error",
 } as const;
-
-type LocalRunState = {
-  sessionKey: string;
-  agentId: string;
-  controller: AbortController;
-  buffer: string;
-  assistantScope?: AssistantTextSnapshot["scope"];
-  managedMediaUrls: Set<string>;
-  lastBroadcastText?: string;
-  isBtw: boolean;
-  question?: string;
-  finishing: boolean;
-  lifecycleEnded: boolean;
-  lifecycleStopReason?: string;
-  lifecycleYielded?: boolean;
-  toolErrorSummary?: string;
-  terminalState?: "provisional" | "final";
-  registered: boolean;
-  pendingQueue?: {
-    mode: "followup" | "collect";
-    messages: string[];
-    debounceMs: number;
-    lastEnqueuedAt: number;
-    dropPolicy: NonNullable<QueueSettings["dropPolicy"]>;
-    droppedCount: number;
-    summaryLines: string[];
-  };
-  queuedAfter?: QueuedSessionRun;
-  queuedRunReady: Promise<void>;
-  markQueuedRunReady: () => void;
-};
-
-type QueuedSessionRun = {
-  runId: string;
-  run: LocalRunState;
-  promise: Promise<void>;
-};
 
 type LocalPendingMessage = {
   run: LocalRunState;
@@ -225,22 +189,6 @@ function resolveBtwQuestion(message: string): string | undefined {
   return question ? question : undefined;
 }
 
-function buildLocalQueuedPrompt(queue: NonNullable<LocalRunState["pendingQueue"]>): string {
-  const summary = previewQueueSummaryPrompt({
-    state: queue,
-    noun: "message",
-  });
-  const prompt =
-    queue.mode === "collect" && queue.messages.length > 1
-      ? buildCollectPrompt({
-          title: "[Queued messages while agent was busy]",
-          items: queue.messages,
-          renderItem: (message, index) => `---\nQueued #${index + 1}\n${message}`,
-        })
-      : (queue.messages[0] ?? "");
-  return [summary, prompt].filter(Boolean).join("\n\n");
-}
-
 function payloadText(parts: unknown): string {
   if (!Array.isArray(parts)) {
     return "";
@@ -277,77 +225,6 @@ function resolveDeltaPayload(text: string, previousText: string | undefined) {
     return { deltaText: text, replace: true as const };
   }
   return { deltaText: text.slice(previousText.length) };
-}
-
-function createQueuedRunReadiness() {
-  let markReady!: () => void;
-  const promise = new Promise<void>((ready) => {
-    markReady = ready;
-  });
-  return { promise, markReady };
-}
-
-async function waitForLocalRunShutdown(promises: Promise<void>[]): Promise<boolean> {
-  if (promises.length === 0) {
-    return true;
-  }
-  const timeoutMs = resolveLocalRunShutdownGraceMs();
-  if (timeoutMs <= 0) {
-    return false;
-  }
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  let completed = false;
-  await Promise.race([
-    Promise.allSettled(promises).then(() => {
-      completed = true;
-    }),
-    new Promise<void>((resolve) => {
-      timeout = setTimeout(resolve, timeoutMs);
-      timeout.unref?.();
-    }),
-  ]);
-  if (timeout) {
-    clearTimeout(timeout);
-  }
-  return completed;
-}
-
-async function waitForQueuedLocalRun(previousRun: QueuedSessionRun, runId: string): Promise<void> {
-  await previousRun.run.queuedRunReady;
-  if (previousRun.run.controller.signal.aborted && previousRun.run.queuedAfter) {
-    // Preserve canceled-slot ancestry and the live run's bounded maintenance wait.
-    return await waitForQueuedLocalRun(previousRun.run.queuedAfter, runId);
-  }
-  if (!previousRun.run.finishing && !previousRun.run.lifecycleEnded) {
-    await previousRun.promise;
-    return;
-  }
-  const timeoutMs = resolveLocalRunShutdownGraceMs();
-  if (timeoutMs <= 0) {
-    throw new Error(
-      `timed out waiting for previous local run to finish post-turn maintenance for ${runId}`,
-    );
-  }
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      previousRun.promise,
-      new Promise<void>((_, reject) => {
-        timeout = setTimeout(() => {
-          reject(
-            new Error(
-              `timed out waiting for previous local run to finish post-turn maintenance for ${runId}`,
-            ),
-          );
-        }, timeoutMs);
-        timeout.unref?.();
-      }),
-    ]);
-  } finally {
-    if (timeout) {
-      clearTimeout(timeout);
-    }
-  }
 }
 
 export class EmbeddedTuiBackend implements TuiBackend {

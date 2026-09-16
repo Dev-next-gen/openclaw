@@ -7,7 +7,6 @@ import { sql } from "kysely";
 import {
   GATEWAY_OWNER_PROFILE_ID,
   type UserProfile as UserProfileListItem,
-  type UserProfileGitHubIdentity,
 } from "../../packages/gateway-protocol/src/schema/users.js";
 import { executeSqliteQuerySync, executeSqliteQueryTakeFirstSync } from "../infra/kysely-sync.js";
 import { generateSecureUuid } from "../infra/secure-random.js";
@@ -78,14 +77,6 @@ type UserProfileAvatarError =
 
 export { UserProfileNotFoundError };
 
-type UserProfileListRow = Pick<
-  UserProfileRow,
-  "id" | "display_name" | "avatar_mime" | "merged_into" | "created_at" | "updated_at"
-> & {
-  role?: string | null;
-  has_avatar: unknown;
-};
-
 const MAX_USER_PROFILE_DISPLAY_NAME_LENGTH = 256;
 
 function normalizeEmail(email: string): string {
@@ -101,7 +92,7 @@ function normalizeInitialDisplayName(name: string | null | undefined): string | 
   return normalized ? truncateUtf16Safe(normalized, MAX_USER_PROFILE_DISPLAY_NAME_LENGTH) : null;
 }
 
-function toUserProfile(row: UserProfileMetadataRow): UserProfile {
+function toUserProfile(row: Omit<UserProfileMetadataRow, "avatar_sha256">): UserProfile {
   return {
     id: row.id,
     displayName: row.display_name,
@@ -130,25 +121,6 @@ function insertUserProfile(
   };
   executeSqliteQuerySync(db, userProfilesDb(db).insertInto("user_profiles").values(row));
   return row;
-}
-
-function toUserProfileListItem(
-  row: UserProfileListRow,
-  emails: string[],
-  githubIdentity: UserProfileGitHubIdentity | null,
-): UserProfileListItem {
-  return {
-    id: row.id,
-    displayName: row.display_name,
-    avatarMime: normalizeUserProfileAvatarMime(row.avatar_mime),
-    mergedInto: row.merged_into,
-    ...(row.role ? { role: row.role } : {}),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    emails,
-    githubIdentity,
-    hasAvatar: row.has_avatar === 1,
-  };
 }
 
 function selectUserProfileListItemById(db: DatabaseSync, profileId: string): UserProfileListItem {
@@ -180,11 +152,12 @@ function selectUserProfileListItemById(db: DatabaseSync, profileId: string): Use
       .where("profile_id", "=", profileId)
       .orderBy("email", "asc"),
   ).rows;
-  return toUserProfileListItem(
-    profile,
-    emails.map((alias) => alias.email),
-    selectUserProfileGitHubIdentities(db, [profileId]).get(profileId) ?? null,
-  );
+  return {
+    ...toUserProfile(profile),
+    emails: emails.map((alias) => alias.email),
+    githubIdentity: selectUserProfileGitHubIdentities(db, [profileId]).get(profileId) ?? null,
+    hasAvatar: profile.has_avatar === 1,
+  };
 }
 
 /** Resolves a durable profile reference to its current one-hop merge head. */
@@ -503,7 +476,6 @@ async function adoptAvatarIfEmpty(params: {
       return toUserProfile({
         ...profile,
         avatar_mime: avatar.mime,
-        avatar_sha256: sha256,
         updated_at: now,
       });
     },

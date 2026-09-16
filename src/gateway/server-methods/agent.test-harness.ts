@@ -1,7 +1,6 @@
 // Agent method tests cover run/steer/reset/wait behavior, task/subagent state,
 // approval followups, lifecycle hooks, and emitted gateway events.
 import { expectDefined } from "@openclaw/normalization-core";
-import { toErrorObject as toLintErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { expect, vi } from "vitest";
 import type { readAcpSessionMeta } from "../../acp/runtime/session-meta.js";
 import type { AgentInternalEvent } from "../../agents/internal-events.js";
@@ -28,11 +27,21 @@ import { captureEnv, setTestEnvValue } from "../../test-utils/env.js";
 import { installInMemoryTaskRegistryRuntime } from "../../test-utils/task-registry-runtime.js";
 import { createChatRunState } from "../server-chat-state.js";
 import type { GatewaySessionRow } from "../session-utils.types.js";
+import {
+  flushScheduledDispatchStep,
+  setDateOnlyFakeClockActive,
+  waitForAssertion,
+} from "./agent-clock.test-helpers.js";
 import { agentIdentityHandlers } from "./agent-identity.js";
 import { agentHandlers } from "./agent.js";
 import { flushPendingSessionsChangedEvents } from "./session-change-event.js";
 import { suspendHandlers } from "./suspend.js";
 import type { GatewayRequestContext } from "./types.js";
+export {
+  flushScheduledDispatchStep,
+  setDateOnlyFakeClockActive,
+  waitForAssertion,
+} from "./agent-clock.test-helpers.js";
 
 const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
 
@@ -447,43 +456,6 @@ type AgentIdentityGetHandlerArgs = Parameters<AgentIdentityGetHandler>[0];
 
 type AgentIdentityGetParams = AgentIdentityGetHandlerArgs["params"];
 
-const realSetTimeout = globalThis.setTimeout.bind(globalThis);
-
-let dateOnlyFakeClockActive = false;
-
-export function setDateOnlyFakeClockActive(active: boolean): void {
-  dateOnlyFakeClockActive = active;
-}
-
-function waitForRealTimer(ms: number) {
-  return new Promise<void>((resolve) => {
-    realSetTimeout(resolve, ms);
-  });
-}
-
-export async function waitForAssertion(assertion: () => void, timeoutMs = 2_000, stepMs = 5) {
-  let lastError: unknown;
-  for (let elapsed = 0; elapsed <= timeoutMs; elapsed += stepMs) {
-    try {
-      assertion();
-      return;
-    } catch (error) {
-      lastError = error;
-    }
-
-    await Promise.resolve();
-    if (vi.isFakeTimers() && !dateOnlyFakeClockActive) {
-      await vi.advanceTimersByTimeAsync(stepMs);
-    } else {
-      await waitForRealTimer(stepMs);
-    }
-  }
-  throw toLintErrorObject(
-    lastError ?? new Error("assertion did not pass in time"),
-    "Non-Error thrown",
-  );
-}
-
 export function requireValue<T>(value: T | null | undefined, message: string): T {
   if (value == null) {
     throw new Error(message);
@@ -530,16 +502,6 @@ export function expectRespondError(
   expect(mockCallArg(mock)).toBe(false);
   expect(mockCallArg(mock, 0, 1)).toBeUndefined();
   return expectRecordFields(mockCallArg(mock, 0, 2), expected);
-}
-
-export async function flushScheduledDispatchStep() {
-  await Promise.resolve();
-  if (vi.isFakeTimers() && !dateOnlyFakeClockActive) {
-    await vi.runOnlyPendingTimersAsync();
-  } else {
-    await waitForRealTimer(15);
-  }
-  await Promise.resolve();
 }
 
 async function waitForAcceptedRunDispatch(params: {
@@ -787,7 +749,7 @@ resetSessionAccessorMocks();
 
 export function setupNewYorkTimeConfig(isoDate: string) {
   vi.useFakeTimers({ toFake: ["Date"] });
-  dateOnlyFakeClockActive = true;
+  setDateOnlyFakeClockActive(true);
   vi.setSystemTime(new Date(isoDate)); // Wed Jan 28, 8:30 PM EST
   mocks.loadConfigReturn = {
     agents: {
@@ -800,7 +762,7 @@ export function setupNewYorkTimeConfig(isoDate: string) {
 
 export function resetTimeConfig() {
   mocks.loadConfigReturn = {};
-  dateOnlyFakeClockActive = false;
+  setDateOnlyFakeClockActive(false);
   vi.useRealTimers();
 }
 
@@ -1191,7 +1153,7 @@ export const describe0AfterEach0 = async () => {
       }),
     );
   mocks.lifecycleGeneration = "test-generation";
-  dateOnlyFakeClockActive = false;
+  setDateOnlyFakeClockActive(false);
   vi.useRealTimers();
 };
 
@@ -1220,7 +1182,7 @@ async function resetIntegrationState() {
   mocks.resolveVoiceWakeRouteByTrigger.mockReset();
   mocks.resolveSendPolicy.mockReset().mockReturnValue("allow");
   mocks.lifecycleGeneration = "test-generation";
-  dateOnlyFakeClockActive = false;
+  setDateOnlyFakeClockActive(false);
   vi.useRealTimers();
 }
 

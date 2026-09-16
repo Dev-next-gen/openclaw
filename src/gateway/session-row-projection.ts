@@ -34,9 +34,9 @@ import { retainUserProfileCatalog } from "../state/user-profile-list.js";
 import { readSessionRowFacts } from "./server-methods/session-placement-read-projection.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { compareSessionEntryPairs } from "./session-list-order.js";
+import { yieldSessionListWork } from "./session-projection-work.js";
 import { prepareSessionRowScopes } from "./session-row-scope.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
-import { yieldSessionListWork } from "./session-projection-work.js";
 import { buildSessionListRowMetadataContext } from "./session-utils-projection.js";
 import {
   materializeSessionRow,

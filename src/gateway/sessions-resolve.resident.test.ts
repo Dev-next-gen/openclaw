@@ -4,6 +4,7 @@ import type { SessionsResolveParams } from "../../packages/gateway-protocol/src/
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
+import { sharingPolicyClient } from "./session-sharing.test-utils.js";
 import { filterAndSortSessionEntries, prepareSessionRowSelection } from "./session-utils-list.js";
 import { resolveSessionKeyFromResolveParams } from "./sessions-resolve.js";
 
@@ -92,6 +93,48 @@ it("searches stored and selected model identities from retained row facts withou
           read.mockRestore();
         }
       }
+    } finally {
+      projection.dispose();
+    }
+  });
+});
+
+it("resolves authorized exact incognito keys without admitting them to discovery or resident rows", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const incognitoKey = "agent:main:dashboard:incognito-12345678-0aaa-4000-8000-000000000002";
+    replaceSessionEntrySync(
+      { agentId: "main", sessionKey: incognitoKey },
+      { sessionId: "private-resolve", updatedAt: 1, incognito: true, label: "Private" },
+    );
+    const projection = await createSessionRowProjection({ cfg });
+    const client = sharingPolicyClient({ scopes: ["operator.admin"] });
+    const resolve = (p: SessionsResolveParams) =>
+      resolveSessionKeyFromResolveParams({ cfg, client, projection, p });
+    try {
+      expect(await resolve({ key: incognitoKey })).toEqual({
+        ok: true,
+        key: incognitoKey,
+        agentId: "main",
+      });
+      for (const selector of [
+        { sessionId: "private-resolve" },
+        { label: "Private" },
+        { reference: { key: incognitoKey } },
+      ]) {
+        expect(await resolve({ ...selector, allowMissing: true })).toEqual({
+          ok: true,
+          missing: true,
+        });
+      }
+      expect(
+        await resolveSessionKeyFromResolveParams({
+          cfg,
+          client: sharingPolicyClient({ user: "viewer" }),
+          projection,
+          p: { key: incognitoKey, allowMissing: true },
+        }),
+      ).toEqual({ ok: true, missing: true });
+      expect(projection.rows.size).toBe(0);
     } finally {
       projection.dispose();
     }

@@ -37,6 +37,7 @@ import {
   resolveReadableAcpSessionRow,
   selectAcpSessionRow,
   selectAcpSessionRowForStoreEntry,
+  upsertAcpSessionMetaRow,
 } from "./session-meta-keys.js";
 import { clearLegacyEmbeddedAcpMetadata } from "./session-meta-legacy-cleanup.js";
 import {
@@ -350,31 +351,6 @@ export function repairAcpSessionMetaKeyForMigration(params: {
     { env: params.env, path: params.databasePath },
   );
   return repaired;
-}
-
-function upsertAcpSessionMetaRow(db: DatabaseSync, row: Insertable<AcpSessionsTable>): void {
-  executeSqliteQuerySync(
-    db,
-    getAcpSessionKysely(db)
-      .insertInto("acp_sessions")
-      .values(row)
-      .onConflict((conflict) =>
-        conflict.column("session_key").doUpdateSet({
-          session_id: (eb) => eb.ref("excluded.session_id"),
-          backend: (eb) => eb.ref("excluded.backend"),
-          agent: (eb) => eb.ref("excluded.agent"),
-          runtime_session_name: (eb) => eb.ref("excluded.runtime_session_name"),
-          identity_json: (eb) => eb.ref("excluded.identity_json"),
-          mode: (eb) => eb.ref("excluded.mode"),
-          runtime_options_json: (eb) => eb.ref("excluded.runtime_options_json"),
-          cwd: (eb) => eb.ref("excluded.cwd"),
-          state: (eb) => eb.ref("excluded.state"),
-          last_activity_at: (eb) => eb.ref("excluded.last_activity_at"),
-          last_error: (eb) => eb.ref("excluded.last_error"),
-          updated_at: (eb) => eb.ref("excluded.updated_at"),
-        }),
-      ),
-  );
 }
 
 export function readAcpSessionEntry(params: {

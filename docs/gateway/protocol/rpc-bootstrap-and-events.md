@@ -90,7 +90,9 @@ count.
   as thinking options and replaces legacy model aliases with canonical model IDs
   in event rows. The Control UI applies these rows locally to existing roster
   members, so their values match the list. Top-level lifecycle and capacity fields
-  remain event receipts, including explicit clearing values. Merge an existing
+  remain event receipts, including explicit clearing values. When a nested row
+  omits an optional field, honor its top-level clearing tombstone; nested values
+  take precedence when present. Merge an existing
   roster member's snapshot locally; refresh the list when a row is missing or
   the event is a broad, keyless invalidation. Profile identity, runner
   availability, and loaded cron bindings can produce broad invalidations.

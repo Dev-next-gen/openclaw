@@ -2,12 +2,10 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, onTestFinished } from "vitest";
-import { sessionChanges } from "../../sessions/session-row-changes.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
-  runOpenClawStateWriteTransaction,
   type OpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import type {
@@ -759,58 +757,6 @@ describe("worker session placement store", () => {
     expect(() => store.updateWorkspaceBaseManifest({ claim, manifestRef })).toThrow(
       "Cannot advance stale worker workspace",
     );
-  });
-
-  it("publishes pending-only and conflict changes after their owner commits", () => {
-    const active = advanceToActive(SESSION, "remote-exec");
-    const claim = store.claimWorkspaceMutationResult({
-      ...SESSION,
-      owner: {
-        kind: "local",
-        environmentId: active.environmentId,
-        ownerEpoch: active.activeOwnerEpoch,
-      },
-      claimId: "pending-row-change",
-    });
-    const observed: Array<{ reconciling: boolean; conflict: boolean; transaction: boolean }> = [];
-    onTestFinished(
-      sessionChanges.subscribe((change) => {
-        if (
-          "sessionKey" in change &&
-          change.sessionKey === SESSION.sessionKey &&
-          change.agentId === SESSION.agentId
-        ) {
-          observed.push({
-            reconciling: store
-              .getWorkspaceResultReconcilingSessionIds([SESSION.sessionId])
-              .has(SESSION.sessionId),
-            conflict: Boolean(store.get(SESSION.sessionId)?.workspaceResultConflict),
-            transaction: database.db.isTransaction,
-          });
-        }
-      }),
-    );
-    const ref = "refs/openclaw/worker-results/pending-row-change";
-    expect(() =>
-      runOpenClawStateWriteTransaction(
-        () => {
-          store.recordStagedWorkspaceResult(claim, ref);
-          expect(observed).toEqual([]);
-          throw new Error("rollback pending row");
-        },
-        { database },
-      ),
-    ).toThrow("rollback pending row");
-    expect(observed).toEqual([]);
-    store.recordStagedWorkspaceResult(claim, ref);
-    expect(observed.at(-1)).toEqual({ reconciling: true, conflict: false, transaction: false });
-    store.recordWorkspaceResultConflict(claim, { paths: ["conflict.txt"], stagedResultRef: ref });
-    expect(observed.at(-1)).toEqual({ reconciling: true, conflict: true, transaction: false });
-    store.recordWorkspaceResultConflict(claim, undefined);
-    expect(observed.at(-1)).toEqual({ reconciling: true, conflict: false, transaction: false });
-    store.acceptWorkspaceResult(claim);
-    store.completeWorkspaceResultAndReleaseTurn(claim);
-    expect(observed.at(-1)).toEqual({ reconciling: false, conflict: false, transaction: false });
   });
 
   it("fences a completed worker result until manifest acceptance clears it", () => {

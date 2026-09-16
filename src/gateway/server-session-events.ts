@@ -482,7 +482,7 @@ export function createLifecycleEventBroadcastHandler(params: {
         await projection.ensureMaterialized();
       } while (projection.needsMaterialization);
     }
-    if (captured && !projection?.isCurrent(captured)) {
+    if (projection && (!captured || !projection.isCurrent(captured))) {
       return;
     }
     const sessionRow = projection?.snapshot(query).row;
