@@ -39,8 +39,10 @@ import {
 import { HostedCatalogSignedFeedMonotonicityError } from "../plugins/official-external-plugin-catalog-source.js";
 import {
   ensureProjectRegistrySchema,
+  insertProjectRegistryInDatabase,
   listProjectRegistryInDatabase,
   removeProjectRegistryInDatabase,
+  resolveProjectCloneRefreshOwnerInDatabase,
   resolveRecordedProjectRootInDatabase,
 } from "../projects/project-registry.kernel.js";
 import { mapTaskFlowView } from "../tasks/task-domain-views.js";
@@ -432,6 +434,36 @@ function createSharedStateWorkerBackend(
       if (command.type === "projects.list") {
         ensureProjectRegistrySchema(writeOptions);
         return listProjectRegistryInDatabase(database.db);
+      }
+      if (command.type === "projects.insert") {
+        ensureProjectRegistrySchema(writeOptions);
+        return runOpenClawStateWriteTransaction(
+          ({ db }) => {
+            const { project, lease } = command.input;
+            if (lease.scope !== "projects.checkout" || lease.key !== project.repoRoot) {
+              throw new Error("Project registry mutation requires its checkout lifecycle lease");
+            }
+            assertOpenClawStateLeaseWorkerOwnedInTransaction(db, lease);
+            return insertProjectRegistryInDatabase(db, project);
+          },
+          writeOptions,
+          { operationLabel: "projects.registry.insert" },
+        );
+      }
+      if (command.type === "projects.resolveRefreshOwner") {
+        ensureProjectRegistrySchema(writeOptions);
+        return runOpenClawStateWriteTransaction(
+          ({ db }) => {
+            const { project, lease } = command.input;
+            if (lease.scope !== "projects.checkout" || lease.key !== project.repoRoot) {
+              throw new Error("Project refresh requires its checkout lifecycle lease");
+            }
+            assertOpenClawStateLeaseWorkerOwnedInTransaction(db, lease);
+            return resolveProjectCloneRefreshOwnerInDatabase(db, project);
+          },
+          writeOptions,
+          { operationLabel: "projects.registry.refresh-owner.resolve" },
+        );
       }
       if (command.type === "projects.remove") {
         return runOpenClawStateWriteTransaction(

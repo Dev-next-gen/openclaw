@@ -231,15 +231,18 @@ const runtimeConsumers = [
     mode: "runtime",
     dir: "src",
   },
-  {
-    file: "src/gateway/server.chat-cli-auth.test.ts",
+  ...[
+    "src/gateway/server.chat-cli-auth.test.ts",
+    "src/gateway/server.codex-failure-recovery.test.ts",
+  ].map((file) => ({
+    file,
     configs: [
       "test/vitest/vitest.gateway-server-isolated.config.ts",
       "test/vitest/vitest.gateway.config.ts",
     ],
-    mode: "runtime",
+    mode: "runtime" as const,
     dir: "",
-  },
+  })),
   ...[
     "src/gateway/server-sidecar-retention.test.ts",
     "src/gateway/server.config-patch.test.ts",

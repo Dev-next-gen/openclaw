@@ -2973,6 +2973,13 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
   });
 
   it("keeps later provider capability metadata after hydrating a Codex primary", async () => {
+    const nativeModel = {
+      provider: "openai",
+      id: "gpt-5.6-sol",
+      name: "GPT 5.6 Sol",
+      reasoning: true,
+      compat: { supportedReasoningEfforts: ["max", "ultra"] },
+    };
     state.runtimeConfigMock = {
       agents: {
         defaults: {
@@ -2985,13 +2992,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       },
     };
     state.loadManifestModelCatalogMock.mockReturnValue([
-      {
-        provider: "openai",
-        id: "gpt-5.6-sol",
-        name: "GPT 5.6 Sol",
-        reasoning: true,
-        compat: { supportedReasoningEfforts: ["max"] },
-      },
+      { ...nativeModel, compat: { supportedReasoningEfforts: ["max"] } },
       {
         provider: "gmn",
         id: "gpt-5.4",
@@ -3005,15 +3006,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       if (provider !== "openai") {
         throw new Error(`unexpected scoped thinking hydration for ${provider}`);
       }
-      return [
-        {
-          provider: "openai",
-          id: "gpt-5.6-sol",
-          name: "GPT 5.6 Sol",
-          reasoning: true,
-          compat: { supportedReasoningEfforts: ["max", "ultra"] },
-        },
-      ];
+      return [structuredClone(nativeModel)];
     });
     state.resolveThinkingDefaultMock.mockImplementation((args: unknown) => {
       const { provider, catalog } = args as {
@@ -3047,7 +3040,14 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       modelOverride: "gpt-5.4",
       resolvedThinkLevel: "xhigh",
     });
-    expect(state.loadProviderScopedThinkingCatalogMock).toHaveBeenCalledTimes(1);
+    expect(state.loadProviderScopedThinkingCatalogMock).toHaveBeenCalledTimes(2);
+    for (const [scope] of state.loadProviderScopedThinkingCatalogMock.mock.calls) {
+      expectRecordFields(scope, {
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        agentRuntime: "codex",
+      });
+    }
   });
 
   it("persists and clears current run delivery context for restart recovery", async () => {
