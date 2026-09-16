@@ -13,7 +13,7 @@ import { installMatrixTestRuntime } from "../../test-runtime.js";
 import {
   MATRIX_LEGACY_CRYPTO_MIGRATION_FILENAME,
   openMatrixLegacyCryptoMigrationStoreOptions,
-  readMatrixRecoveryKeyStateForPath,
+  openMatrixRecoveryKeyStoreOptions,
 } from "../crypto-state-store.js";
 import { SqliteBackedMatrixSyncStore } from "./file-sync-store.js";
 import { openMatrixStorageMetaStoreOptions } from "./storage-metadata.js";
@@ -103,7 +103,7 @@ describe("matrix client storage paths", () => {
     });
   }
 
-  function setupCurrentTokenBackfillScenario(params: {
+  async function setupCurrentTokenBackfillScenario(params: {
     currentRootFiles: "thread-bindings" | "startup-verification";
     oldRootFiles: "crypto-only" | "thread-bindings";
   }) {
@@ -137,7 +137,7 @@ describe("matrix client storage paths", () => {
         ],
       });
       expect(
-        claimCurrentTokenStorageState({
+        await claimCurrentTokenStorageState({
           rootDir: canonicalPaths.rootDir,
         }),
       ).toBe(true);
@@ -443,9 +443,12 @@ describe("matrix client storage paths", () => {
       resetPluginStateStoreForTests();
 
       const expectPreservedState = () => {
-        expect(readMatrixRecoveryKeyStateForPath(storagePaths.recoveryKeyPath)).toEqual(
-          recoveryKey,
-        );
+        expect(
+          createPluginStateSyncKeyedStoreForTests(
+            "matrix",
+            openMatrixRecoveryKeyStoreOptions(storagePaths.rootDir),
+          ).lookup("current"),
+        ).toEqual(recoveryKey);
         expect(
           JSON.parse(fs.readFileSync(`${storagePaths.recoveryKeyPath}.migrated`, "utf8")),
         ).toEqual(recoveryKey);
@@ -852,8 +855,8 @@ describe("matrix client storage paths", () => {
     expectCanonicalRootForNewDevice(stateDir);
   });
 
-  it("keeps the current-token storage root stable after deviceId backfill when startup claimed state there", () => {
-    const { stateDir, canonicalPaths } = setupCurrentTokenBackfillScenario({
+  it("keeps the current-token storage root stable after deviceId backfill when startup claimed state there", async () => {
+    const { stateDir, canonicalPaths } = await setupCurrentTokenBackfillScenario({
       currentRootFiles: "thread-bindings",
       oldRootFiles: "crypto-only",
     });
@@ -879,8 +882,8 @@ describe("matrix client storage paths", () => {
     expect(restartedPaths.rootDir).toBe(canonicalPaths.rootDir);
   });
 
-  it("does not keep the current-token storage root sticky when only marker files exist after backfill", () => {
-    const { stateDir, oldStoragePaths } = setupCurrentTokenBackfillScenario({
+  it("does not keep the current-token storage root sticky when only marker files exist after backfill", async () => {
+    const { stateDir, oldStoragePaths } = await setupCurrentTokenBackfillScenario({
       currentRootFiles: "startup-verification",
       oldRootFiles: "thread-bindings",
     });

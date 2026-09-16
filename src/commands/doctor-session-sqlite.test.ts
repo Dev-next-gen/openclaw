@@ -15,11 +15,13 @@ import {
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.sqlite-entry.js";
 import {
-  readSessionTranscriptHistoryEvents,
-  readSessionTranscriptHistoryEventById,
   readSessionTranscriptHistoryEventCount,
   readSessionTranscriptHistoryEventPage,
 } from "../config/sessions/session-accessor.sqlite-history-events.js";
+import {
+  readSessionTranscriptHistoryEvents,
+  readSessionTranscriptHistoryEventById,
+} from "../config/sessions/session-accessor.sqlite-history.test-support.js";
 import { importSqliteSessionRows } from "../config/sessions/session-accessor.sqlite-import.js";
 import {
   loadTranscriptEventsSync,

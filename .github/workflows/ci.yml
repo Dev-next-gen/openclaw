@@ -104,6 +104,9 @@ jobs:
       cache_write_allowed: ${{ steps.candidate_trust.outputs.cache_write_allowed }}
       hosted_runner_profile_contract: ${{ steps.runner_profile.outputs.hosted_runner_profile_contract }}
       runner_profile: ${{ steps.runner_profile.outputs.runner_profile }} # hosted-runner-profile-contract-v1
+      hybrid_hosted_offload: ${{ steps.manifest.outputs.hybrid_hosted_offload }}
+      hybrid_hosted_base_rows: ${{ steps.manifest.outputs.hybrid_hosted_base_rows }}
+      hybrid_hosted_total_rows: ${{ steps.manifest.outputs.hybrid_hosted_total_rows }}
       diff_base_revision: ${{ steps.diff_base.outputs.sha }}
       diff_head_revision: ${{ steps.diff_base.outputs.head_sha }}
       docs_only: ${{ steps.manifest.outputs.docs_only }}
@@ -147,6 +150,7 @@ jobs:
       run_control_ui_i18n: ${{ steps.manifest.outputs.run_control_ui_i18n }}
       strict_control_ui_i18n: ${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && 'true' || steps.changed_scope.outputs.strict_control_ui_i18n }}
       run_ui_tests: ${{ steps.manifest.outputs.run_ui_tests }}
+      run_control_ui_performance: ${{ steps.manifest.outputs.run_control_ui_performance }}
       run_ui_e2e: ${{ steps.manifest.outputs.run_ui_e2e }}
       ui_e2e_matrix: ${{ steps.manifest.outputs.ui_e2e_matrix }}
       run_native_i18n: ${{ steps.manifest.outputs.run_native_i18n }}
@@ -1191,6 +1195,9 @@ jobs:
           OPENCLAW_CI_REPOSITORY: ${{ github.repository }}
           OPENCLAW_CI_EVENT_NAME: ${{ github.event_name }}
           OPENCLAW_CI_RUNNER_PROFILE: ${{ steps.runner_profile.outputs.runner_profile }}
+          OPENCLAW_CI_RUNNER_BACKEND: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND }}
+          OPENCLAW_CI_AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          OPENCLAW_CI_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
           manifest_node_args=()
           if [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ] &&
@@ -1518,15 +1525,21 @@ jobs:
           }
 
           const compactPullRequest = isCanonicalRepository && eventName === "pull_request";
+          const ownerPathEvent = isCanonicalRepository && (
+            eventName === "pull_request" ||
+            (eventName === "push" && process.env.GITHUB_REF === "refs/heads/main")
+          );
           const dockerSeedLanes =
-            compactPullRequest &&
+            ownerPathEvent &&
             changedPaths &&
             supportsDockerSeedE2e &&
             typeof changedNodeTestPlan.resolveChangedDockerSeedLanes === "function"
               ? changedNodeTestPlan.resolveChangedDockerSeedLanes(changedPaths)
               : [];
-          if (isCanonicalRepository && eventName === "push" &&
-              process.env.GITHUB_REF === "refs/heads/main" && supportsDockerSeedE2e) {
+          // Manual CI is Full Release Validation's owner for the exact
+          // legacy-operator-state + auto-auth seed contract.
+          if (isCanonicalRepository && supportsDockerSeedE2e && (
+              eventName === "workflow_dispatch" || (ownerPathEvent && changedPaths === null))) {
             dockerSeedLanes.push("published-upgrade-survivor");
           }
           // Canonical pushes also use compact bins: 80+ single-group jobs
@@ -1575,7 +1588,7 @@ jobs:
             changedNodeTestPlan.hasBuildArtifactAffectingChange(changedPaths);
           const changedScopeHasQaImpact =
             changedPaths === null ||
-            eventName !== "pull_request" ||
+            eventName === "workflow_dispatch" ||
             typeof changedNodeTestPlan.hasQaSmokeAffectingChange !== "function" ||
             changedNodeTestPlan.hasQaSmokeAffectingChange(changedPaths);
           // Prompt snapshots only change when the generator's import graph or
@@ -1599,6 +1612,11 @@ jobs:
             changedScopeHasSqliteSessionLifecycleImpact;
           const runBuildArtifacts =
             runNodeFull && (changedScopeHasBuildImpact || runSqliteSessionLifecycle);
+          const runControlUiPerformance = (runBuildArtifacts || runUiTests) && (
+            eventName === "workflow_dispatch" || changedPaths === null ||
+            typeof changedNodeTestPlan.hasControlUiPerformanceAffectingChange !== "function" ||
+            changedNodeTestPlan.hasControlUiPerformanceAffectingChange(changedPaths)
+          );
           const runQaSmokeCi =
             runNodeFull &&
             changedScopeHasQaImpact &&
@@ -1746,9 +1764,9 @@ jobs:
               // Diff generation took 209–246s on smaller hosts; keep its 8GiB heap isolated.
               { check_name: "report-plugin-sdk-api-diff", group: "plugin-sdk-api-diff", runner: "blacksmith-8vcpu-ubuntu-2404" },
             ] : []),
-            // Cold SDK/plugin compilation and architecture scans need the measured 8CPU class.
+            // Cold SDK/plugin compilation needs the measured 8CPU class.
             { check_name: "check-additional-extension-package-boundary", group: "extension-package-boundary", runner: "blacksmith-32vcpu-ubuntu-2404" },
-            { check_name: "check-additional-runtime-topology-architecture", group: "runtime-topology-architecture", runner: "blacksmith-32vcpu-ubuntu-2404" },
+            { check_name: "check-additional-runtime-topology-architecture", group: "runtime-topology-architecture", runner: "blacksmith-16vcpu-ubuntu-2404" },
           ];
 
           const manifest = {
@@ -1803,6 +1821,7 @@ jobs:
             run_format_check: runFormatCheck,
             run_control_ui_i18n: runControlUiI18n,
             run_ui_tests: runUiTests,
+            run_control_ui_performance: runControlUiPerformance,
             run_ui_e2e: runUiE2e,
             ui_e2e_matrix: createMatrix(Array.from({ length: uiE2eJobCount }, (_, index) => {
               const shard = index + 1;
@@ -1892,6 +1911,71 @@ jobs:
             ),
           };
 
+          // Routing belongs to this workflow, not the frozen target's test planners.
+          // Only automatic hybrid first attempts can add optional hosted rows.
+          const HYBRID_HOSTED_ROW_LIMIT = 45;
+          const HYBRID_HOSTED_BASE_ROW_LIMIT = 40;
+          const hybridHostedEligible = !frozenTarget && isCanonicalRepository &&
+            process.env.OPENCLAW_CI_RUNNER_BACKEND === "hybrid" &&
+            process.env.GITHUB_RUN_ATTEMPT === "1" &&
+            (eventName === "push" || (eventName === "pull_request" &&
+              ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"].includes(
+                process.env.OPENCLAW_CI_AUTHOR_ASSOCIATION ?? "",
+              )));
+          let hybridHostedBaseRows = 0;
+          let hybridHostedOffloadRows = 0;
+          if (hybridHostedEligible) {
+            const count = (selected, rows = 1) => selected ? rows : 0;
+            const hostedNodeRows = manifest.checks_node_core_nondist_matrix.include.filter(
+              (row) => row.runner && !row.runner.startsWith("blacksmith-"),
+            ).length;
+            const hostedAdditionalRows = manifest.check_additional_matrix.include.filter(
+              (row) => !["extension-package-boundary", "runtime-topology-architecture", "plugin-sdk-api-diff"].includes(row.group) ||
+                !row.runner.startsWith("blacksmith-"),
+            ).length;
+            // Include control jobs, every emitted matrix row and native hosted jobs.
+            // The guard independently expands the workflow to catch inventory drift.
+            hybridHostedBaseRows = Object.values({
+              preflight: 1,
+              "ci-gate": 1,
+              "pnpm-store-warmup": count(manifest.run_node || manifest.run_check_docs),
+              "control-ui-performance": count(manifest.run_control_ui_performance),
+              "native-i18n": count(manifest.run_native_i18n),
+              "control-ui-i18n": count(manifest.run_control_ui_i18n),
+              "checks-fast-core": count(manifest.run_checks_fast_core, manifest.checks_fast_core_matrix.include.length),
+              "checks-fast-plugin-contracts-shard": count(manifest.run_plugin_contracts_shards, manifest.plugin_contracts_matrix.include.length),
+              "checks-fast-channel-contracts-shard": count(manifest.run_channel_contracts_shards, manifest.channel_contracts_matrix.include.length),
+              "checks-node-core-test-nondist-shard": count(manifest.run_checks_node_core_nondist, hostedNodeRows),
+              "check-shard": count(manifest.run_check, 4),
+              "check-lint-hosted-core-shard": count(manifest.run_check && usesHostedRunnerProfile, runnerProfile === "hybrid" && !releaseGate ? 2 : 5),
+              "check-additional-shard": count(manifest.run_check_additional, hostedAdditionalRows),
+              "check-docs": count(manifest.run_check_docs),
+              "skills-python": count(manifest.run_skills_python_job),
+              "macos-node": count(manifest.run_macos_node, manifest.macos_node_matrix.include.length),
+              "macos-swift": count(manifest.run_macos_swift),
+              "ios-build": count(manifest.run_ios_build),
+              "docker-seed-e2e": count(manifest.run_docker_seed_e2e && eventName === "pull_request" &&
+                process.env.OPENCLAW_CI_HEAD_REPOSITORY !== process.env.OPENCLAW_CI_REPOSITORY),
+            }).reduce((total, rows) => total + rows, 0);
+            hybridHostedOffloadRows = 1 + count(manifest.run_ui_tests, 3) +
+              count(manifest.run_ui_e2e && !compatibilityTarget,
+                manifest.ui_e2e_matrix.include.filter((row) => row.task === "browser-extension").length);
+          }
+          if (hybridHostedEligible && hybridHostedBaseRows > HYBRID_HOSTED_ROW_LIMIT) {
+            console.warn(`::warning::Hybrid base manifest has ${hybridHostedBaseRows} hosted jobs, above the ${HYBRID_HOSTED_ROW_LIMIT}-row offload budget; keeping optional offloads on Blacksmith.`);
+          }
+          const hybridHostedOffload = hybridHostedEligible &&
+            hybridHostedBaseRows <= HYBRID_HOSTED_BASE_ROW_LIMIT &&
+            hybridHostedBaseRows + hybridHostedOffloadRows <= HYBRID_HOSTED_ROW_LIMIT;
+          Object.assign(manifest, {
+            hybrid_hosted_offload: hybridHostedOffload,
+            hybrid_hosted_base_rows: hybridHostedBaseRows,
+            hybrid_hosted_total_rows: hybridHostedBaseRows + (hybridHostedOffload ? hybridHostedOffloadRows : 0),
+          });
+          if (hybridHostedEligible) {
+            console.log(`Hybrid hosted rows: ${manifest.hybrid_hosted_base_rows} base, ${manifest.hybrid_hosted_total_rows} total; optional offload ${hybridHostedOffload ? "admitted" : "retained on Blacksmith"}`);
+          }
+
           for (const [key, value] of Object.entries(manifest)) {
             appendFileSync(
               outputPath,
@@ -1932,13 +2016,14 @@ jobs:
           dependency-cache: "true"
           install-bun: "false"
 
-  # Run dependency-free security checks in parallel with
-  # scope detection. No downstream job waits for Python/pre-commit setup.
+  # Preflight budgets optional hosted work before security allocates a runner.
+  # Security still runs after a failed preflight; other work never waits for it.
   security-fast:
     permissions:
       contents: read
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt == 1 && github.event_name != 'workflow_dispatch' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    needs: [preflight]
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && needs.preflight.outputs.hybrid_hosted_offload != 'true' && github.run_attempt == 1 && github.event_name != 'workflow_dispatch' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 20
     env:
       PRE_COMMIT_HOME: .cache/pre-commit-security-fast
@@ -2138,9 +2223,7 @@ jobs:
       contents: read
     needs: [preflight]
     if: needs.preflight.outputs.run_build_artifacts == 'true'
-    # Current targets fit the measured 16-class with serial SDK declarations.
-    # Keep frozen/unknown targets on their existing class; their compute was not proved.
-    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (needs.preflight.outputs.frozen_target == 'false' && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-32vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
+    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-32vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 35 || 20 }}
     steps:
       - *linux_node_checkout_step
@@ -2533,7 +2616,7 @@ jobs:
     permissions:
       contents: read
     needs: [preflight]
-    if: needs.preflight.outputs.run_build_artifacts == 'true' || needs.preflight.outputs.run_ui_tests == 'true'
+    if: needs.preflight.outputs.run_control_ui_performance == 'true'
     runs-on: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid') && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: 15
     env:
@@ -2604,9 +2687,8 @@ jobs:
     name: ${{ needs.preflight.outputs.frozen_target == 'true' && 'checks-ui' || format('checks-ui ({0}/3)', matrix.shard) }}
     needs: [preflight]
     if: needs.preflight.outputs.run_ui_tests == 'true'
-    # Each Vitest row retains three root workers. Hybrid first attempts use
-    # the existing 8 vCPU class; retries and manual dispatch stay hosted.
-    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-8vcpu-ubuntu-2404' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) }}
+    # Keep three workers per row; admit hosted hybrid rows only within budget.
+    runs-on: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && needs.preflight.outputs.hybrid_hosted_offload == 'true') && 'ubuntu-24.04' || vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-8vcpu-ubuntu-2404' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -2659,6 +2741,7 @@ jobs:
 
       - name: Test Control UI
         env:
+          OPENCLAW_UI_E2E_DIAGNOSTIC_DIR: ${{ github.workspace }}/.artifacts/control-ui-e2e-timeouts/ui-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
           OPENCLAW_NODE_TEST_CONFIGS_JSON: '["ui/vitest.config.ts"]'
           OPENCLAW_NODE_TEST_PLAN_CONCURRENCY: "1"
           OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: ${{ format('["--maxWorkers", "3", "--reporter=verbose", "--reporter=github-actions", "--reporter=./scripts/lib/vitest-resource-reporter.mts"{0}]', needs.preflight.outputs.frozen_target != 'true' && format(', "--shard={0}/3"', matrix.shard) || '') }}
@@ -2675,6 +2758,15 @@ jobs:
             DEBUG=vitest:browser:pool node --import tsx scripts/ci-run-node-test-shard.mts
           fi
 
+      - name: Upload Control UI timeout diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: control-ui-test-timeout-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/.artifacts/control-ui-e2e-timeouts/ui-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 7
+
   checks-ui-e2e:
     permissions:
       contents: read
@@ -2683,10 +2775,10 @@ jobs:
     # Compatibility targets pin a frozen Control UI whose e2e expectations track
     # that release, not current main.
     if: needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true'
-    # Backend and contributor routing stays shared with real-Gateway tests.
+    # Only the browser-extension row can consume the optional hosted budget.
     # UI's two workers received two CPUs on the 8-vCPU label; request the measured
     # eight-CPU class only for Control UI, retaining browser-extension placement.
-    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (matrix.task == 'control-ui' && 'blacksmith-32vcpu-ubuntu-2404' || 'blacksmith-8vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
+    runs-on: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && needs.preflight.outputs.hybrid_hosted_offload == 'true' && matrix.task == 'browser-extension') && 'ubuntu-24.04' || vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (matrix.task == 'control-ui' && 'blacksmith-32vcpu-ubuntu-2404' || 'blacksmith-8vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
     # Source-server and runtime-budget owners retain serial Chromium execution.
     timeout-minutes: 25
     env:
@@ -3451,7 +3543,8 @@ jobs:
     name: ${{ matrix.check_name || 'checks-node-core-test-nondist-shard' }}
     needs: [preflight]
     if: needs.preflight.outputs.run_checks_node_core_nondist == 'true'
-    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
+    # Apply selected transitions only: numbered bins can use another class in other profiles.
+    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && ((matrix.runner == 'blacksmith-8vcpu-ubuntu-2404' && contains(fromJSON('["checks-node-changed-extensions-bundle-16","checks-node-compact-large-9","checks-node-changed-extensions-bundle-25","checks-node-compact-large-5"]'), matrix.check_name) || matrix.runner == 'blacksmith-32vcpu-ubuntu-2404' && contains(fromJSON('["checks-node-compact-small-4","checks-node-compact-small-3","checks-node-compact-small-10"]'), matrix.check_name)) && 'blacksmith-16vcpu-ubuntu-2404' || matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
     timeout-minutes: ${{ matrix.timeout_minutes || 60 }}
     strategy:
       fail-fast: false
@@ -5166,6 +5259,37 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
+      - name: Run focused iOS voice cleanup simulator tests
+        id: ios_voice_cleanup_tests
+        if: (matrix.phase == 'smoke' || matrix.phase == 'tests') && needs.preflight.outputs.compatibility_target != 'true'
+        run: |
+          set -euo pipefail
+          simulator_id="$(
+            xcrun simctl list devices available --json | node --input-type=module -e '
+              const chunks = [];
+              for await (const chunk of process.stdin) chunks.push(chunk);
+              const runtimes = JSON.parse(Buffer.concat(chunks).toString("utf8")).devices;
+              const simulator = Object.values(runtimes)
+                .flat()
+                .find((device) => device.isAvailable && device.name.startsWith("iPhone"));
+              if (!simulator) throw new Error("No available iPhone simulator for voice cleanup tests");
+              process.stdout.write(simulator.udid);
+            '
+          )"
+          mkdir -p apps/ios/build/LifecycleTestResults
+          xcodebuild \
+            -project apps/ios/OpenClaw.xcodeproj \
+            -scheme OpenClaw \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=${simulator_id}" \
+            -resultBundlePath apps/ios/build/LifecycleTestResults/OpenClawVoiceCleanupTests.xcresult \
+            -parallel-testing-enabled NO \
+            -only-testing:OpenClawTests/TalkRealtimeVoiceSessionCleanupTests \
+            -only-testing:OpenClawTests/TalkRealtimeConsultCancellationTests \
+            -only-testing:OpenClawTests/TalkRealtimeTranscriptWriteQueueTests \
+            -only-testing:OpenClawTests/TalkModeManagerTests \
+            test
+
       # App compilation and screenshots do not execute approval or notification
       # lifecycles. Exercise both owners on the already provisioned simulator.
       - name: Run focused iOS lifecycle simulator tests
@@ -5281,7 +5405,7 @@ jobs:
             test-without-building
 
       - name: Upload iOS lifecycle simulator evidence
-        if: ${{ always() && steps.ios_lifecycle_tests.outcome != '' && steps.ios_lifecycle_tests.outcome != 'skipped' }}
+        if: ${{ always() && ((steps.ios_lifecycle_tests.outcome != '' && steps.ios_lifecycle_tests.outcome != 'skipped') || (steps.ios_voice_cleanup_tests.outcome != '' && steps.ios_voice_cleanup_tests.outcome != 'skipped')) }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ios-lifecycle-tests-${{ needs.preflight.outputs.checkout_revision }}
@@ -5527,6 +5651,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Android toolchain
+        id: android-toolchain
         # Frozen targets keep their Gradle task contract, but CI toolchain pins remain
         # workflow-owned as before. Load them from the workflow revision so old targets work.
         uses: ./.ci-harness/.github/actions/setup-android-toolchain
@@ -5634,9 +5759,15 @@ jobs:
           init_script="$RUNNER_TEMP/openclaw-robolectric-init.gradle"
           mkdir -p "$maven_repo"
           cat >"$init_script" <<'GROOVY'
+          println "Gradle JVM: runtime=${System.getProperty('java.runtime.version')} vendor=${System.getProperty('java.vendor')} home=${System.getProperty('java.home')}"
           allprojects {
             tasks.withType(org.gradle.api.tasks.testing.Test).configureEach {
               systemProperty "maven.repo.local", System.getenv("OPENCLAW_ROBOLECTRIC_M2")
+              // Record the executing launcher; cached results do not prove this JVM ran tests.
+              doFirst {
+                def metadata = javaLauncher.get().metadata
+                logger.lifecycle("Test JVM ${path}: runtime=${metadata.javaRuntimeVersion} vendor=${metadata.vendor} home=${metadata.installationPath.asFile}")
+              }
             }
           }
           GROOVY
@@ -5646,6 +5777,7 @@ jobs:
       - name: Run Android ${{ matrix.task }}
         working-directory: apps/android
         env:
+          JAVA_HOME: ${{ steps.android-toolchain.outputs.gradle-java-home }}
           CI_RUNNER_BACKEND: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) || github.event_name == 'workflow_dispatch' || github.repository != 'openclaw/openclaw' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != 'openclaw/openclaw')) && 'github' || 'blacksmith' }}
           TASK: ${{ matrix.task }}
           RUN_LINT: ${{ matrix.lint && 'true' || 'false' }}
@@ -5749,6 +5881,8 @@ jobs:
             apps/android/app/build/test-results/test*UnitTest/TEST-*.xml
             apps/android/wear/build/test-results/test*UnitTest/TEST-*.xml
             apps/android/wear-shared/build/test-results/test*UnitTest/TEST-*.xml
+            apps/android/**/hs_err_pid*.log
+            apps/android/**/replay_pid*.log
           if-no-files-found: warn
           retention-days: 14
 
@@ -5765,7 +5899,7 @@ jobs:
     name: docker-seed-e2e
     needs: [preflight]
     if: needs.preflight.outputs.run_docker_seed_e2e == 'true'
-    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.event_name == 'pull_request' && (github.run_attempt > 1 || github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-32vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.event_name == 'pull_request' && (github.run_attempt > 1 || github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: 60
     steps:
       - *linux_node_checkout_step
@@ -5866,7 +6000,7 @@ jobs:
             security-fast=${{ needs.security-fast.result }}|true
             pnpm-store-warmup=${{ needs.pnpm-store-warmup.result }}|${{ (needs.preflight.outputs.run_node == 'true' || needs.preflight.outputs.run_check_docs == 'true') && (needs.preflight.outputs.runner_profile == 'github' || needs.preflight.outputs.runner_profile == 'hybrid' || (!(github.repository == 'openclaw/openclaw' && github.event_name == 'push' && github.ref == 'refs/heads/main') && !(github.repository == 'openclaw/openclaw' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.preflight.outputs.run_node == 'true'))) }}
             build-artifacts=${{ needs.build-artifacts.result }}|${{ needs.preflight.outputs.run_build_artifacts }}
-            control-ui-performance=${{ needs.control-ui-performance.result }}|${{ needs.preflight.outputs.run_build_artifacts == 'true' || needs.preflight.outputs.run_ui_tests == 'true' }}
+            control-ui-performance=${{ needs.control-ui-performance.result }}|${{ needs.preflight.outputs.run_control_ui_performance }}
             native-i18n=${{ needs.native-i18n.result }}|${{ needs.preflight.outputs.run_native_i18n }}
             checks-ui=${{ needs.checks-ui.result }}|${{ needs.preflight.outputs.run_ui_tests }}
             checks-ui-e2e=${{ needs.checks-ui-e2e.result }}|${{ needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true' }}
