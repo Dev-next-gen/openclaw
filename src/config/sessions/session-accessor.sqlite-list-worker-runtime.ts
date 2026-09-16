@@ -1,3 +1,4 @@
+import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { readSqliteDataVersion } from "../../infra/node-sqlite.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
@@ -44,6 +45,7 @@ type ReadBackend = {
 type ReadResource = {
   identity: string | symbol;
   revoked: boolean;
+  activeClaims: number;
   observer?: OpenClawAgentReadOnlyDatabaseHandle;
   backend?: ReadBackend;
   close: () => Promise<void>;
@@ -52,6 +54,60 @@ const resources = new Map<string, ReadResource>();
 // Keep more actors than the four worker slots, without occupying the broker's 64 clients.
 const MAX_IDLE_BACKENDS = 8;
 const idleBackends = new Map<ReadBackend, ReadResource>();
+const MAX_IDLE_RESOURCES = 64;
+const idleResources = new Set<ReadResource>();
+type ReadRetirement = { pending: Promise<Result<void, unknown>>; reported: boolean };
+const retiringResources = new Map<ReadResource, ReadRetirement>();
+
+function retireReadResource(resource: ReadResource): ReadRetirement {
+  // Disposal cannot await native retirement. Keep failure custody until an
+  // accessor observes it; the next accessor or lifecycle close can retry it.
+  const retirement: ReadRetirement = {
+    reported: false,
+    pending: resource.close().then(
+      () => {
+        if (retiringResources.get(resource) === retirement) {
+          retiringResources.delete(resource);
+        }
+        return ok(undefined);
+      },
+      err<void, unknown>,
+    ),
+  };
+  retiringResources.set(resource, retirement);
+  return retirement;
+}
+
+function retireIdleReadResources(): void {
+  while (idleResources.size > MAX_IDLE_RESOURCES) {
+    const oldest = idleResources.values().next();
+    if (oldest.done) {
+      break;
+    }
+    const resource = oldest.value;
+    idleResources.delete(resource);
+    retireReadResource(resource);
+  }
+}
+
+async function joinReadResourceRetirements(): Promise<void> {
+  const errors: unknown[] = [];
+  const retirements = [...retiringResources];
+  for (const [resource, observed] of retirements) {
+    if (retiringResources.get(resource) !== observed) {
+      continue;
+    }
+    const retirement = observed.reported ? retireReadResource(resource) : observed;
+    const outcome = await retirement.pending;
+    if (!outcome.ok && retiringResources.get(resource) === retirement && !retirement.reported) {
+      retirement.reported = true;
+      errors.push(outcome.error);
+    }
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "Session metadata observer retirement failed");
+  }
+}
 
 function readTotalChanges(database: OpenClawAgentReadOnlyDatabase["db"]): number {
   const query = getNodeSqliteKysely(database).selectNoFrom(({ fn }) =>
@@ -137,14 +193,17 @@ function createReadResource(
   const owner: ReadResource = {
     identity: readOpenClawAgentDatabaseIdentity(database).identity,
     revoked: false,
+    activeClaims: 0,
     observer,
     close: () => {
       owner.revoked = true;
+      idleResources.delete(owner);
       if (!closing) {
         closing = closeReadBackend(owner)
           .then(() => {
             owner.observer?.close();
             owner.observer = undefined;
+            retiringResources.delete(owner);
             unregister();
             if (resources.get(key) === owner) {
               resources.delete(key);
@@ -163,6 +222,7 @@ function createReadResource(
     path: database.path,
     revoke: () => {
       owner.revoked = true;
+      idleResources.delete(owner);
     },
     close: owner.close,
   });
@@ -173,43 +233,22 @@ function createReadResource(
 export type SessionListDatabaseRead = {
   database: OpenClawAgentReadOnlyDatabase;
   assertCurrent: () => void;
-  captureReadValidity: () => () => boolean;
+  captureRead: () => SessionListCapturedRead;
   execute: Store["execute"];
 };
 
-/** Final page checks may reuse an admitted observer, but never open or scan a cold store. */
-export function readSessionListDatabaseCurrent<T>(
-  options: OpenClawAgentDatabaseOptions,
-  read: (database: OpenClawAgentReadOnlyDatabase) => T,
-): T {
-  const agentId = normalizeAgentId(options.agentId);
-  const pathname = resolveOpenClawAgentSqlitePath({ ...options, agentId });
-  const resource = resources.get(JSON.stringify([agentId, pathname]));
-  assertAgentDatabaseAdmitted(agentId, { env: options.env });
-  let host;
-  try {
-    host = getOpenClawAgentDatabaseIfOpen({ ...options, agentId });
-  } catch {
-    // A retained read-only observer remains independent of writable admission failures.
-  }
-  const database = host && !host.db.isTransaction ? host : resource?.observer;
-  if (
-    !resource ||
-    resource.revoked ||
-    !database ||
-    resource.identity !== readOpenClawAgentDatabaseIdentity(database).identity ||
-    !isOpenClawAgentDatabasePathCurrent(database) ||
-    !hasOpenClawAgentReadOnlySchema(database)
-  ) {
-    throw new Error("Session page observer is no longer admitted");
-  }
-  return read(database);
-}
+export type SessionListCapturedRead = {
+  isCurrent: () => boolean;
+  readCurrent: <T>(read: (database: OpenClawAgentReadOnlyDatabase) => T) => T;
+  [Symbol.dispose]: () => void;
+};
 
 type AdmittedRead = {
   resource: ReadResource;
   database: OpenClawAgentReadOnlyDatabase;
   claim: ReturnType<typeof createOpenClawAgentDatabaseClaim>;
+  retain: () => () => void;
+  release: () => void;
 };
 
 async function admitSessionListRead(
@@ -273,7 +312,33 @@ async function admitSessionListRead(
     }
     const owned = resource ?? createReadResource(key, database, observer);
     owned.observer ??= observer;
-    return { resource: owned, database, claim };
+    // Pin synchronously before admission yields. A captured page shares this
+    // original claim, including the writable owner's actual borrower release.
+    idleResources.delete(owned);
+    owned.activeClaims++;
+    let references = 1;
+    const release = () => {
+      references--;
+      if (references === 0) {
+        claim.release();
+        owned.activeClaims--;
+        if (owned.activeClaims === 0 && !owned.revoked) {
+          idleResources.add(owned);
+          retireIdleReadResources();
+        }
+      }
+    };
+    return {
+      resource: owned,
+      database,
+      claim,
+      release,
+      retain: () => {
+        claim.assertCurrent();
+        references++;
+        return release;
+      },
+    };
   } catch (error) {
     claim.release();
     if (observer && observer !== resource?.observer) {
@@ -301,6 +366,7 @@ export async function withSessionListDatabaseRead<T>(
       assertAgentDatabaseAdmitted(agentId, { env: options.env });
       if (
         owned.revoked ||
+        database.db.isTransaction ||
         !isOpenClawAgentDatabasePathCurrent(database) ||
         readOpenClawAgentDatabaseIdentity(database).incarnation !== identity.incarnation ||
         getOpenClawAgentDatabaseValidation(database) !== validation ||
@@ -313,21 +379,40 @@ export async function withSessionListDatabaseRead<T>(
       claim.assertCurrent();
       assertObserverCurrent();
     };
-    const captureReadValidity = () => {
+    const captureRead = (): SessionListCapturedRead => {
       assertCurrent();
       const dataVersion = readSqliteDataVersion(database.db);
       const totalChanges = readTotalChanges(database.db);
-      return () => {
-        try {
-          // The resource retains the observer after this request's claim is released.
-          assertObserverCurrent();
-          return (
-            readSqliteDataVersion(database.db) === dataVersion &&
-            readTotalChanges(database.db) === totalChanges
-          );
-        } catch {
-          return false;
+      const release = admitted.retain();
+      let disposed = false;
+      const assertCapturedCurrent = () => {
+        if (disposed) {
+          throw new Error("Session page read has been disposed");
         }
+        assertCurrent();
+      };
+      return {
+        isCurrent: () => {
+          try {
+            assertCapturedCurrent();
+            return (
+              readSqliteDataVersion(database.db) === dataVersion &&
+              readTotalChanges(database.db) === totalChanges
+            );
+          } catch {
+            return false;
+          }
+        },
+        readCurrent: (operation) => {
+          assertCapturedCurrent();
+          return operation(database);
+        },
+        [Symbol.dispose]: () => {
+          if (!disposed) {
+            disposed = true;
+            release();
+          }
+        },
       };
     };
     const execute = async <Key extends keyof SessionListWorkerOperations>(
@@ -396,10 +481,11 @@ export async function withSessionListDatabaseRead<T>(
       }
     };
     assertCurrent();
-    const result = await read({ database, assertCurrent, captureReadValidity, execute });
+    const result = await read({ database, assertCurrent, captureRead, execute });
     assertCurrent();
     return result;
   } finally {
-    claim.release();
+    admitted.release();
+    await joinReadResourceRetirements();
   }
 }

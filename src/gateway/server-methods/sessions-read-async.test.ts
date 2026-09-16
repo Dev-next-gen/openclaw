@@ -103,7 +103,7 @@ it.each([
       const pageRead = vi.spyOn(pageReads, "readSessionListPageReadOnlyAsync");
       pageRead.mockImplementationOnce(async (...args) => {
         const page = await originalRead(...args);
-        expect(page).toMatchObject([
+        expect(page.entries).toMatchObject([
           {
             ok: true,
             value: {

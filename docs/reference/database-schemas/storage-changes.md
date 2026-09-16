@@ -348,9 +348,14 @@ freshness and remains bound to the physical database, schema, and main-key polic
 Selected entries and membership are read again after row projection. Access changes
 during that read trigger a bounded refresh through already admitted observers,
 followed by current caller and configuration checks; they never trigger a synchronous
-inventory scan. Read resources retain cold observers independently of writable
-handles and drain their worker backends before disposal. Bun keeps its existing
-native read path until native statement retirement supports this observer lifetime.
+inventory scan. Read resources retain at most 64 idle observers independently of
+writable handles, with at most eight idle worker backends. Active reads and
+prepared pages pin their original database claims through consumption, including
+borrowed writable handles. Page disposal releases those pins synchronously;
+native retirement drains the worker backend before closing its observer and keeps
+failed closes available for joined lifecycle recovery. Final reads reject an
+uncommitted transaction on the retained handle. Bun keeps its existing native
+read path until native statement retirement supports this observer lifetime.
 
 The history worker retains one read-only connection across requests, rechecking
 schema, agent owner, and physical file identity before reuse. Every request keeps

@@ -21,7 +21,7 @@ import {
   recordSessionParticipant,
   replaceSessionEntrySync,
 } from "./session-accessor.js";
-import { captureSessionEntryCacheRead } from "./session-accessor.sqlite-entry-cache.js";
+import { captureSessionEntryRead } from "./session-accessor.sqlite-entry-read-lifetime.js";
 import {
   listSessionEntriesReadOnlyAsync,
   readSessionListPageReadOnlyAsync,
@@ -136,22 +136,22 @@ it.each(["tracked write", "external same-value commit"] as const)(
   },
 );
 
-it("keeps a selected hold current through async expansion and retains the complete cache on release", async () => {
+it("keeps retained entry reads independent of async inventory caching", async () => {
   await withOpenClawTestState({ label: "async-list-selected-hold" }, async (state) => {
     const { scope, keys, database } = fixture(state);
-    const held = captureSessionEntryCacheRead(database, keys[0]);
+    const held = captureSessionEntryRead(database, keys[0]);
     const work = vi.spyOn(sqliteWorkerStore, "runSqliteWorkerStoreOperation");
     try {
       expect(held.isCurrent()).toBe(true);
-      const expanded = await listSessionEntriesReadOnlyAsync({ ...scope, clone: false });
-      expect(expanded.map(({ sessionKey }) => sessionKey)).toEqual(keys);
+      const inventory = await listSessionEntriesReadOnlyAsync({ ...scope, clone: false });
+      expect(inventory.map(({ sessionKey }) => sessionKey)).toEqual(keys);
       expect(work).toHaveBeenCalledTimes(1);
       expect(held.isCurrent()).toBe(true);
       held.release();
       expect(held.isCurrent()).toBe(false);
       const warm = await listSessionEntriesReadOnlyAsync({ ...scope, clone: false });
-      expect(warm[0]!.entry).toBe(expanded[0]!.entry);
-      expect(warm[1]!.entry).toBe(expanded[1]!.entry);
+      expect(warm[0]!.entry).toBe(inventory[0]!.entry);
+      expect(warm[1]!.entry).toBe(inventory[1]!.entry);
       expect(work).toHaveBeenCalledTimes(1);
     } finally {
       held.release();
@@ -269,7 +269,8 @@ it("preserves selected order and tail-chunk membership after inventory projectio
         membershipIdentityId: " viewer ",
       });
     const work = vi.spyOn(sqliteWorkerStore, "runSqliteWorkerStoreOperation");
-    const first = await read();
+    using firstPage = await read();
+    const first = firstPage.entries;
     expect(work).toHaveBeenCalled();
     expect(first).toMatchObject([
       {
@@ -297,7 +298,8 @@ it("preserves selected order and tail-chunk membership after inventory projectio
       { sessionId: keys[0], updatedAt: 1, label: "revised" },
     );
     work.mockClear();
-    expect(await read(keys)).toMatchObject([
+    using updatedPage = await read(keys);
+    expect(updatedPage.entries).toMatchObject([
       {
         ok: true,
         value: {
@@ -328,7 +330,7 @@ it.each(["canonical identity", "native conversion"] as const)(
             .run(9007199254740993n, keys[1]);
         }
         const work = vi.spyOn(sqliteWorkerStore, "runSqliteWorkerStoreOperation");
-        const results = await readSessionListPageReadOnlyAsync(
+        using page = await readSessionListPageReadOnlyAsync(
           [[keys[0]], [keys[1]], ["agent:main:missing"], [keys[0], keys[1]]].map((sessionKeys) => ({
             agentId: scope.agentId,
             env: scope.env,
@@ -354,7 +356,7 @@ it.each(["canonical identity", "native conversion"] as const)(
               ? "SESSION_CANONICAL_KEY_MIGRATION_REQUIRED"
               : "ERR_OUT_OF_RANGE",
         };
-        expect(results).toMatchObject([
+        expect(page.entries).toMatchObject([
           { ok: true, value: { entries: [{ sessionKey: keys[0] }], membershipKeys: [] } },
           { ok: false, error: expectedError },
           { ok: true, value: { entries: [], membershipKeys: [] } },
@@ -381,9 +383,10 @@ it("reads process-held incognito metadata without creating a durable worker stor
     expect(await listSessionEntriesReadOnlyAsync({ ...scope, storePath })).toMatchObject([
       { sessionKey: scope.sessionKey, entry: { sessionId: "private", label: "Private" } },
     ]);
-    expect(
-      await readSessionListPageReadOnlyAsync([{ ...scope, sessionKeys: [scope.sessionKey] }]),
-    ).toMatchObject([
+    using page = await readSessionListPageReadOnlyAsync([
+      { ...scope, sessionKeys: [scope.sessionKey] },
+    ]);
+    expect(page.entries).toMatchObject([
       { ok: true, value: { entries: [{ entry: { sessionId: "private" } }], membershipKeys: [] } },
     ]);
     expect(opening).not.toHaveBeenCalled();

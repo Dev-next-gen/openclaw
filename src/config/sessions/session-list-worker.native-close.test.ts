@@ -97,10 +97,15 @@ describe.runIf(process.platform === "linux" && !process.versions.bun)(
 
           // Retirement makes the selected-row request enter a fresh worker owner,
           // rather than borrowing the preceding inventory's warm host snapshot.
-          const readPage = (membershipIdentityId: string) =>
-            readSessionListPageReadOnlyAsync([{ ...listScope, sessionKeys: [sessionKey] }], {
-              membershipIdentityId,
-            });
+          const readPage = async (membershipIdentityId: string) => {
+            using page = await readSessionListPageReadOnlyAsync(
+              [{ ...listScope, sessionKeys: [sessionKey] }],
+              {
+                membershipIdentityId,
+              },
+            );
+            return page.entries;
+          };
           expect(await readPage("guest")).toMatchObject([
             {
               ok: true,

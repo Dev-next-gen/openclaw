@@ -23,8 +23,8 @@ import {
   type SessionListPageRead,
 } from "./session-accessor.sqlite-list-worker-contract.js";
 import {
-  readSessionListDatabaseCurrent,
   withSessionListDatabaseRead,
+  type SessionListCapturedRead,
 } from "./session-accessor.sqlite-list-worker-runtime.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
 import type { SessionEntryListScope, SessionEntrySummary } from "./session-accessor.types.js";
@@ -80,24 +80,47 @@ export async function listSessionEntriesReadOnlyAsync(
   return result ?? [];
 }
 
-/** The page read starts after inventory projection; it never borrows inventory-era membership. */
+type SessionListPageReadOptions = { membershipIdentityId?: string };
+type SessionListPageEntries = Array<Result<SessionListPageRead, unknown>>;
+export type SessionListPreparedPage = {
+  entries: SessionListPageEntries;
+  isCurrent: () => boolean;
+  readCurrent: (options?: SessionListPageReadOptions) => SessionListPageEntries;
+  [Symbol.dispose]: () => void;
+};
+
+/** The page owns its admitted reads until the final synchronous access check completes. */
 export async function readSessionListPageReadOnlyAsync(
   scopes: readonly ExactSessionEntryBatchScope[],
-  options: {
-    membershipIdentityId?: string;
-    onReadAdmission?: (isCurrent: () => boolean) => void;
-  } = {},
-): Promise<Array<Result<SessionListPageRead, unknown>>> {
+  options: SessionListPageReadOptions = {},
+): Promise<SessionListPreparedPage> {
   if (isBunRuntime(process.execPath)) {
     // Its synchronous readers close on return, so final consumers must reread after a yield.
-    options.onReadAdmission?.(() => false);
-    return readSessionListPageSynchronously(scopes, options);
+    let disposed = false;
+    return {
+      entries: readSessionListPageSynchronously(scopes, options),
+      isCurrent: () => false,
+      readCurrent: (currentOptions = options) => {
+        if (disposed) {
+          throw new Error("Session page read has been disposed");
+        }
+        return readSessionListPageSynchronously(scopes, currentOptions);
+      },
+      [Symbol.dispose]: () => {
+        disposed = true;
+      },
+    };
   }
   const grouped = groupExactSessionEntryReadRequests(scopes);
   const results = grouped.results.map((result): Result<SessionListPageRead, unknown> =>
     result.ok ? ok({ entries: result.value, membershipKeys: [] }) : err(result.error),
   );
+  const reads: Array<{
+    requests: Array<{ index: number; sessionKeys: string[] }>;
+    read: SessionListCapturedRead;
+  }> = [];
   for (const group of grouped.groups.values()) {
+    let capturedRead: SessionListCapturedRead | undefined;
     try {
       const values = await withSessionListDatabaseRead(group.options, async (owner) => {
         const requests = group.requests.map((request) => request.sessionKeys);
@@ -106,7 +129,7 @@ export async function readSessionListPageReadOnlyAsync(
         const admission = withCanonicalSessionValidationDeferral(() =>
           assertCanonicalSqliteSessionKeysCurrent(owner.database),
         );
-        options.onReadAdmission?.(owner.captureReadValidity());
+        capturedRead = owner.captureRead();
         const cached =
           admission.kind === "complete"
             ? readCachedExactSessionEntries(owner.database, keys)
@@ -169,63 +192,75 @@ export async function readSessionListPageReadOnlyAsync(
           });
         }
       }
+      if (capturedRead) {
+        reads.push({ requests: group.requests, read: capturedRead });
+      }
     } catch (error) {
+      capturedRead?.[Symbol.dispose]();
       for (const request of group.requests) {
         results[request.index] = err(error);
       }
     }
   }
-  return results;
-}
-
-/** Refresh only selected facts at the final synchronous access boundary. */
-export function readSessionListPageReadOnlyCurrent(
-  scopes: readonly ExactSessionEntryBatchScope[],
-  options: { membershipIdentityId?: string } = {},
-): Array<Result<SessionListPageRead, unknown>> {
-  if (isBunRuntime(process.execPath)) {
-    return readSessionListPageSynchronously(scopes, options);
-  }
-  const grouped = groupExactSessionEntryReadRequests(scopes);
-  const results = grouped.results.map((result): Result<SessionListPageRead, unknown> =>
-    result.ok ? ok({ entries: result.value, membershipKeys: [] }) : err(result.error),
-  );
-  for (const group of grouped.groups.values()) {
-    try {
-      const values = readSessionListDatabaseCurrent(group.options, (database) => {
-        const admission = withCanonicalSessionValidationDeferral(() =>
-          assertCanonicalSqliteSessionKeysCurrent(database),
-        );
-        if (admission.kind !== "complete") {
-          throw new Error("Session page canonical admission changed after preparation");
+  let disposed = false;
+  return {
+    entries: results,
+    isCurrent: () => !disposed && reads.every(({ read }) => read.isCurrent()),
+    readCurrent: (currentOptions = options) => {
+      if (disposed) {
+        throw new Error("Session page read has been disposed");
+      }
+      const current = [...results];
+      for (const { requests: selectedRequests, read } of reads) {
+        try {
+          const values = read.readCurrent((database) => {
+            const admission = withCanonicalSessionValidationDeferral(() =>
+              assertCanonicalSqliteSessionKeysCurrent(database),
+            );
+            if (admission.kind !== "complete") {
+              throw new Error("Session page canonical admission changed after preparation");
+            }
+            const requests = selectedRequests.map((request) => request.sessionKeys);
+            const entries = readExactSessionEntryCandidatesInDatabase(database, requests, "list");
+            const identityId = currentOptions.membershipIdentityId?.trim();
+            const memberships = identityId
+              ? listSessionMembershipKeysInDatabase(
+                  database,
+                  [...new Set(requests.flat())],
+                  identityId,
+                )
+              : new Set<string>();
+            return entries.map((result): Result<SessionListPageRead, unknown> =>
+              result.ok
+                ? ok({
+                    entries: result.value,
+                    membershipKeys: result.value.flatMap(({ sessionKey }) =>
+                      memberships.has(sessionKey) ? [sessionKey] : [],
+                    ),
+                  })
+                : err(result.error),
+            );
+          });
+          for (const [ordinal, request] of selectedRequests.entries()) {
+            current[request.index] = values[ordinal]!;
+          }
+        } catch (error) {
+          for (const request of selectedRequests) {
+            current[request.index] = err(error);
+          }
         }
-        const requests = group.requests.map((request) => request.sessionKeys);
-        const entries = readExactSessionEntryCandidatesInDatabase(database, requests, "list");
-        const identityId = options.membershipIdentityId?.trim();
-        const memberships = identityId
-          ? listSessionMembershipKeysInDatabase(database, [...new Set(requests.flat())], identityId)
-          : new Set<string>();
-        return entries.map((result): Result<SessionListPageRead, unknown> =>
-          result.ok
-            ? ok({
-                entries: result.value,
-                membershipKeys: result.value.flatMap(({ sessionKey }) =>
-                  memberships.has(sessionKey) ? [sessionKey] : [],
-                ),
-              })
-            : err(result.error),
-        );
-      });
-      for (const [ordinal, request] of group.requests.entries()) {
-        results[request.index] = values[ordinal]!;
       }
-    } catch (error) {
-      for (const request of group.requests) {
-        results[request.index] = err(error);
+      return current;
+    },
+    [Symbol.dispose]: () => {
+      if (!disposed) {
+        disposed = true;
+        for (const { read } of reads) {
+          read[Symbol.dispose]();
+        }
       }
-    }
-  }
-  return results;
+    },
+  };
 }
 
 // Bun's existing native readers retain their established lifetime until native statement

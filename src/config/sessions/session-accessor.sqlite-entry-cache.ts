@@ -333,7 +333,6 @@ export function readSessionEntryCacheAsync(
   if (
     admission.kind === "complete" &&
     owner &&
-    !owner.selectedKeys &&
     cacheValidityTokensEqual(owner.validityToken, validityToken) &&
     cacheValidityTokensEqual(validityToken, readSessionEntryCacheValidityToken(database.db))
   ) {
@@ -368,15 +367,6 @@ export function readSessionEntryCacheAsync(
       const current = sessionEntryCaches.get(database.db);
       if (current !== owner) {
         return loaded;
-      }
-      if (current?.selectedKeys && cacheValidityTokensEqual(current.validityToken, validityToken)) {
-        for (const [key, entry] of current.entries) {
-          loaded.entries.set(key, entry);
-        }
-        current.entries = loaded.entries;
-        current.keys = loaded.keys;
-        delete current.selectedKeys;
-        return current;
       }
       const next = { entries: loaded.entries, keys: loaded.keys, validityToken };
       sessionEntryCaches.set(database.db, next);

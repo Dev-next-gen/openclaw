@@ -23,10 +23,7 @@ import {
   listSessionEntriesReadOnly,
   withSessionEntryReadOnlyScope,
 } from "../../config/sessions/session-accessor.js";
-import {
-  readSessionListPageReadOnlyAsync,
-  readSessionListPageReadOnlyCurrent,
-} from "../../config/sessions/session-accessor.sqlite-list-read.js";
+import { readSessionListPageReadOnlyAsync } from "../../config/sessions/session-accessor.sqlite-list-read.js";
 import { SessionTranscriptColdError } from "../../config/sessions/session-cold-storage-state.js";
 import { searchSessionTranscripts } from "../../config/sessions/session-transcript-search.js";
 import { buildProjectedAgentRunIndex } from "../../infra/agent-run-registry.js";
@@ -374,13 +371,11 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
           const membershipIdentityId = isGatewayAdmin(client)
             ? undefined
             : gatewayClientSessionCreator(client)?.id;
-          const pageReadAdmissions: Array<() => boolean> = [];
-          let pageEntries = await measureDiagnosticsTimelineSpan(
+          using page = await measureDiagnosticsTimelineSpan(
             "gateway.sessions.list.sharing",
             () =>
               readSessionListPageReadOnlyAsync(pageScopes, {
                 membershipIdentityId,
-                onReadAdmission: (isCurrent) => pageReadAdmissions.push(isCurrent),
               }),
             {
               config: cfg,
@@ -390,6 +385,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
               },
             },
           );
+          let pageEntries = page.entries;
           const currentConfig = context.getRuntimeConfig();
           const currentMembershipIdentityId = isGatewayAdmin(client)
             ? undefined
@@ -400,11 +396,11 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
             readUserProfileVersion() !== profileVersion ||
             readSessionIdentityMutationVersion() !== identityVersion ||
             currentMembershipIdentityId !== membershipIdentityId ||
-            pageReadAdmissions.some((isCurrent) => !isCurrent())
+            !page.isCurrent()
           ) {
             // The inventory may serve its original cohort; access facts must be current.
             // This reads only the selected page through its already admitted observers.
-            pageEntries = readSessionListPageReadOnlyCurrent(pageScopes, {
+            pageEntries = page.readCurrent({
               membershipIdentityId: currentMembershipIdentityId,
             });
           }
