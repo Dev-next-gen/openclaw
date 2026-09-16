@@ -145,17 +145,12 @@ export async function runPreparedEmbeddedLoop(
     } = preparedRuntime.snapshot());
   };
   const traceAttempts: TraceAttempt[] = [];
-  const resolveRuntimeFallbackReason = (): string | null => {
-    const fallbackAttempt = traceAttempts.findLast(
+  const resolveRuntimeFallbackReason = (): string | null =>
+    traceAttempts.findLast(
       (attempt) => attempt.result === "fallback_model" && typeof attempt.reason === "string",
-    );
-    return fallbackAttempt?.reason ?? lastRetryFailoverReason ?? null;
-  };
-  const { sessionAgentId } = resolveSessionAgentIds({
-    sessionKey: params.sessionKey,
-    config: params.config,
-    agentId: params.agentId,
-  });
+    )?.reason ?? lastRetryFailoverReason;
+  const { sessionKey, config, agentId } = params;
+  const { sessionAgentId } = resolveSessionAgentIds({ sessionKey, config, agentId });
   const strictAgenticActive = isStrictAgenticExecutionContractActive({
     config: params.config,
     sessionKey: params.sessionKey,
@@ -219,12 +214,14 @@ export async function runPreparedEmbeddedLoop(
   // for errored turns; stopReason="stop" empty zero-token turns use the
   // visible-answer retry instruction instead.
   let emptyErrorRetries = 0;
-  const sessionPromptState = createEmbeddedRunSessionPromptState({
+  const sessionPromptState = await createEmbeddedRunSessionPromptState({
     runParams: params,
     sessionAgentId,
     resolvedSessionKey,
     lifecycleGeneration,
+    onInterrupt: (reason) => input.laneController.laneTaskAbortController.abort(reason),
   });
+  input.onInitialWriterPrepared(sessionPromptState);
   const originalCompactionTarget = { ...sessionPromptState.sessionTarget };
   const durableCompactionAccounting =
     params.sessionPersistence !== "detached" &&
@@ -333,6 +330,7 @@ export async function runPreparedEmbeddedLoop(
       }
       params.assistantErrorTranscript?.clear();
       beginRunAttempt(runRetryBudget);
+      params.onAttemptStart?.();
       const runtimeAuthRetry: boolean = authRetryPending;
       authRetryPending = false;
       attemptedThinking.add(thinkLevel);

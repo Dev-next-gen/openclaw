@@ -210,12 +210,13 @@ openclaw gateway status --port 19001
     - `--deep` also runs config validation in plugin-aware mode (`pluginValidation: "full"`) and surfaces plugin manifest warnings (e.g. missing channel config metadata). Default `gateway status` keeps the fast read-only path that skips plugin validation.
     - On Linux, status reports the effective service currently loaded by systemd, including loaded drop-ins. If the unit or a drop-in changed on disk, `Systemd reload: pending` means you must run `systemctl --user daemon-reload` (or `sudo systemctl daemon-reload` for a system service) before those changes take effect.
     - Human output includes the resolved file log path plus CLI-vs-service config paths/validity to help diagnose profile or state-dir drift.
+    - A missing native service is informational when that service is diagnostic-only, such as a Gateway using a non-default state directory. The connectivity probe still reports the selected Gateway's result.
     - Install and reinstall guidance follows the invoking shell's installation rules, not the stored service environment or probe target. Nix mode, external supervision, noncanonical installation identity, and Linux sudo/user-manager mismatches show the install refusal instead of an unusable command. A diagnostic-only target is not itself a refusal. Nix mode blocks installation, not starting an existing service.
     - Human output includes `Gateway heap:` with configured service heap controls and a separate install-time recommendation based on memory visible to the CLI. JSON output exposes the same report as `service.gatewayHeap`. Neither is a measurement of the running Gateway's V8 heap ceiling; use runtime memory diagnostics for that.
 
   </Accordion>
   <Accordion title="Linux systemd auth-drift checks">
-    - Service auth drift checks read both `Environment=` and `EnvironmentFile=` from the unit (including `%h`, quoted paths, multiple files, and optional `-` files).
+    - Service auth drift checks read both `Environment=` and `EnvironmentFile=` from the unit. `Environment=` assignments may be quoted. Use one unquoted absolute path per `EnvironmentFile=` directive, including paths with spaces; multiple directives and optional `-` files are supported. `%h` expands to the service home, and `%%` represents a literal percent sign.
     - Resolves `gateway.auth.token` SecretRefs using merged runtime env (service command env first, then process env fallback).
     - Token-drift checks skip config token resolution when token auth is not effectively active (`gateway.auth.mode` explicitly `password`/`none`/`trusted-proxy`, or mode unset where password can win and no token candidate can win).
 

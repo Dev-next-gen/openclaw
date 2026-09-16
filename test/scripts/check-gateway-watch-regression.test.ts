@@ -25,6 +25,7 @@ import {
   BUILD_STAMP_FILE,
   RUNTIME_POSTBUILD_STAMP_FILE,
 } from "../../scripts/lib/local-build-metadata-paths.mts";
+import { refreshLocalBuildStampTimes } from "../../scripts/lib/local-build-metadata.mts";
 import { runManagedCommand } from "../../scripts/lib/managed-child-process.mts";
 import { createVitestResourceOwner } from "../../scripts/lib/vitest-resource-ownership.mts";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
@@ -43,6 +44,11 @@ vi.mock("../../scripts/lib/managed-child-process.mts", async (importOriginal) =>
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
+class WatchChildProcess extends ChildProcess {
+  override readonly stdout = new PassThrough();
+  override readonly stderr = new PassThrough();
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
@@ -56,12 +62,9 @@ function createWatchChildFixture(outputDir: string) {
     code: null,
     signal: null,
   };
-  const child = Object.assign(new ChildProcess(), {
-    pid: 1234,
-    stdout: new PassThrough(),
-    stderr: new PassThrough(),
-  });
+  const child = new WatchChildProcess();
   Object.defineProperties(child, {
+    pid: { configurable: true, value: 1234 },
     exitCode: { get: () => exitState.code },
     signalCode: { get: () => exitState.signal },
   });
@@ -526,6 +529,23 @@ describe("check-gateway-watch-regression", () => {
     }
   });
 
+  it.each([false, null, undefined])("retains restored stamp provenance (%s)", (inputsClean) => {
+    const rootDir = tempDirs.make("openclaw-watch-restored-stamps-");
+    fs.mkdirSync(path.join(rootDir, "dist"));
+    const contents = JSON.stringify({ head: "producer-head", inputsClean });
+    for (const name of [BUILD_STAMP_FILE, RUNTIME_POSTBUILD_STAMP_FILE]) {
+      const filename = path.join(rootDir, "dist", name);
+      fs.writeFileSync(filename, contents);
+      fs.utimesSync(filename, 1, 1);
+    }
+    refreshLocalBuildStampTimes({ cwd: rootDir, now: () => 10_000 });
+    for (const name of [BUILD_STAMP_FILE, RUNTIME_POSTBUILD_STAMP_FILE]) {
+      const filename = path.join(rootDir, "dist", name);
+      expect(fs.readFileSync(filename, "utf8")).toBe(contents);
+      expect(fs.statSync(filename).mtimeMs).toBe(10_000);
+    }
+  });
+
   it.skipIf(process.platform === "win32")(
     "rejects unconfirmed cleanup and retains HOME after a valid idle measurement",
     { timeout: 2_000 },
@@ -715,10 +735,7 @@ describe("check-gateway-watch-regression", () => {
 
   it("removes the isolated watch home after spawn failures", async () => {
     const outputDir = tempDirs.make("openclaw-gateway-watch-output-");
-    const child = Object.assign(new ChildProcess(), {
-      stdout: new PassThrough(),
-      stderr: new PassThrough(),
-    });
+    const child = new WatchChildProcess();
     let sleepSettled = false;
     const sleep = vi.fn(async (ms: number, signal: AbortSignal) => {
       try {

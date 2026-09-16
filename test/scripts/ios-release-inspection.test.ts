@@ -159,7 +159,7 @@ function inspect(scenario: string) {
     plan: fs.existsSync(planPath) ? JSON.parse(fs.readFileSync(planPath, "utf8")) : null,
     reportPath,
     files: fs.existsSync(path.join(root, "output"))
-      ? fs.readdirSync(path.join(root, "output"))
+      ? fs.readdirSync(path.join(root, "output")).toSorted()
       : [],
   };
 }
@@ -276,7 +276,7 @@ case "$1" in
   exec)
     test -f "$GITHUB_WORKSPACE/installed"
     if [[ "$2" == ruby ]]; then
-      printf '2.238.0'
+      printf '2.239.0'
     else
       [[ "$BUNDLE_GEMFILE" == "$GITHUB_WORKSPACE/apps/ios/Gemfile" ]]
       [[ "$2 $3 $4" == "fastlane ios release_inspect" ]]

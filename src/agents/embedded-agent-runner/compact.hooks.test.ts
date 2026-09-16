@@ -434,7 +434,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
   it("returns a summaryless xAI manual endpoint result", async () => {
     mockResolvedModel();
     attemptServerEndpointCompactionMock.mockImplementationOnce(async (input) => {
-      input.onCompactionCommitted?.();
+      input.onCompactionCommitted?.(1_000);
       return {
         item: { type: "compaction", encrypted_content: "opaque" },
         usage: { input_tokens: 1_000, output_tokens: 200 },
@@ -528,7 +528,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       let endpointSystemPrompt: string | undefined;
       attemptServerEndpointCompactionMock.mockImplementationOnce(async (input) => {
         endpointSystemPrompt = input.context.systemPrompt;
-        input.onCompactionCommitted?.();
+        input.onCompactionCommitted?.(1_000);
         return {
           item: { type: "compaction", encrypted_content: "opaque" },
           usage: { input_tokens: 1_000, output_tokens: 200 },
@@ -628,7 +628,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     getHistoryLimitFromSessionKeyMock.mockImplementationOnce(history.getHistoryLimitFromSessionKey);
     limitHistoryTurnsMock.mockImplementationOnce(history.limitHistoryTurns);
     attemptServerEndpointCompactionMock.mockImplementationOnce(async (input) => {
-      input.onCompactionCommitted?.();
+      input.onCompactionCommitted?.(1_000);
       return {
         item: { type: "compaction", encrypted_content: "opaque" },
         usage: { input_tokens: 1_000, output_tokens: 200 },
@@ -1527,7 +1527,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
         activeSnapshot = diagnosticRunActivity.getDiagnosticSessionActivitySnapshot(ref);
         providerRequest.resolve(undefined);
         await result;
-        input.onCompactionCommitted?.();
+        input.onCompactionCommitted?.(120);
         return {
           item: { type: "compaction", encrypted_content: "opaque" },
           usage: { input_tokens: 120, output_tokens: 50, dropped_message_count: 0 },
@@ -3464,21 +3464,32 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     },
   );
 
-  it("carries unresolved request state into safeguard overflow compaction", async () => {
-    resolveEffectiveCompactionModeMock.mockReturnValue("safeguard");
+  it.each(["overflow", "budget"] as const)(
+    "carries the pending request into safeguard %s recovery after endpoint fallback",
+    async (trigger) => {
+      const { attachCompactionAccountingRecorder } =
+        await import("./run/compaction-accounting-bridge.js");
+      const contextEngineRuntimeContext = {};
+      if (trigger === "budget") {
+        attachCompactionAccountingRecorder(contextEngineRuntimeContext, {
+          pendingRequestState: "unresolved",
+        });
+      }
+      resolveEffectiveCompactionModeMock.mockReturnValue("safeguard");
 
-    const result = await compactEmbeddedAgentSessionDirect(
-      wrappedCompactionArgs({ trigger: "overflow" }),
-    );
+      const result = await compactEmbeddedAgentSessionDirect(
+        wrappedCompactionArgs({ trigger, contextEngineRuntimeContext }),
+      );
 
-    expect(result).toMatchObject({ ok: true, compacted: true });
-    expect(sessionAutomaticCompactionMock).toHaveBeenCalledWith(
-      TEST_CUSTOM_INSTRUCTIONS,
-      "unresolved",
-      "none",
-    );
-    expect(sessionManualCompactionMock).not.toHaveBeenCalled();
-  });
+      expect(result).toMatchObject({ ok: true, compacted: true });
+      expect(sessionAutomaticCompactionMock).toHaveBeenCalledWith(
+        TEST_CUSTOM_INSTRUCTIONS,
+        "unresolved",
+        "none",
+      );
+      expect(sessionManualCompactionMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("skips compaction when the transcript only contains boilerplate replies and tool output", () => {
     const messages = [

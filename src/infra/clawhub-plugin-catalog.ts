@@ -3,6 +3,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { validatePluginCategories } from "../../packages/plugin-package-contract/src/index.js";
 import {
   fetchClawHubJson,
+  isClawHubTelemetryDisabled,
   readClawHubStringArrayField,
   readClawHubStringField,
   readRequiredClawHubBooleanField as readRequiredBoolean,
@@ -37,11 +38,13 @@ export type ClawHubPluginCatalogEntry = {
 };
 
 export type ClawHubPluginDetail = ClawHubPluginCatalogEntry & {
-  owner?: { handle?: string; displayName?: string; imageUrl?: string };
+  owner?: { handle?: string; displayName?: string; imageUrl?: string; official?: boolean };
   topics: string[];
   createdAt?: number;
   updatedAt?: number;
   readme?: string;
+  repositoryUrl?: string;
+  documentationUrl?: string;
   compatibility?: ClawHubPluginCompatibility;
   configFields: ClawHubPluginConfigField[];
   mcpServers: string[];
@@ -424,6 +427,7 @@ function projectSecurity(value: ClawHubPackageSecurityResponse): ClawHubPluginSe
         : (moderationStatus ?? trust.scanStatus ?? "unknown");
   return {
     status,
+    ...(value.verdict ? { verdict: value.verdict } : {}),
     auditUrl: value.securityAuditUrl,
     summary: value.overview,
   };
@@ -450,6 +454,7 @@ function parseVersions(value: unknown): ClawHubPluginVersion[] {
 export async function fetchClawHubPluginCatalog(
   params: ClawHubReadOptions & {
     query?: string;
+    searchSource?: "openclaw-control-ui";
     intent?: "all" | "trending" | "official" | "featured";
     category?: string;
     cursor?: string;
@@ -464,11 +469,15 @@ export async function fetchClawHubPluginCatalog(
     fetchImpl: params.fetchImpl,
   };
   if (query) {
+    const searchSource = isClawHubTelemetryDisabled() ? undefined : params.searchSource;
     const value = await fetchClawHubJson<unknown>({
       ...shared,
       path: "/api/v1/plugins/search",
+      // Marked searches record demand; replay could duplicate a committed observation.
+      retryTransientReads: searchSource === undefined,
       search: {
         q: query,
+        searchSource,
         category: params.category,
         isOfficial: params.intent === "official" ? "true" : undefined,
         limit: params.limit ? String(params.limit) : undefined,
@@ -646,6 +655,7 @@ export async function fetchClawHubPluginDetail(
     ...(ownerHandle ? { handle: ownerHandle } : {}),
     ...(ownerDisplayName ? { displayName: ownerDisplayName } : {}),
     ...(ownerImageUrl ? { imageUrl: ownerImageUrl } : {}),
+    ...(typeof ownerRecord?.official === "boolean" ? { official: ownerRecord.official } : {}),
   };
   return {
     ...catalog,
@@ -655,6 +665,7 @@ export async function fetchClawHubPluginDetail(
     ...(createdAt !== undefined ? { createdAt } : {}),
     ...(updatedAt !== undefined ? { updatedAt } : {}),
     ...(readme ? { readme } : {}),
+    ...(verification?.sourceRepo ? { repositoryUrl: verification.sourceRepo } : {}),
     ...((manifest.compatibility ?? packageCompatibility)
       ? { compatibility: manifest.compatibility ?? packageCompatibility }
       : {}),

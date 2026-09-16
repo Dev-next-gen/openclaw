@@ -455,6 +455,7 @@ export const PluginDiscoveryEntrySchema = closedObject({
 
 export const PluginsCatalogBrowseParamsSchema = closedObject({
   query: Type.Optional(Type.String({ maxLength: 200 })),
+  searchSource: Type.Optional(Type.Literal("openclaw-control-ui")),
   intent: Type.Optional(PluginDiscoveryIntentSchema),
   category: Type.Optional(
     Type.String({ minLength: 1, maxLength: 64, pattern: "^[a-z][a-z0-9-]*$" }),
@@ -510,12 +511,15 @@ export const PluginDiscoveryDetailSchema = closedObject({
       handle: Type.Optional(NonEmptyString),
       displayName: Type.Optional(NonEmptyString),
       imageUrl: Type.Optional(NonEmptyString),
+      official: Type.Optional(Type.Boolean()),
     }),
   ),
   topics: Type.Array(NonEmptyString),
   createdAt: Type.Optional(Type.Integer({ minimum: 0 })),
   updatedAt: Type.Optional(Type.Integer({ minimum: 0 })),
   readme: Type.Optional(Type.String({ maxLength: 524_288 })),
+  repositoryUrl: Type.Optional(NonEmptyString),
+  documentationUrl: Type.Optional(NonEmptyString),
   compatibility: Type.Optional(PluginDiscoveryCompatibilitySchema),
   configuration: Type.Array(PluginDiscoveryConfigFieldSchema),
   mcpServers: Type.Array(NonEmptyString),
@@ -572,6 +576,14 @@ export const PluginInstalledComponentsSchema = closedObject({
 /** Consent snapshot plus the installed-version presentation projection used by Control UI. */
 export const PluginsInspectResultSchema = closedObject({
   ok: Type.Literal(true),
+  overview: Type.Optional(
+    closedObject({
+      readme: Type.Optional(Type.String({ maxLength: 524_288 })),
+      repositoryUrl: Type.Optional(NonEmptyString),
+      documentationUrl: Type.Optional(NonEmptyString),
+      publisherName: Type.Optional(NonEmptyString),
+    }),
+  ),
   plugin: closedObject({
     id: NonEmptyString,
     name: NonEmptyString,

@@ -32,6 +32,7 @@ type CatalogResources = {
   companion?: CodexAppServerClient;
 };
 const REQUEST_TIMEOUT_MS = 200;
+const SLOW_DIAGNOSTIC_REQUEST_TIMEOUT_MS = 2_000;
 
 function page(threadId: string) {
   return {
@@ -83,9 +84,12 @@ async function createCatalogHarness(agentDir: string, resources: CatalogResource
     },
   };
   let now = 1_000;
-  const newFactory = () =>
+  const newFactory = (requestTimeoutMs = REQUEST_TIMEOUT_MS) =>
     createCodexSessionCatalogControl({
-      getPluginConfig: () => pluginConfig,
+      getPluginConfig: () => ({
+        ...pluginConfig,
+        appServer: { ...pluginConfig.appServer, requestTimeoutMs },
+      }),
       getRuntimeConfig: () => config,
       resolveRuntimeOptions: resolveCodexSupervisionAppServerRuntimeOptions,
       now: () => now,
@@ -102,7 +106,11 @@ async function createCatalogHarness(agentDir: string, resources: CatalogResource
   });
   resources.companion = companion;
   await control.listPage({ cursor: "warm", limit: 1 });
+  const requests = vi.spyOn(companion, "request");
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  const clockStartedAt = Date.now();
+  // Request delivery rechecks monotonic deadlines even when their timers have not run.
+  vi.spyOn(performance, "now").mockImplementation(() => Date.now() - clockStartedAt);
   return {
     control,
     factory,
@@ -110,6 +118,8 @@ async function createCatalogHarness(agentDir: string, resources: CatalogResource
     transports,
     frames,
     newFactory,
+    createSlowDiagnosticsControl: () =>
+      newFactory(SLOW_DIAGNOSTIC_REQUEST_TIMEOUT_MS).forRequest("main"),
     replaceConfig: () => {
       config = structuredClone(config);
     },
@@ -135,11 +145,15 @@ async function createCatalogHarness(agentDir: string, resources: CatalogResource
         interval: 1,
       });
     },
-    async waitForRefresh() {
-      await vi.waitFor(() => expect(getCurrentSharedClientEntry(companion)?.activeLeases).toBe(2), {
-        interval: 1,
-      });
-      await nextTurn();
+    async waitForRefresh(requestCount: number) {
+      await vi.waitFor(
+        () =>
+          expect(requests.mock.calls.filter(([method]) => method === "thread/list")).toHaveLength(
+            requestCount,
+          ),
+        { interval: 1 },
+      );
+      expect(getCurrentSharedClientEntry(companion)?.activeLeases).toBe(2);
     },
   };
 }
@@ -148,7 +162,7 @@ type CatalogLogRecord = Extract<DiagnosticEventPayload, { type: "log.record" }>;
 let diagnosticClock = 1_000_000;
 
 async function withPageDiagnostics(
-  run: (records: CatalogLogRecord[], advanceClock: () => void) => Promise<void>,
+  run: (records: CatalogLogRecord[], advanceClock: (elapsedMs?: number) => void) => Promise<void>,
 ) {
   const records: CatalogLogRecord[] = [];
   diagnosticRuntime.resetDiagnosticEventsForTest();
@@ -162,8 +176,8 @@ async function withPageDiagnostics(
     }
   });
   try {
-    await run(records, () => {
-      diagnosticClock += 1_500;
+    await run(records, (elapsedMs = 1_500) => {
+      diagnosticClock += elapsedMs;
     });
   } finally {
     await diagnosticRuntime.waitForDiagnosticEventsDrained();
@@ -199,8 +213,9 @@ describe("catalog request lifetime across page-cache polls", () => {
   });
 
   it("splits a successful control wait at the existing client request boundary", async () => {
+    const control = h.createSlowDiagnosticsControl();
     await withPageDiagnostics(async (records, advanceClock) => {
-      const pending = poll(h.control, { cursor: "timed-success", limit: 1 });
+      const pending = poll(control, { cursor: "timed-success", limit: 1 });
       const frame = await h.frame(0);
       advanceClock();
       h.reply(frame, "timed-success");
@@ -225,8 +240,9 @@ describe("catalog request lifetime across page-cache polls", () => {
   });
 
   it("attributes a rejected control request without exposing its private RPC error", async () => {
+    const control = h.createSlowDiagnosticsControl();
     await withPageDiagnostics(async (records, advanceClock) => {
-      const pending = poll(h.control, { cursor: "rejected", limit: 1 });
+      const pending = poll(control, { cursor: "rejected", limit: 1 });
       const rejected = expect(pending).rejects.toMatchObject({
         code: -32601,
         message: "synthetic-private-control-error",
@@ -252,8 +268,9 @@ describe("catalog request lifetime across page-cache polls", () => {
   });
 
   it("keeps control observations local to calls on a reusable pinned snapshot", async () => {
+    const control = h.createSlowDiagnosticsControl();
     await withPageDiagnostics(async (records, advanceClock) => {
-      await h.control.withPinnedConnection(async (pinned) => {
+      await control.withPinnedConnection(async (pinned) => {
         expect(getCurrentSharedClientEntry(h.companion)?.activeLeases).toBe(2);
         for (const [index, code] of [null, -32601, -32603].entries()) {
           const pending = poll(pinned, { cursor: `pinned-${index}`, limit: 1 });
@@ -321,10 +338,10 @@ describe("catalog request lifetime across page-cache polls", () => {
       });
 
       const current = poll(h.control);
-      await h.waitForRefresh();
+      await h.waitForRefresh(2);
       expect(h.frames).toHaveLength(1);
       await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS / 2);
-      advanceClock();
+      advanceClock(REQUEST_TIMEOUT_MS / 2);
       h.reply(frame, "current-result");
       await expect(current).resolves.toMatchObject({ sessions: [{ threadId: "current-result" }] });
       await expect(first).rejects.toThrow("thread/list timed out");
@@ -332,10 +349,9 @@ describe("catalog request lifetime across page-cache polls", () => {
       await expect(h.companion.request("model/list", {})).resolves.toEqual({ data: [] });
       expect(h.transports).toHaveLength(1);
       await diagnosticRuntime.waitForDiagnosticEventsDrained();
-      expect(records.map((record) => record.attributes?.controlClientRequestMs)).toEqual([
-        1_500, 1_500,
-      ]);
-      expect(records.map((record) => record.attributes?.outcome)).toEqual(["rejected", "resolved"]);
+      // The fresh poll resolves within its 200ms budget, below the slow-log threshold.
+      expect(records).toHaveLength(1);
+      expect(records[0]?.attributes?.outcome).toBe("rejected");
     });
   });
 
@@ -349,7 +365,7 @@ describe("catalog request lifetime across page-cache polls", () => {
     await h.expireWaiter();
 
     await expect(poll(h.control)).resolves.toEqual(stale);
-    await h.waitForRefresh();
+    await h.waitForRefresh(3);
     expect(h.frames).toHaveLength(2);
     h.reply(refresh, "refreshed");
     await vi.waitFor(async () => {
@@ -397,7 +413,7 @@ describe("catalog request lifetime across page-cache polls", () => {
       } else if (partition === "agent") {
         control = h.factory.forRequest("other");
       } else if (partition === "home") {
-        const [home] = h.factory.homesForAgent("main");
+        const [home] = await h.factory.homesForAgent("main");
         assert(home);
         control = h.factory.forRequest("main", {
           ...home,

@@ -219,6 +219,7 @@ describe("test runtime prerequisites", () => {
     ["Gateway server config", ["test/vitest/vitest.gateway-server.config.ts"], "runtime"],
     ["Gateway umbrella config", ["test/vitest/vitest.gateway.config.ts"], "runtime"],
     ["agentic config", ["test/vitest/vitest.full-agentic.config.ts"], "runtime"],
+    ["local command first request", ["src/agents/agent-command-local.test.ts"], "runtime"],
     ["ordinary Gateway unit test", ["src/gateway/net.test.ts"], undefined],
     ["ordinary Gateway server test", ["src/gateway/server-request-context.test.ts"], undefined],
     ["ordinary QA unit test", ["extensions/qa-lab/src/gateway-child.test.ts"], undefined],
@@ -288,6 +289,7 @@ describe("test runtime prerequisites", () => {
     [
       "agents-core",
       [
+        "agent-command-local.test.ts",
         "simple-completion-runtime.plugin-scope.test.ts",
         "prepared-model-catalog-worker.integration.test.ts",
         "runtime-plugins.context-engine.integration.test.ts",
@@ -297,6 +299,7 @@ describe("test runtime prerequisites", () => {
     [
       "agents",
       [
+        "agent-command-local.test.ts",
         "simple-completion-runtime.plugin-scope.test.ts",
         "prepared-model-catalog-worker.integration.test.ts",
         "runtime-plugins.context-engine.integration.test.ts",
@@ -740,21 +743,23 @@ describe("scripts/test-projects changed-target routing", () => {
     expectChangedTargets(["scripts/pr-lib/worktree.sh"], ["test/vitest/vitest.tooling.config.ts"]);
   });
 
-  it.each(["scripts/pr", "scripts/pr-lib/merge.sh", "scripts/pr-lib/merge-outcome.sh"])(
-    "routes native merge changes through the outcome owner for %s",
-    (scriptPath) => {
-      expectChangedTargets(
-        [scriptPath],
-        [
-          "test/scripts/pr-merge.test.ts",
-          "test/scripts/pr-merge-outcome.test.ts",
-          ...(scriptPath === "scripts/pr"
-            ? ["test/scripts/pr-operation-lock.test.ts", "test/scripts/pr-wrappers.test.ts"]
-            : []),
-        ],
-      );
-    },
-  );
+  it.each([
+    "scripts/pr",
+    "scripts/pr-lib/merge.sh",
+    "scripts/pr-lib/merge-outcome.sh",
+    "scripts/pr-lib/merge-legacy-refusal.mjs",
+  ])("routes native merge changes through the outcome owner for %s", (scriptPath) => {
+    expectChangedTargets(
+      [scriptPath],
+      [
+        "test/scripts/pr-merge.test.ts",
+        "test/scripts/pr-merge-outcome.test.ts",
+        ...(scriptPath === "scripts/pr"
+          ? ["test/scripts/pr-operation-lock.test.ts", "test/scripts/pr-wrappers.test.ts"]
+          : []),
+      ],
+    );
+  });
 
   it("routes unmatched script changes to the tooling suite instead of skipping tests", () => {
     const targets = ["scripts/check-no-raw-http2-imports.mts"];
@@ -3757,7 +3762,28 @@ describe("scripts/test-projects changed-target routing", () => {
     ]);
   });
 
-  it("routes explicit active-memory and Codex extension tests to their shards", () => {
+  it.each([
+    {
+      file: "src/cli/native-hook-relay-cli.locator-worker.test.ts",
+      config: "test/vitest/vitest.infra.config.ts",
+    },
+    {
+      file: "src/gateway/server-methods/native-hook-relay.test.ts",
+      config: "test/vitest/vitest.gateway-database-workers.config.ts",
+    },
+    {
+      file: "extensions/codex/src/app-server/run-attempt-one-shot-cleanup.test.ts",
+      config: "test/vitest/vitest.extension-database-workers.config.ts",
+    },
+    {
+      file: "extensions/codex/src/app-server/run-attempt.context-engine.test.ts",
+      config: "test/vitest/vitest.extension-database-workers.config.ts",
+    },
+  ])("routes native hook relay fixture $file to its host broker", ({ file, config }) => {
+    expectSingleVitestRunPlan(buildVitestRunPlans([file]), { config, includePatterns: [file] });
+  });
+
+  it("routes explicit active-memory and Codex index tests to the database worker", () => {
     expect(
       buildVitestRunPlans([
         "extensions/active-memory/index.test.ts",
@@ -3765,15 +3791,15 @@ describe("scripts/test-projects changed-target routing", () => {
       ]),
     ).toEqual([
       {
-        config: "test/vitest/vitest.extension-codex.config.ts",
+        config: "test/vitest/vitest.extension-database-workers.config.ts",
         forwardedArgs: [],
-        includePatterns: ["extensions/codex/index.test.ts"],
+        includePatterns: ["extensions/active-memory/index.test.ts"],
         watchMode: false,
       },
       {
         config: "test/vitest/vitest.extension-database-workers.config.ts",
         forwardedArgs: [],
-        includePatterns: ["extensions/active-memory/index.test.ts"],
+        includePatterns: ["extensions/codex/index.test.ts"],
         watchMode: false,
       },
     ]);
@@ -3929,7 +3955,7 @@ describe("scripts/test-projects changed-target routing", () => {
   it.each([
     {
       directory: "extensions/matrix/src/matrix/client",
-      selected: "extensions/matrix/src/matrix/client/storage.test.ts",
+      selected: ["extensions/matrix/src/matrix/client/storage.test.ts"],
       inherited: [
         "extensions/matrix/src/matrix/client/storage.test.ts",
         "extensions/matrix/src/matrix/thread-bindings.test.ts",
@@ -3937,7 +3963,10 @@ describe("scripts/test-projects changed-target routing", () => {
     },
     {
       directory: "extensions/matrix/src/matrix/sdk",
-      selected: "extensions/matrix/src/matrix/sdk/idb-persistence.test.ts",
+      selected: [
+        "extensions/matrix/src/matrix/sdk/idb-persistence.test.ts",
+        "extensions/matrix/src/matrix/sdk/recovery-key-store.test.ts",
+      ],
       inherited: ["extensions/matrix/**/*.test.ts"],
     },
   ])(
@@ -3953,7 +3982,7 @@ describe("scripts/test-projects changed-target routing", () => {
         const worker = specs.find(
           (spec) => spec.config === "test/vitest/vitest.extension-database-workers.config.ts",
         );
-        expect(worker?.includePatterns).toEqual([selected]);
+        expect(worker?.includePatterns).toEqual(selected);
         expect(specs.flatMap((spec) => spec.includePatterns ?? [])).not.toContain(
           "extensions/matrix/src/matrix/thread-bindings.test.ts",
         );

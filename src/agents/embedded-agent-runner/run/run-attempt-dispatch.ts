@@ -50,7 +50,7 @@ import type { EmbeddedRunAttemptParams } from "./types.js";
 
 type PreparedRuntime = Awaited<ReturnType<typeof prepareEmbeddedRunRuntime>>;
 type ContextEngine = Awaited<ReturnType<typeof resolveContextEngine>>;
-type SessionPromptState = ReturnType<typeof createEmbeddedRunSessionPromptState>;
+type SessionPromptState = Awaited<ReturnType<typeof createEmbeddedRunSessionPromptState>>;
 type TerminalRetryState = ReturnType<typeof createEmbeddedRunTerminalRetryState>;
 
 export async function prepareAndDispatchEmbeddedRunAttempt(input: {
@@ -650,6 +650,8 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     forceRestartSafeTools: params.forceRestartSafeTools,
     forceCodeModeTools: params.forceCodeModeTools,
     codeModeOverride: params.codeModeOverride,
+    disableToolSearch: params.disableToolSearch,
+    sessionReadScopeKey: params.sessionReadScopeKey,
     forceMessageTool: params.forceMessageTool,
     enableHeartbeatTool: params.enableHeartbeatTool,
     forceHeartbeatTool: params.forceHeartbeatTool,

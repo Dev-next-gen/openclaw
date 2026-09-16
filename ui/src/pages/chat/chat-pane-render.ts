@@ -1,6 +1,7 @@
 import type { ProgressCard } from "@openclaw/gateway-protocol";
 import { html, nothing } from "lit";
 import { findInlineApproval } from "../../app/approval-presentation.ts";
+import { gatewayPresentationScope } from "../../app/gateway-presentation-scope.ts";
 import { hasOperatorAdminAccess, hasOperatorWriteAccess } from "../../app/operator-access.ts";
 import { patchSettings } from "../../app/settings.ts";
 import { readPresenceEntries, resolveCurrentSelfUser } from "../../app/user-profile.ts";
@@ -37,6 +38,7 @@ import { chatModelUnavailableBanner, requiresChatModelSetup } from "./chat-model
 import { ChatPaneLayoutRender } from "./chat-pane-layout-render.ts";
 import { createChatPaneRails } from "./chat-pane-rails.ts";
 import {
+  createChatPaneQueuedEditProps,
   createChatPaneSessionActionCallbacks,
   readChatPaneMutationAccess,
   renderChatPaneComposerControls,
@@ -65,9 +67,8 @@ import {
   revealSessionWorkspaceFile,
 } from "./components/chat-session-workspace.ts";
 import { resolveChatLinkFaviconFetcher } from "./link-favicon-loader.ts";
-import { activeQueuedMessageEdit } from "./queued-message-edit.ts";
 import { hasAbortableSessionRun, hasDirectSessionRun } from "./run-lifecycle.ts";
-import { scheduleChatScroll } from "./scroll.ts";
+import { lockChatScroll, scheduleChatScroll } from "./scroll.ts";
 import { resolveChatProjectionRunId } from "./tool-stream-status.ts";
 import { workspaceResultConflictFromPlacement } from "./workspace-conflict.ts";
 
@@ -82,7 +83,8 @@ export class ChatPane extends ChatPaneLayoutRender {
       return html`<main class="app-shell app-shell--booting" aria-busy="true"></main>`;
     }
     const selectedSession = selectedChatSessionRow(state);
-    const swarmTarget = this.resolveChatReadTarget();
+    const readTarget = this.resolveChatReadTarget();
+    const progressPresentation = this.progressCardPresentation;
     const selectedSessionArchived = this.isCurrentSessionArchived(state);
     const mutationAccess = readChatPaneMutationAccess(
       this.context.gateway.snapshot,
@@ -169,11 +171,10 @@ export class ChatPane extends ChatPaneLayoutRender {
       !sessionParticipationBlocked &&
       hasOperatorWriteAccess(gatewaySnapshot.hello?.auth ?? null);
     const onDismissProgressCard = canDismissProgressCard
-      ? (card: ProgressCard) => {
+      ? (card: ProgressCard) =>
           void this.progressCard
             .dismiss(card)
-            .catch(() => showToast({ message: t("sessionProgressCard.dismissFailed") }));
-        }
+            .catch(() => showToast({ message: t("sessionProgressCard.dismissFailed") }))
       : undefined;
     const restartRecoveryTombstoned = selectedSession?.restartRecoveryStatus === "tombstoned";
     const multiIdentity = this.hasMultipleIdentities();
@@ -401,9 +402,16 @@ export class ChatPane extends ChatPaneLayoutRender {
       compactionStatus: state.compactionStatus,
       fallbackStatus: state.fallbackStatus,
       providerPolicyNotice: catalogKey ? null : state.providerPolicyNotice,
-      progressCard: this.progressCard.card,
+      progressCard: progressPresentation?.card ?? null,
+      progressCardIdentity: progressPresentation?.identity,
+      gatewayScope: gatewayPresentationScope(this.context.gateway),
+      progressCardInitialLoading: this.progressCardInitialLoading,
       collapseTaskProgress: state.settings.chatCollapseTaskProgress === true,
       readingHistory: state.chatReadingHistory,
+      onProgressManipulate: () => {
+        lockChatScroll(state);
+        this.transcript.cancelScroll();
+      },
       onDismissProgressCard,
       gatewayQuestionPrompts:
         catalogKey || sessionParticipationBlocked
@@ -462,6 +470,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       realtimeTalkVideoCapable: state.realtimeTalkVideoCapable,
       realtimeTalkVideoPending: state.realtimeTalkVideoPending,
       realtimeTalkCameraError: state.realtimeTalkCameraError,
+      realtimeTalkVoice: state.realtimeTalkVoice,
       connected: state.connected,
       offline: gatewaySnapshot.offlineStable,
       gatewayClient: state.client,
@@ -519,7 +528,7 @@ export class ChatPane extends ChatPaneLayoutRender {
               (composerState.capabilityMenuView === "skills" ||
                 composerState.capabilityMenuView.startsWith("library:")),
           ),
-      swarm: swarmTarget ? { ...swarmTarget, sessions: this.swarmHydrator?.rows ?? [] } : undefined,
+      swarm: readTarget ? { ...readTarget, sessions: this.swarmHydrator?.rows ?? [] } : undefined,
       sessionHost: {
         assistantAgentId: state.assistantAgentId,
         agentsList: state.agentsList,
@@ -601,6 +610,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       },
       onUseSystemDefaultMicrophone: state.realtimeTalkUseSystemDefault ?? undefined,
       onToggleRealtimeTalk: () => void state.toggleRealtimeTalk(),
+      onSelectRealtimeVoice: (voice) => void state.selectRealtimeTalkVoice(voice),
       onToggleRealtimeCamera: () => void state.toggleRealtimeTalkCamera(),
       onSwitchRealtimeCamera: () => void state.switchRealtimeTalkCamera(),
       onDismissError: () => {
@@ -618,16 +628,7 @@ export class ChatPane extends ChatPaneLayoutRender {
         ? undefined
         : (id) => void state.steerQueuedChatMessage(id),
       onQueueMove: sessionParticipationBlocked ? undefined : state.moveQueuedChatMessage,
-      queuedEdit: {
-        editingId: activeQueuedMessageEdit(state)?.id ?? null,
-        editingText: activeQueuedMessageEdit(state)?.draftText,
-        editingMentions: activeQueuedMessageEdit(state)?.mentions,
-        source: activeQueuedMessageEdit(state)?.source,
-        onEdit: sessionParticipationBlocked ? undefined : state.editQueuedChatMessage,
-        onEditChange: sessionParticipationBlocked ? undefined : state.updateQueuedChatMessageEdit,
-        onEditSubmit: sessionParticipationBlocked ? undefined : state.submitQueuedChatMessageEdit,
-        onCancel: state.cancelQueuedChatMessageEdit,
-      },
+      queuedEdit: createChatPaneQueuedEditProps(state, sessionParticipationBlocked),
       onGoalAction: (goalId, action) => void mutateChatGoal(state, { goalId, action }),
       goalDraftMode: state.chatGoalDraftMode ?? null,
       currentSessionId: state.currentSessionId,
@@ -653,9 +654,8 @@ export class ChatPane extends ChatPaneLayoutRender {
       agentsList: state.agentsList,
       currentAgentId,
       ...chatProps,
-      onAgentChange: (agentId) => {
-        this.onPaneSessionChange?.(this.paneId, buildAgentMainSessionKey({ agentId }));
-      },
+      onAgentChange: (agentId) =>
+        void this.onPaneSessionChange?.(this.paneId, buildAgentMainSessionKey({ agentId })),
       onSessionSelect: (next) => this.onPaneSessionChange?.(this.paneId, next),
       canvasPluginSurfaceUrl: state.canvasPluginSurfaceUrl,
       boardProvider: board.provider,

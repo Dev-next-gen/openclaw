@@ -10522,6 +10522,7 @@ public struct PluginSearchResultEntry: Codable, Sendable {
 
 public struct PluginsCatalogBrowseParams: Codable, Sendable {
     public let query: String?
+    public let searchsource: String?
     public let intent: AnyCodable?
     public let category: String?
     public let cursor: String?
@@ -10529,12 +10530,14 @@ public struct PluginsCatalogBrowseParams: Codable, Sendable {
 
     public init(
         query: String? = nil,
+        searchsource: String? = nil,
         intent: AnyCodable? = nil,
         category: String? = nil,
         cursor: String? = nil,
         pagesize: Int? = nil)
     {
         self.query = query
+        self.searchsource = searchsource
         self.intent = intent
         self.category = category
         self.cursor = cursor
@@ -10543,6 +10546,7 @@ public struct PluginsCatalogBrowseParams: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case query
+        case searchsource = "searchSource"
         case intent
         case category
         case cursor
@@ -10732,6 +10736,7 @@ public struct PluginsInspectParams: Codable, Sendable {
 
 public struct PluginsInspectResult: Codable, Sendable {
     public let ok: Bool
+    public let overview: [String: AnyCodable]?
     public let plugin: [String: AnyCodable]
     public let source: PluginInspectSource?
     public let declared: PluginDeclaredSurface
@@ -10743,6 +10748,7 @@ public struct PluginsInspectResult: Codable, Sendable {
 
     public init(
         ok: Bool,
+        overview: [String: AnyCodable]? = nil,
         plugin: [String: AnyCodable],
         source: PluginInspectSource? = nil,
         declared: PluginDeclaredSurface,
@@ -10753,6 +10759,7 @@ public struct PluginsInspectResult: Codable, Sendable {
         catalog: PluginsCatalogGetResult? = nil)
     {
         self.ok = ok
+        self.overview = overview
         self.plugin = plugin
         self.source = source
         self.declared = declared
@@ -10765,6 +10772,7 @@ public struct PluginsInspectResult: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case ok
+        case overview
         case plugin
         case source
         case declared
@@ -14508,6 +14516,7 @@ public struct SessionRow: Codable, Sendable {
     public let chattype: AnyCodable?
     public let activitysummary: SessionActivitySummary?
     public let updatedat: AnyCodable?
+    public let snapshotat: Double?
     public let archived: Bool?
     public let archivedat: Double?
     public let archivedby: SessionCreatedActor?
@@ -14595,6 +14604,7 @@ public struct SessionRow: Codable, Sendable {
         chattype: AnyCodable? = nil,
         activitysummary: SessionActivitySummary? = nil,
         updatedat: AnyCodable? = nil,
+        snapshotat: Double? = nil,
         archived: Bool? = nil,
         archivedat: Double? = nil,
         archivedby: SessionCreatedActor? = nil,
@@ -14681,6 +14691,7 @@ public struct SessionRow: Codable, Sendable {
         self.chattype = chattype
         self.activitysummary = activitysummary
         self.updatedat = updatedat
+        self.snapshotat = snapshotat
         self.archived = archived
         self.archivedat = archivedat
         self.archivedby = archivedby
@@ -14769,6 +14780,7 @@ public struct SessionRow: Codable, Sendable {
         case chattype = "chatType"
         case activitysummary = "activitySummary"
         case updatedat = "updatedAt"
+        case snapshotat = "snapshotAt"
         case archived
         case archivedat = "archivedAt"
         case archivedby = "archivedBy"
@@ -20005,6 +20017,7 @@ public struct TalkClientCloseParams: Codable, Sendable {
 public struct TalkClientCreateParams: Codable, Sendable {
     public let sessionkey: String?
     public let voicesessionid: String?
+    public let voicechangeid: String?
     public let provider: String?
     public let model: String?
     public let voice: String?
@@ -20020,6 +20033,7 @@ public struct TalkClientCreateParams: Codable, Sendable {
     public init(
         sessionkey: String? = nil,
         voicesessionid: String? = nil,
+        voicechangeid: String? = nil,
         provider: String? = nil,
         model: String? = nil,
         voice: String? = nil,
@@ -20034,6 +20048,7 @@ public struct TalkClientCreateParams: Codable, Sendable {
     {
         self.sessionkey = sessionkey
         self.voicesessionid = voicesessionid
+        self.voicechangeid = voicechangeid
         self.provider = provider
         self.model = model
         self.voice = voice
@@ -20050,6 +20065,7 @@ public struct TalkClientCreateParams: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case sessionkey = "sessionKey"
         case voicesessionid = "voiceSessionId"
+        case voicechangeid = "voiceChangeId"
         case provider
         case model
         case voice
@@ -20401,6 +20417,8 @@ public struct TalkSessionCloseParams: Codable, Sendable {
 
 public struct TalkSessionCreateParams: Codable, Sendable {
     public let sessionkey: String?
+    public let voicechangeid: String?
+    public let capabilities: [String]?
     public let spawnedby: String?
     public let provider: String?
     public let model: String?
@@ -20417,6 +20435,8 @@ public struct TalkSessionCreateParams: Codable, Sendable {
 
     public init(
         sessionkey: String? = nil,
+        voicechangeid: String? = nil,
+        capabilities: [String]? = nil,
         spawnedby: String? = nil,
         provider: String? = nil,
         model: String? = nil,
@@ -20432,6 +20452,8 @@ public struct TalkSessionCreateParams: Codable, Sendable {
         ttlms: Int? = nil)
     {
         self.sessionkey = sessionkey
+        self.voicechangeid = voicechangeid
+        self.capabilities = capabilities
         self.spawnedby = spawnedby
         self.provider = provider
         self.model = model
@@ -20449,6 +20471,8 @@ public struct TalkSessionCreateParams: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case sessionkey = "sessionKey"
+        case voicechangeid = "voiceChangeId"
+        case capabilities
         case spawnedby = "spawnedBy"
         case provider
         case model
@@ -20694,6 +20718,182 @@ public struct TalkSpeakResult: Codable, Sendable {
         case voicecompatible = "voiceCompatible"
         case mimetype = "mimeType"
         case fileextension = "fileExtension"
+    }
+}
+
+public struct TalkVoiceChangeEvent: Codable, Sendable {
+    public let changeid: String
+    public let voicesessionid: String
+    public let sessionkey: String
+    public let voice: String
+    public let phase: AnyCodable
+
+    public init(
+        changeid: String,
+        voicesessionid: String,
+        sessionkey: String,
+        voice: String,
+        phase: AnyCodable)
+    {
+        self.changeid = changeid
+        self.voicesessionid = voicesessionid
+        self.sessionkey = sessionkey
+        self.voice = voice
+        self.phase = phase
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case changeid = "changeId"
+        case voicesessionid = "voiceSessionId"
+        case sessionkey = "sessionKey"
+        case voice
+        case phase
+    }
+}
+
+public struct TalkVoiceCompleteParams: Codable, Sendable {
+    public let changeid: String
+    public let voicesessionid: String?
+    public let outcome: AnyCodable
+    public let error: String?
+
+    public init(
+        changeid: String,
+        voicesessionid: String? = nil,
+        outcome: AnyCodable,
+        error: String? = nil)
+    {
+        self.changeid = changeid
+        self.voicesessionid = voicesessionid
+        self.outcome = outcome
+        self.error = error
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case changeid = "changeId"
+        case voicesessionid = "voiceSessionId"
+        case outcome
+        case error
+    }
+}
+
+public struct TalkVoiceGetParams: Codable, Sendable {
+    public let sessionkey: String?
+    public let voicesessionid: String?
+
+    public init(
+        sessionkey: String? = nil,
+        voicesessionid: String? = nil)
+    {
+        self.sessionkey = sessionkey
+        self.voicesessionid = voicesessionid
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionkey = "sessionKey"
+        case voicesessionid = "voiceSessionId"
+    }
+}
+
+public struct TalkVoiceSelection: Codable, Sendable {
+    public let voicesessionid: String
+    public let sessionkey: String
+    public let provider: String
+    public let model: String?
+    public let voice: String?
+    public let voices: [String]
+    public let canchange: Bool
+
+    public init(
+        voicesessionid: String,
+        sessionkey: String,
+        provider: String,
+        model: String? = nil,
+        voice: String? = nil,
+        voices: [String],
+        canchange: Bool)
+    {
+        self.voicesessionid = voicesessionid
+        self.sessionkey = sessionkey
+        self.provider = provider
+        self.model = model
+        self.voice = voice
+        self.voices = voices
+        self.canchange = canchange
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case voicesessionid = "voiceSessionId"
+        case sessionkey = "sessionKey"
+        case provider
+        case model
+        case voice
+        case voices
+        case canchange = "canChange"
+    }
+}
+
+public struct TalkVoiceSetParams: Codable, Sendable {
+    public let sessionkey: String?
+    public let voicesessionid: String?
+    public let voice: String
+
+    public init(
+        sessionkey: String? = nil,
+        voicesessionid: String? = nil,
+        voice: String)
+    {
+        self.sessionkey = sessionkey
+        self.voicesessionid = voicesessionid
+        self.voice = voice
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionkey = "sessionKey"
+        case voicesessionid = "voiceSessionId"
+        case voice
+    }
+}
+
+public struct TalkVoiceSetResult: Codable, Sendable {
+    public let voicesessionid: String
+    public let sessionkey: String
+    public let provider: String
+    public let model: String?
+    public let voice: String?
+    public let voices: [String]
+    public let canchange: Bool
+    public let status: String
+
+    public init(
+        voicesessionid: String,
+        sessionkey: String,
+        provider: String,
+        model: String? = nil,
+        voice: String? = nil,
+        voices: [String],
+        canchange: Bool,
+        status: String)
+    {
+        self.voicesessionid = voicesessionid
+        self.sessionkey = sessionkey
+        self.provider = provider
+        self.model = model
+        self.voice = voice
+        self.voices = voices
+        self.canchange = canchange
+        self.status = status
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case voicesessionid = "voiceSessionId"
+        case sessionkey = "sessionKey"
+        case provider
+        case model
+        case voice
+        case voices
+        case canchange = "canChange"
+        case status
     }
 }
 
@@ -21595,6 +21795,7 @@ public struct ToolCatalogEntry: Codable, Sendable {
     public let optional: Bool?
     public let risk: AnyCodable?
     public let tags: [String]?
+    public let fulldescription: String?
     public let defaultprofiles: [AnyCodable]
 
     public init(
@@ -21606,6 +21807,7 @@ public struct ToolCatalogEntry: Codable, Sendable {
         optional: Bool? = nil,
         risk: AnyCodable? = nil,
         tags: [String]? = nil,
+        fulldescription: String? = nil,
         defaultprofiles: [AnyCodable])
     {
         self.id = id
@@ -21616,6 +21818,7 @@ public struct ToolCatalogEntry: Codable, Sendable {
         self.optional = optional
         self.risk = risk
         self.tags = tags
+        self.fulldescription = fulldescription
         self.defaultprofiles = defaultprofiles
     }
 
@@ -21628,6 +21831,7 @@ public struct ToolCatalogEntry: Codable, Sendable {
         case optional
         case risk
         case tags
+        case fulldescription = "fullDescription"
         case defaultprofiles = "defaultProfiles"
     }
 }

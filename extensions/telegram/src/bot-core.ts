@@ -72,7 +72,7 @@ import {
 } from "./group-history-window.js";
 import { registerTelegramOutboundGroupHistoryRecorder } from "./outbound-message-context.js";
 import {
-  prepareTelegramPollAnswerContext,
+  prepareTelegramPollAnswerContextAsync,
   settleTelegramPollAnswerContext,
 } from "./poll-answer-context.js";
 import { formatTelegramRawUpdateForLog } from "./raw-update-log.js";
@@ -245,9 +245,9 @@ export function createTelegramBotCore(
     }
   });
 
-  // Durable transports start the answer after spool commit; classic polling and
-  // restart replay start it here. Both paths precede same-lane sequentialization
-  // so callback acknowledgements cannot wait for earlier handlers.
+  // Both transports start callback answers after spool commit. Reuse that
+  // answer or start a missing one before same-lane sequentialization so
+  // callback acknowledgements cannot wait for earlier handlers.
   bot.use(async (ctx, next) => {
     const callback = ctx.callbackQuery;
     if (callback) {
@@ -264,7 +264,10 @@ export function createTelegramBotCore(
   // sequentialize so the vote shares the same lane as ordinary session turns.
   bot.use(async (ctx, next) => {
     try {
-      prepareTelegramPollAnswerContext({ update: ctx.update, accountId: account.accountId });
+      await prepareTelegramPollAnswerContextAsync({
+        update: ctx.update,
+        accountId: account.accountId,
+      });
     } catch (error) {
       if (isTelegramSpooledReplayUpdate(ctx.update)) {
         recordTelegramMessageProcessingResult({ kind: "failed-retryable", error });
@@ -393,7 +396,27 @@ export function createTelegramBotCore(
     return resolveTelegramScopedGroupConfig(turnTelegramCfg, chatId, messageThreadId);
   };
 
+  const { nativeCommandNames, nativeCommandCallbackDispatcher } = registerTelegramNativeCommands({
+    bot,
+    cfg,
+    runtime,
+    accountId: account.accountId,
+    telegramCfg,
+    mediaMaxBytes,
+    nativeEnabled,
+    nativeSkillsEnabled,
+    resolveGroupPolicy,
+    resolveTelegramGroupConfig,
+    shouldSkipUpdate,
+    opts: runtimeOpts,
+    telegramDeps: {
+      ...telegramDeps,
+      sendMessageTelegram: defaultTelegramNativeCommandDeps.sendMessageTelegram,
+    },
+  });
+
   const processMessage = createTelegramMessageProcessor({
+    nativeCommandNames,
     bot,
     account,
     groupHistories,
@@ -409,6 +432,7 @@ export function createTelegramBotCore(
   });
 
   const handlers = createTelegramHandlers({
+    nativeCommandNames,
     cfg,
     accountId: account.accountId,
     ownerAgentId,
@@ -445,26 +469,6 @@ export function createTelegramBotCore(
       ),
     logger,
     telegramDeps,
-  });
-
-  const nativeCommandCallbackDispatcher = registerTelegramNativeCommands({
-    cancelPendingInbound: handlers.cancelPending,
-    bot,
-    cfg,
-    runtime,
-    accountId: account.accountId,
-    telegramCfg,
-    mediaMaxBytes,
-    nativeEnabled,
-    nativeSkillsEnabled,
-    resolveGroupPolicy,
-    resolveTelegramGroupConfig,
-    shouldSkipUpdate,
-    opts: runtimeOpts,
-    telegramDeps: {
-      ...telegramDeps,
-      sendMessageTelegram: defaultTelegramNativeCommandDeps.sendMessageTelegram,
-    },
   });
 
   handlers.register(nativeCommandCallbackDispatcher);

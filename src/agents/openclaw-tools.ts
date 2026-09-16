@@ -240,12 +240,15 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
     ? null
     : createMessageTool({
         agentAccountId: options?.agentAccountId,
-        agentSessionKey: options?.agentSessionKey,
-        runSessionKey: options?.runSessionKey,
+        agentSessionKey: options?.messageToolTurnCapability?.sessionKey ?? options?.agentSessionKey,
+        runSessionKey:
+          options?.runSessionKey ??
+          (options?.messageToolTurnCapability ? options.agentSessionKey : undefined),
         runId: options?.runId,
         agentId: sessionAgentId,
         sessionId: options?.sessionId,
-        messageActionTurnCapability: options?.messageActionTurnCapability,
+        messageActionTurnCapability:
+          options?.messageToolTurnCapability?.token ?? options?.messageActionTurnCapability,
         config: options?.config,
         preparedMessageToolCatalog: options?.preparedModelRuntime?.messageToolCatalog,
         currentChannelId: options?.currentChannelId,
@@ -541,8 +544,13 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
     createSessionsHistoryTool({
       ...sessionLookupToolOptions,
       requesterAgentIdOverride: sessionAgentId,
+      sessionReadScopeKey: options?.sessionReadScopeKey,
     }),
-    createSessionsSearchTool({ ...sessionLookupToolOptions, agentId: sessionAgentId }),
+    createSessionsSearchTool({
+      ...sessionLookupToolOptions,
+      agentId: sessionAgentId,
+      sessionReadScopeKey: options?.sessionReadScopeKey,
+    }),
     ...(embedded
       ? []
       : [
@@ -584,6 +592,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
             agentSessionKey: options?.runSessionKey ?? options?.agentSessionKey,
             requesterTurnRunId: options?.runId,
             requesterThinkingLevel: options?.requesterThinkingLevel,
+            requesterModel: options?.requesterModel,
             completionOwnerKey: options?.runSessionKey,
             agentChannel: options?.agentChannel,
             agentAccountId: options?.agentAccountId,

@@ -272,7 +272,7 @@ describe("scripts/pr wrappers", () => {
 
     expect(script).toContain('base_json=$(read_pr_view_json "$pr" "baseRefName")');
     expect(common).toContain('gh pr view "$pr" --json "$fields"');
-    expect(worktree).toContain('metadata=$(read_pr_view_json "$pr"');
+    expect(worktree).toContain('metadata=$(GH_REPO="$repo_nwo" read_pr_view_json "$pr"');
     expect(review).toContain('gh_plain pr edit "$pr" --add-assignee "$reviewer"');
     expect(push).toContain('gh_plain api graphql --input "$payload_file"');
     expect(push).not.toContain("gh_plain api graphql --input -");
@@ -383,7 +383,9 @@ describe("scripts/pr wrappers", () => {
       { cwd: caller, encoding: "utf8", env: fixture.env },
     );
     expect(result.status, result.stdout + result.stderr).toBe(0);
-    expect(result.stdout).toBe(`<123>\n<false>\n<>\n<>\n<${join(caller, "operator body.md")}>\n`);
+    expect(result.stdout).toBe(
+      `<123>\n<false>\n<>\n<>\n<${join(caller, "operator body.md")}>\n<>\n`,
+    );
   });
 
   itPosix(
@@ -467,10 +469,44 @@ describe("scripts/pr wrappers", () => {
         );
         expect(result.status, result.stdout + result.stderr).toBe(0);
         expect(result.stdout).toBe(
-          `<123>\n<false>\n<${"a".repeat(40)}>\n<${replacement[1] ?? ""}>\n<${body.length ? join(fixture.canonical, "message.md") : ""}>\n`,
+          `<123>\n<false>\n<${"a".repeat(40)}>\n<${replacement[1] ?? ""}>\n<${body.length ? join(fixture.canonical, "message.md") : ""}>\n<>\n`,
         );
       }
     }
+  });
+
+  itPosix("pins legacy refusal evidence and requires an explicit current recovery head", () => {
+    const fixture = makeMismatchedWrapperRepo();
+    const caller = join(fixture.canonical, "nested");
+    mkdirSync(caller);
+    writeFileSync(join(fixture.bin, "gh"), `#!/bin/sh\nprintf '{"baseRefName":"main"}\\n'\n`);
+    writeFileSync(
+      join(fixture.canonical, "scripts/pr-lib/merge.sh"),
+      `merge_run() { printf '<%s>\\n' "$@"; }\n`,
+    );
+    const args = [
+      "merge-recover",
+      "123",
+      "a".repeat(40),
+      "--confirmed-operator-recovery",
+      "--legacy-refusal",
+      "proof",
+    ];
+    const missing = spawnSync(join(fixture.canonical, "scripts/pr"), args, {
+      cwd: caller,
+      encoding: "utf8",
+      env: fixture.env,
+    });
+    expect(missing.status, missing.stdout + missing.stderr).toBe(2);
+    const result = spawnSync(
+      join(fixture.canonical, "scripts/pr"),
+      [...args, "--replacement-head", "b".repeat(40)],
+      { cwd: caller, encoding: "utf8", env: fixture.env },
+    );
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(result.stdout).toBe(
+      `<123>\n<false>\n<${"a".repeat(40)}>\n<${"b".repeat(40)}>\n<>\n<${join(caller, "proof")}>\n`,
+    );
   });
 
   it("runs a mismatched advisory wrapper locally with an explicit developer opt-in", () => {
@@ -1275,9 +1311,6 @@ exit 99
       );
       fixture.git(fixture.canonical, ["add", "scripts/pr"]);
       fixture.git(fixture.canonical, ["commit", "-m", "test: stale canonical wrapper"]);
-      // Install dependencies before recording Node calls so the fixture reaches
-      // supervisor handoff without entering dependency materialization first.
-      linkPrWrapperDependencies(fixture.linked);
       const recorder = join(fixture.bin, "node");
       writeFileSync(recorder, '#!/bin/sh\nprintf \'%s\\0\' "$PWD" "$@"\nexit 73\n');
       chmodSync(recorder, 0o755);
