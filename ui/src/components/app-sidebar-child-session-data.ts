@@ -13,6 +13,7 @@ import {
   resolveUiSessionNavigationParentKey,
 } from "../lib/sessions/session-key.ts";
 import { matchesExistingSession } from "../lib/sessions/session-row-reconcile.ts";
+import type { SessionDataController } from "./session-data-controller.ts";
 
 const MAX_SESSION_LINEAGE_DEPTH = 16;
 
@@ -200,6 +201,44 @@ function mergeRefreshedChildSessionRows(
     ...rowsByParent,
     ...mergeChildSessionRows({ [parentKey]: rows }, { [parentKey]: lineage }),
   };
+}
+
+export function scheduleSidebarChildSessions(
+  owner: SessionDataController,
+  readParents: () => Set<string>,
+): void {
+  const revalidating = readParents();
+  owner.retireStaleChildSessions(revalidating);
+  const context = owner.context;
+  const client = context?.gateway.snapshot.client;
+  const scope = owner.childSessionScope;
+  if (context && client && [...revalidating].some((key) => owner.needsChildSessionLoad(key))) {
+    const isCurrent = () =>
+      owner.context === context &&
+      owner.childSessionScope === scope &&
+      context.gateway.snapshot.client === client &&
+      owner.isSessionDataHostConnected;
+    let admittedParents: Set<string> | undefined;
+    void context.connectionBootstrap
+      .run(
+        scope,
+        async () => {
+          if (isCurrent()) {
+            // Expansion can change while queued; only the current presentation owns these reads.
+            admittedParents = readParents();
+            await Promise.all([...admittedParents].map((key) => owner.loadChildSessions(key)));
+          }
+        },
+        { background: true },
+      )
+      .then(() => {
+        // Completion-driven renders can run before the scheduler releases the batch key.
+        const completed = admittedParents;
+        if (completed && isCurrent() && [...readParents()].some((key) => !completed.has(key))) {
+          owner.requestSessionDataUpdate();
+        }
+      });
+  }
 }
 
 /** Publish an observed child window through the sidebar's existing lineage admission. */
