@@ -156,12 +156,7 @@ it("dispatches a hosted message action without connecting to either Gateway endp
     };
     setRuntimeConfigSnapshot(config, config);
     process.env.OPENCLAW_GATEWAY_URL = remote.url;
-    const dispatched = vi.fn<GatewayRequestHandler>(({ params, client, respond }) => {
-      expect(client?.internal?.agentRuntimeIdentity).toMatchObject({
-        agentId: "ops",
-        sessionKey,
-        operationalRunInstance,
-      });
+    const dispatched = vi.fn<GatewayRequestHandler>(({ params, respond }) => {
       respond(true, { ok: true, listener: "hosted-local", action: params });
     });
     const methods = createGatewayMethodRegistry([
@@ -177,7 +172,7 @@ it("dispatches a hosted message action without connecting to either Gateway endp
       getGatewayMethodRegistry: () => methods,
       trackExecution: <T>(run: () => Promise<T>) => run(),
     } as GatewayRequestContext;
-    const makeTool = (turnCapability: string) =>
+    const makeTool = (turnCapability?: string) =>
       createMessageTool({
         getRuntimeConfig: () => config,
         runMessageAction,
@@ -217,6 +212,11 @@ it("dispatches a hosted message action without connecting to either Gateway endp
     const result = await execute();
     expect(result.details).toMatchObject({ ok: true, listener: "hosted-local" });
     expect(dispatched).toHaveBeenCalledOnce();
+    expect(dispatched.mock.calls[0]?.[0].client?.internal?.agentRuntimeIdentity).toMatchObject({
+      agentId: "ops",
+      sessionKey,
+      operationalRunInstance,
+    });
     expect(result.details).toMatchObject({
       action: {
         channel: "gatewaychat",
@@ -227,18 +227,25 @@ it("dispatches a hosted message action without connecting to either Gateway endp
     });
     expect(local.connections).not.toHaveBeenCalled();
     expect(remote.connections).not.toHaveBeenCalled();
-    await expect(execute(makeTool(dashboardCapability), "default")).resolves.toMatchObject({
-      details: { ok: true, listener: "hosted-local" },
-    });
-    expect(
-      dispatched.mock.calls[1]?.[0].client?.internal?.agentRuntimeIdentity?.messageActionContext,
-    ).toBeUndefined();
+    const contextlessTool = makeTool();
+    const dashboardTool = makeTool(dashboardCapability);
+    for (const selectedTool of [contextlessTool, dashboardTool]) {
+      await expect(execute(selectedTool, "default")).resolves.toMatchObject({
+        details: { ok: true, listener: "hosted-local" },
+      });
+      expect(
+        dispatched.mock.calls.at(-1)?.[0].client?.internal?.agentRuntimeIdentity,
+      ).toBeUndefined();
+    }
+    expect(dispatched.mock.calls[2]?.[0].params).toEqual(dispatched.mock.calls[1]?.[0].params);
     expect(assertDashboardReadCurrent).not.toHaveBeenCalled();
     releaseAgentRunDelegatedAuthority(authority);
-    await expect(execute()).rejects.toThrow(
-      /agent (?:runtime identity requires active delegated run|tool caller) authority/,
-    );
-    expect(dispatched).toHaveBeenCalledTimes(2);
+    for (const selectedTool of [tool, contextlessTool, dashboardTool]) {
+      await expect(execute(selectedTool)).rejects.toThrow(
+        /agent (?:runtime identity requires active delegated run|tool caller) authority/,
+      );
+    }
+    expect(dispatched).toHaveBeenCalledTimes(3);
     expect(local.connections).not.toHaveBeenCalled();
     expect(remote.connections).not.toHaveBeenCalled();
   } finally {

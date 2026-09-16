@@ -2,7 +2,7 @@ import type { CronCreatorAuthorityCapability } from "../../agents/cron-creator-a
 import type { InputProvenance } from "../../sessions/input-provenance.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
-export type ChatSendExternalAdmissionParams = {
+type ChatSendExternalAdmissionParams = {
   runId: string;
   sessionKey: string;
   spawnedBy?: string;
