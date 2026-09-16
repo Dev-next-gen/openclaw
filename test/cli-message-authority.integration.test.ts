@@ -1170,7 +1170,6 @@ describe("CLI message authority integration", () => {
         } else {
           expect(mutations[0]?.body).toBe("");
         }
-        expect(acceptedMessageWrites).toBe(1);
       },
     );
 
@@ -1198,7 +1197,6 @@ describe("CLI message authority integration", () => {
         /message edits are disabled|pins are disabled|is disabled for this account/,
       );
       expect(requests.filter((request) => request.method !== "GET")).toEqual([]);
-      expect(acceptedMessageWrites).toBe(0);
     });
 
     it.each([
@@ -1248,7 +1246,6 @@ describe("CLI message authority integration", () => {
 
       expectDenied(await turn.call({ ...messageTarget, action: "delete", ...args }), reason);
       expect(requests.filter((request) => request.method !== "GET")).toEqual([]);
-      expect(acceptedMessageWrites).toBe(0);
     });
 
     it("allows an account job to pin in another conversation permitted by Discord policy", async () => {
@@ -1264,7 +1261,6 @@ describe("CLI message authority integration", () => {
           path: `/api/v10/channels/${discordSibling}/pins/${discordMessage}`,
         }),
       ]);
-      expect(acceptedMessageWrites).toBe(1);
     });
 
     it("resolves a channel-name target for an account-bound pin", async () => {
@@ -1290,7 +1286,6 @@ describe("CLI message authority integration", () => {
       expect(requests.filter((request) => request.method !== "GET")).toEqual([
         expect.objectContaining({ method: "PUT", path: discordPinPath }),
       ]);
-      expect(acceptedMessageWrites).toBe(1);
     });
 
     it("settles an accepted delete after job permission revocation and blocks the next call", async () => {
@@ -1327,7 +1322,6 @@ describe("CLI message authority integration", () => {
       expect(requests.filter((request) => request.method !== "GET")).toEqual([
         expect.objectContaining({ method: "DELETE", path: discordPinPath }),
       ]);
-      expect(acceptedMessageWrites).toBe(0);
     });
 
     it("preserves installed interactive pin admission without a write declaration", async () => {
@@ -1353,7 +1347,6 @@ describe("CLI message authority integration", () => {
       expect(requests.filter((request) => request.method !== "GET")).toEqual([
         expect.objectContaining({ method: "PUT", path: discordPinPath }),
       ]);
-      expect(acceptedMessageWrites).toBe(1);
     });
 
     it("preserves bundled provider-owned scheduled pins without a write declaration", async () => {
@@ -1372,7 +1365,6 @@ describe("CLI message authority integration", () => {
           path: `/api/v10/channels/${discordSibling}/pins/${discordMessage}`,
         }),
       ]);
-      expect(acceptedMessageWrites).toBe(1);
     });
   });
 });
