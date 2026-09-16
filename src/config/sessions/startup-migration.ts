@@ -29,10 +29,8 @@ import {
 } from "./legacy-store-inspection.js";
 import { SessionStoreMigrationRequiredError } from "./migration-required.js";
 import { resolveSqliteReadScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
-import {
-  isCanonicalSqliteSessionMainKeyCurrent,
-  setCanonicalSqliteSessionMainKey,
-} from "./session-canonical-key.js";
+import { isCanonicalSqliteSessionMainKeyCurrent } from "./session-canonical-key-read.js";
+import { setCanonicalSqliteSessionMainKey } from "./session-canonical-key.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 import { resolveAllAgentSessionStoreTargetsSync, resolveSessionStoreTargets } from "./targets.js";
 import type { migrateManagedWorktreeCanonicalWorkspaces } from "./worktree-workspace-migration.js";

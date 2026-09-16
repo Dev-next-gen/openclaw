@@ -16,7 +16,8 @@ import { resetTaskRegistryForTests } from "../../tasks/task-runtime.test-helpers
 import { formatTaskStatusDetail } from "../../tasks/task-status.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import { getSuspensionVisibleCronTaskRunCount } from "./active-run-cancellation.js";
-import { stop } from "./ops-lifecycle.js";
+import { start, stop } from "./ops-lifecycle.js";
+import { run } from "./ops-run.js";
 import { executeJobCore } from "./timer-execution.js";
 
 const { logger, makeStorePath } = setupCronServiceSuite({
@@ -115,6 +116,61 @@ afterEach(() => {
 });
 
 describe("cron service timer seam coverage", () => {
+  it.each(["timer", "startup"] as const)("%s ignores stale event schedule slots", async (entry) => {
+    const { storePath } = await makeStorePath();
+    const now = Date.now();
+    const schedules: CronJob["schedule"][] = [
+      { kind: "on-exit", command: "true" },
+      { kind: "stream", command: ["true"], mode: "line" },
+    ];
+    const jobs = schedules.map((schedule) => {
+      const job = createDueMainJob({ now, wakeMode: "next-heartbeat" });
+      job.id = `stale-${schedule.kind}`;
+      job.schedule = schedule;
+      job.state = {
+        nextRunAtMs: now - 1,
+        startupCatchupAtMs: now - 1,
+        pacedNextRunAtMs: now - 1,
+        forcePreservedNextRunAtMs: now - 1,
+      };
+      return job;
+    });
+    await writeCronStoreSnapshot({ storePath, jobs });
+    const enqueueSystemEvent = vi.fn();
+    const state = createCronServiceState({
+      storePath,
+      cronEnabled: true,
+      log: logger,
+      nowMs: () => now,
+      enqueueSystemEvent,
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+    });
+
+    try {
+      await (entry === "startup" ? start(state) : onTimer(state));
+      expect(enqueueSystemEvent).not.toHaveBeenCalled();
+      const stored = await loadCronStore(storePath);
+      expect(stored.jobs).toHaveLength(2);
+      for (const job of stored.jobs) {
+        expect(job.enabled).toBe(true);
+        expect(job.state.nextRunAtMs).toBeUndefined();
+        expect(job.state.startupCatchupAtMs).toBeUndefined();
+        expect(job.state.pacedNextRunAtMs).toBeUndefined();
+        expect(job.state.forcePreservedNextRunAtMs).toBeUndefined();
+        await expect(run(state, job.id, "due")).resolves.toEqual({
+          ok: true,
+          ran: false,
+          reason: "not-due",
+        });
+        await expect(run(state, job.id, "force")).resolves.toEqual({ ok: true, ran: true });
+      }
+      expect(enqueueSystemEvent).toHaveBeenCalledTimes(2);
+    } finally {
+      stop(state);
+    }
+  });
+
   it("routes main cron jobs to the owning agent's main session", async () => {
     const { storePath } = await makeStorePath();
     const now = Date.parse("2026-03-23T12:00:00.000Z");

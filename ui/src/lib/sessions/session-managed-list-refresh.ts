@@ -201,17 +201,7 @@ export function createSessionManagedListRefresh(
         entry.pending = null;
         if (entry.queued?.background && isCurrent() && isPageActive()) {
           // Release this request's admission before scheduling its automatic successor.
-          void host.background(pending, async () => {
-            if (
-              isCurrent() &&
-              isPageActive() &&
-              entry.listeners.size > 0 &&
-              !entry.pending &&
-              entry.queued?.background
-            ) {
-              await refreshManagedList(entry, entry.queued);
-            }
-          });
+          entry.coordinator.schedule();
         }
       }
     });
@@ -219,7 +209,11 @@ export function createSessionManagedListRefresh(
     completion.resolve(drain());
     return pending;
   };
-  return (entry: ManagedSessionList, refresh: ManagedSessionListRefresh): Promise<void> => {
+  return (
+    entry: ManagedSessionList,
+    refresh: ManagedSessionListRefresh,
+    isCurrent: () => boolean = () => true,
+  ): Promise<void> => {
     if (!refresh.background || entry.pending) {
       return refreshManagedList(entry, refresh);
     }
@@ -227,7 +221,11 @@ export function createSessionManagedListRefresh(
       entry.queued = refresh;
     }
     return host.background(entry, async () => {
-      if (managedLists.get(entry.key) === entry && entry.listeners.size > 0) {
+      if (isCurrent() && managedLists.get(entry.key) === entry && entry.listeners.size > 0) {
+        if (!isPageActive()) {
+          entry.coordinator.setActive(false, true);
+          return;
+        }
         // Scheduler deduplication must retain invalidation that arrives after the initial fill.
         const queued = entry.queued ?? refresh;
         entry.queued = null;

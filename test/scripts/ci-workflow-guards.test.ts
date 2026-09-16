@@ -183,6 +183,7 @@ function evaluateWorkflowExpression(
     workflow?: string;
     workflowSha?: string;
     workflowToken?: string;
+    workspace?: string;
   },
 ) {
   if (typeof expression !== "string") {
@@ -231,6 +232,7 @@ function evaluateWorkflowExpression(
       sha: context.sha,
       workflow: context.workflow,
       workflow_sha: context.workflowSha,
+      workspace: context.workspace,
       token: context.workflowToken,
       event:
         context.githubEvent ??
@@ -4740,7 +4742,9 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
   it.each([
     { eventName: "pull_request" as const, production: false, expected: false },
     { eventName: "pull_request" as const, production: true, expected: true },
-    { eventName: "push" as const, production: false, expected: true },
+    { eventName: "push" as const, production: false, expected: false },
+    { eventName: "push" as const, production: true, expected: true },
+    { eventName: "workflow_dispatch" as const, production: false, expected: true },
   ])("routes published-upgrade proof for $eventName (production=$production)", (options) => {
     const changedPaths = [
       "src/commands/doctor-config-preflight.admission.process.test.ts",
@@ -4784,12 +4788,14 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
         bundledPlanner: true,
         eventName: "push",
         repository,
-        changedPaths: ["assets/logo.svg"],
+        changedPaths: ["scripts/e2e/docker-openai-seed.ts"],
         scopeEnv: { GITHUB_REF: ref },
       });
       expect(result.status, result.output).toBe(0);
       expect(result.outputs.run_docker_seed_e2e).toBe(String(expected));
-      expect(result.outputs.docker_seed_lanes).toBe(expected ? "published-upgrade-survivor" : "");
+      expect(result.outputs.docker_seed_lanes).toBe(
+        expected ? "mcp-channels cron-mcp-cleanup" : "",
+      );
     },
   );
 
@@ -4820,8 +4826,68 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
       scopeEnv: { GITHUB_REF: "refs/heads/main" },
     });
     expect(result.status, result.output).toBe(0);
-    expect(result.outputs.run_docker_seed_e2e).toBe("true");
-    expect(result.outputs.docker_seed_lanes).toBe("published-upgrade-survivor");
+    expect(result.outputs.run_docker_seed_e2e).toBe("false");
+    expect(result.outputs.docker_seed_lanes).toBe("");
+  });
+
+  it.each([
+    {
+      eventName: "push" as const,
+      changedPaths: ["src/cli/cron-cli/shared.ts"],
+      qa: false,
+      performance: false,
+    },
+    {
+      eventName: "pull_request" as const,
+      changedPaths: ["src/cli/cron-cli/shared.ts"],
+      qa: false,
+      performance: false,
+    },
+    {
+      eventName: "push" as const,
+      changedPaths: ["extensions/qa-lab/src/ci-smoke-plan.ts"],
+      qa: true,
+      performance: false,
+    },
+    {
+      eventName: "pull_request" as const,
+      changedPaths: ["extensions/telegram/src/index.ts"],
+      qa: true,
+      performance: false,
+    },
+    { eventName: "push" as const, changedPaths: ["ui/src/main.ts"], qa: false, performance: true },
+    {
+      eventName: "push" as const,
+      changedPaths: ["src/gateway/control-ui-asset-manifest.ts"],
+      qa: false,
+      performance: true,
+    },
+    { eventName: "push" as const, changedPaths: null, qa: true, performance: true },
+    {
+      eventName: "workflow_dispatch" as const,
+      changedPaths: ["src/cli/cron-cli/shared.ts"],
+      qa: true,
+      performance: true,
+    },
+  ])("selects owner/release coverage for $eventName $changedPaths", (fixture) => {
+    const plannerUrl = pathToFileURL(
+      path.resolve("scripts/lib/ci-changed-node-test-plan.mts"),
+    ).href;
+    const result = runCiManifestFixture({
+      ...fixture,
+      bundledPlanner: true,
+      historicalCompatibility: false,
+      changedPlannerSource: `
+        import { hasQaSmokeAffectingChange, hasControlUiPerformanceAffectingChange as performance } from ${JSON.stringify(plannerUrl)};
+        export { hasQaSmokeAffectingChange };
+        export const hasControlUiPerformanceAffectingChange = paths => performance(paths, { cwd: ${JSON.stringify(process.cwd())} });
+        export const createChangedNodeTestShards = () => null;
+        export const createChangedExtensionFallbackShards = () => [];
+      `,
+    });
+    expect(result.status, result.output).toBe(0);
+    expect(result.outputs.run_qa_smoke_ci).toBe(String(fixture.qa));
+    expect(result.outputs.run_control_ui_performance).toBe(String(fixture.performance));
   });
 
   it("splits Windows tests two ways on every runner backend", () => {
@@ -5020,6 +5086,24 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
       distribution: "temurin",
       "java-version": 17,
     });
+    expect(javaStep.with?.["set-default"]).not.toBe(false);
+    const gradleJavaStep = expectDefined(
+      action.runs.steps.find((step: WorkflowStep) => step.name === "Setup Gradle Java"),
+      "Gradle Java setup step",
+    );
+    expect(gradleJavaStep).toMatchObject({
+      id: "gradle-java",
+      uses: javaStep.uses,
+      with: {
+        distribution: "temurin",
+        "java-version": "21.0.12+101.0.LTS",
+        "set-default": false,
+      },
+    });
+    expect(action.outputs["gradle-java-home"].value).toBe("${{ steps.gradle-java.outputs.path }}");
+    expect(action.outputs["gradle-java-version"].value).toBe(
+      "${{ steps.gradle-java.outputs.version }}",
+    );
     expect(action.inputs["cache-mode"].default).toBe("off");
     expect(sdkRestoreStep.if).toBe("inputs.cache-mode != 'off'");
     expect(sdkRestoreStep.uses).toBe(CACHE_V5);
@@ -5550,6 +5634,29 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
       const root = tempDirs.make("openclaw-android-tier-");
       const callsPath = path.join(root, "gradle-calls.jsonl");
       const clockPath = path.join(root, "clock-reads.jsonl");
+      const gradleJavaHome = path.join(root, "gradle jdk");
+      const action = readAndroidToolchainAction();
+      const setupStep: WorkflowStep = expectDefined(
+        readCiWorkflow().jobs.android.steps.find(
+          (candidate: WorkflowStep) => candidate.name === "Setup Android toolchain",
+        ),
+        "Android toolchain setup",
+      );
+      const gradleJavaOutputs = {
+        path: gradleJavaHome,
+        version: "21.0.12+101.0.LTS",
+      };
+      const setupOutputs = Object.fromEntries(
+        ["gradle-java-home", "gradle-java-version"].map((key) => [
+          key,
+          String(
+            evaluateWorkflowExpression(action.outputs[key].value, {
+              ...context,
+              steps: { "gradle-java": { outputs: gradleJavaOutputs } },
+            }),
+          ),
+        ]),
+      );
       writeExecutable(path.join(root, "date"), [
         "#!/usr/bin/env node",
         'const fs = require("node:fs");',
@@ -5560,7 +5667,7 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
       ]);
       writeExecutable(path.join(root, "gradlew"), [
         "#!/usr/bin/env node",
-        'require("node:fs").appendFileSync(process.env.GRADLE_CALLS, JSON.stringify(process.argv.slice(2)) + "\\n");',
+        'require("node:fs").appendFileSync(process.env.GRADLE_CALLS, JSON.stringify({ args: process.argv.slice(2), javaHome: process.env.JAVA_HOME }) + "\\n");',
         "if (process.argv.includes(process.env.FAIL_GRADLE_TASK)) process.exit(23);",
       ]);
       const result = runWorkflowShellScript(expectDefined(step.run, "Android commands"), {
@@ -5568,10 +5675,22 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
         cwd: root,
         env: {
           ...process.env,
+          JAVA_HOME: path.join(root, "sdk jdk 17"),
           ...Object.fromEntries(
             Object.entries(step.env ?? {}).map(([key, value]) => [
               key,
-              String(evaluateWorkflowExpression(value, { ...context, matrix: row })),
+              String(
+                evaluateWorkflowExpression(value, {
+                  ...context,
+                  matrix: row,
+                  steps: {
+                    ...context.steps,
+                    [expectDefined(setupStep.id, "Android toolchain step id")]: {
+                      outputs: setupOutputs,
+                    },
+                  },
+                }),
+              ),
             ]),
           ),
           GITHUB_EVENT_NAME: context.eventName,
@@ -5582,12 +5701,14 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
           PATH: `${root}${path.delimiter}${process.env.PATH}`,
         },
       });
-      const calls: string[][] = existsSync(callsPath)
+      const invocations: Array<{ args: string[]; javaHome: string }> = existsSync(callsPath)
         ? readFileSync(callsPath, "utf8")
             .trim()
             .split("\n")
             .map((line) => JSON.parse(line))
         : [];
+      const calls = invocations.map(({ args }) => args);
+      expect(invocations.map(({ javaHome }) => javaHome)).toEqual(calls.map(() => gradleJavaHome));
       const clockReads = existsSync(clockPath)
         ? readFileSync(clockPath, "utf8").trim().split("\n")
         : [];
@@ -9318,12 +9439,13 @@ server.listen(0, "127.0.0.1", () => {
     expect(runStep.run).not.toMatch(/\bretry\b/iu);
   });
 
-  it("retains Android test XML after failures without collecting caches or canceled jobs", () => {
+  it("retains Android test XML and JVM diagnostics after failures without collecting caches or canceled jobs", () => {
     const steps = readCiWorkflow().jobs.android.steps as WorkflowStep[];
     const runIndex = steps.findIndex((step) => step.name === "Run Android ${{ matrix.task }}");
     const uploadIndex = steps.findIndex((step) => step.name === "Upload Android test reports");
     const upload = expectDefined(steps[uploadIndex], "Android test reports");
     expect(uploadIndex).toBeGreaterThan(runIndex);
+    expect(upload.with?.["retention-days"]).toBe(14);
     // A status function prevents Actions' implicit success() from hiding failed-test evidence.
     expect(upload.if).toMatch(/\b(?:always|cancelled|failure|success)\(\)/u);
     for (const [task, failed, cancelled, expected] of [
@@ -9356,6 +9478,12 @@ server.listen(0, "127.0.0.1", () => {
       "apps/android/app/build/test-results/testThirdPartyDebugUnitTest/TEST-ThirdParty.xml",
       "apps/android/wear/build/test-results/testDebugUnitTest/TEST-Wear.xml",
       "apps/android/wear-shared/build/test-results/testDebugUnitTest/TEST-Shared.xml",
+      "apps/android/hs_err_pid101.log",
+      "apps/android/replay_pid101.log",
+      "apps/android/app/hs_err_pid202.log",
+      "apps/android/app/replay_pid202.log",
+      "apps/android/wear/hs_err_pid303.log",
+      "apps/android/wear-shared/replay_pid404.log",
     ];
     const unrelated = [
       "apps/android/app/build/test-results/testPlayDebugUnitTest/binary/results.bin",
@@ -9363,6 +9491,11 @@ server.listen(0, "127.0.0.1", () => {
       "apps/android/app/build/outputs/apk/play/debug/app.apk",
       "apps/android/benchmark/build/test-results/testDebugUnitTest/TEST-Benchmark.xml",
       ".gradle/caches/TEST-cached.xml",
+      ".gradle/caches/hs_err_pid505.log",
+      "hs_err_pid606.log",
+      "replay_pid606.log",
+      "apps/android/app/core.202",
+      "apps/android/app/java_pid202.hprof",
     ];
     for (const file of [...reports, ...unrelated]) {
       mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
@@ -13192,6 +13325,11 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       selectedJobs: ["macos-node", "checks-windows"],
     },
     {
+      label: "Android toolchain action",
+      changedPath: ".github/actions/setup-android-toolchain/action.yml",
+      selectedJobs: ["android"],
+    },
+    {
       label: "Docs Agent",
       changedPath: ".github/workflows/docs-agent.yml",
       selectedJobs: ["macos-node", "checks-windows"],
@@ -13361,6 +13499,16 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       expect(
         JSON.parse(expectDefined(manifest.outputs.checks_windows_matrix, "Windows matrix")).include,
       ).toHaveLength(selectedJobs.includes("checks-windows") ? 2 : 0);
+      if (eventName === "pull_request" && selectedJobs.includes("android")) {
+        expect(
+          JSON.parse(expectDefined(preflightOutputs.android_matrix, "Android matrix")).include,
+        ).toEqual([
+          { check_name: "android-test-play", task: "test-play", lint: true },
+          { check_name: "android-test-third-party", task: "test-third-party", lint: true },
+          { check_name: "android-test-wear", task: "test-wear", lint: true },
+          { check_name: "android-ktlint", task: "ktlint" },
+        ]);
+      }
     },
   );
 
@@ -13730,8 +13878,8 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(current.outputs.run_native_i18n).toBe("true");
     expect(current.outputs.run_openclawkit_tests).toBe("true");
     expect(current.outputs.run_qa_smoke_ci).toBe("true");
-    expect(current.outputs.run_docker_seed_e2e).toBe("false");
-    expect(current.outputs.docker_seed_lanes).toBe("");
+    expect(current.outputs.run_docker_seed_e2e).toBe("true");
+    expect(current.outputs.docker_seed_lanes).toBe("published-upgrade-survivor");
     expect(current.outputs.run_sqlite_session_lifecycle).toBe("true");
     expect(current.outputs.run_channel_contracts_shards).toBe("true");
     expect(current.outputs.run_protocol_event_coverage).toBe("true");
@@ -14216,6 +14364,21 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       (step: WorkflowStep) => step.name === "Lint Control UI window.open usage",
     );
     const test = ui.steps.find((step: WorkflowStep) => step.name === "Test Control UI");
+    const diagnostics = expectDefined(
+      ui.steps.find((step: WorkflowStep) => step.name === "Upload Control UI timeout diagnostics"),
+      "Control UI timeout diagnostic upload",
+    );
+    expect(ui.steps.indexOf(diagnostics)).toBeGreaterThan(ui.steps.indexOf(test));
+    expect(diagnostics).toMatchObject({
+      if: "failure()",
+      uses: UPLOAD_ARTIFACT_V7,
+      with: {
+        name: "control-ui-test-timeout-${{ matrix.shard }}-${{ github.run_attempt }}",
+        path: test.env.OPENCLAW_UI_E2E_DIAGNOSTIC_DIR,
+        "if-no-files-found": "ignore",
+        "retention-days": 7,
+      },
+    });
     const context = {
       eventName: scenario.frozenTarget ? "workflow_dispatch" : "pull_request",
       frozenTarget: scenario.frozenTarget,
@@ -14254,11 +14417,11 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       ]);
     }
     for (const shard of scenario.shards) {
-      const rowContext = { ...context, matrix: { shard } };
+      const rowContext = { ...context, matrix: { shard }, workspace: root };
       const resolveValue = (value: unknown): string =>
-        typeof value === "string" && value.startsWith("${{")
-          ? String(evaluateWorkflowExpression(value, rowContext))
-          : String(value);
+        String(value).replace(/\$\{\{[\s\S]*?\}\}/gu, (expression) =>
+          String(evaluateWorkflowExpression(expression, rowContext)),
+        );
       expect(resolveValue(ui.name)).toBe(
         scenario.frozenTarget ? "checks-ui" : `checks-ui (${shard}/3)`,
       );
@@ -14272,6 +14435,9 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         ]),
       );
       expect(env.OPENCLAW_NODE_TEST_PLAN_CONCURRENCY).toBe("1");
+      expect(env.OPENCLAW_UI_E2E_DIAGNOSTIC_DIR).toBe(
+        `${root}/.artifacts/control-ui-e2e-timeouts/ui-shard-${shard}-attempt-1`,
+      );
       const flags = [
         "--maxWorkers",
         "3",
@@ -14309,6 +14475,9 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
             runChild: async (args, childEnv) => {
               forwarded.push(args);
               expect(childEnv.OPENCLAW_TEST_PROJECTS_PARALLEL).toBe("1");
+              expect(childEnv.OPENCLAW_UI_E2E_DIAGNOSTIC_DIR).toBe(
+                resolveValue(diagnostics.with.path),
+              );
               return 0;
             },
           }),
@@ -16754,17 +16923,27 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     },
     {
       label: "UI performance without runtime artifact changes",
-      context: { preflightOutputs: { run_build_artifacts: "false", run_ui_tests: "true" } },
+      context: {
+        preflightOutputs: { run_control_ui_performance: "true", run_build_artifacts: "false" },
+      },
       expected: { "control-ui-performance": true },
     },
     {
-      label: "UI performance for shared runtime build changes",
-      context: { preflightOutputs: { run_build_artifacts: "true", run_ui_tests: "false" } },
-      expected: { "control-ui-performance": true },
+      label: "unrelated runtime build skips UI performance",
+      context: {
+        preflightOutputs: { run_control_ui_performance: "false", run_build_artifacts: "true" },
+      },
+      expected: { "control-ui-performance": false },
     },
     {
       label: "UI performance outside build and UI scope",
-      context: { preflightOutputs: { run_build_artifacts: "false", run_ui_tests: "false" } },
+      context: {
+        preflightOutputs: {
+          run_control_ui_performance: "false",
+          run_build_artifacts: "false",
+          run_ui_tests: "false",
+        },
+      },
       expected: { "control-ui-performance": false },
     },
     {

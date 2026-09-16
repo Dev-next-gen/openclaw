@@ -1,8 +1,10 @@
+import { MessageChannel } from "node:worker_threads";
 import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SqliteWorkerOperationSettlement } from "../infra/sqlite-worker-operation-settlement.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import type { OpenClawStateLeaseContext } from "./openclaw-state-lease-context.js";
+import { OpenClawStateLeaseError } from "./openclaw-state-lease-error.js";
 import {
   createOpenClawStateLeaseWorkerOwner,
   withOpenClawStateLeaseWorkerAdmission,
@@ -35,15 +37,28 @@ function fixture() {
   return { lease, owner, databasePath };
 }
 
+async function nextMessageTurn(): Promise<void> {
+  const { port1, port2 } = new MessageChannel();
+  try {
+    await new Promise<void>((resolve) => {
+      port1.once("message", () => resolve());
+      port2.postMessage(undefined);
+    });
+  } finally {
+    port1.close();
+    port2.close();
+  }
+}
+
 describe("state lease worker result boundary", () => {
   it.each(["reject", "handled failure"] as const)(
-    "reports unknown settlement before an outer cleanup observer sees %s",
+    "reports unknown settlement before a caller observes %s",
     async (completion) => {
       const f = fixture();
       const settled = createDeferredCore<SqliteWorkerOperationSettlement>();
       const settlementError = new Error("Synthetic command settlement is unknown");
       const commandError = new Error("Synthetic command delivery failed");
-      const cleanupObserver = vi.fn<(kind: "success" | "failure", value: unknown) => void>();
+      const observer = vi.fn<(kind: "success" | "failure", value: unknown) => void>();
       const nextOperation = vi.fn(async () => "continued");
       try {
         const operation = withOpenClawStateLeaseWorkerAdmission(
@@ -52,7 +67,7 @@ describe("state lease worker result boundary", () => {
           async (scope) => {
             const { admission } = scope.createAdmission({ settled: settled.promise });
             try {
-              // Broker settlement precedes rejection of the associated command.
+              // The broker publishes native settlement before delivering the command result.
               settled.resolve({ kind: "unknown", error: settlementError });
               if (completion === "handled failure") {
                 await Promise.reject(commandError).catch(() => undefined);
@@ -66,20 +81,17 @@ describe("state lease worker result boundary", () => {
         );
         const observed = await operation.then(
           (value) => {
-            cleanupObserver("success", value);
+            observer("success", value);
             return { ok: true as const, value };
           },
           (error: unknown) => {
-            cleanupObserver("failure", error);
+            observer("failure", error);
             return { ok: false as const, error };
           },
         );
 
-        expect(observed).toMatchObject({
-          ok: false,
-          error: { code: "outcome-unknown" },
-        });
-        expect(cleanupObserver).toHaveBeenCalledExactlyOnceWith(
+        expect(observed).toMatchObject({ ok: false, error: { code: "outcome-unknown" } });
+        expect(observer).toHaveBeenCalledExactlyOnceWith(
           "failure",
           expect.objectContaining({ code: "outcome-unknown" }),
         );
@@ -96,8 +108,26 @@ describe("state lease worker result boundary", () => {
           ),
         ).rejects.toMatchObject({ code: "outcome-unknown" });
         expect(nextOperation).not.toHaveBeenCalled();
-        if (completion === "handled failure") {
-          await expect(f.owner.drain()).rejects.toBe(error);
+
+        const authorityError = new OpenClawStateLeaseError("Synthetic lease authority was lost", {
+          code: "OPENCLAW_STATE_LEASE_LOST",
+        });
+        let combined: unknown;
+        try {
+          f.owner.rethrowIfUncertain(error, authorityError);
+        } catch (failure) {
+          combined = failure;
+        }
+        expect(combined).toMatchObject({
+          code: "outcome-unknown",
+          cause: expect.any(AggregateError),
+        });
+        const combinedCauses = collectNestedErrorCandidates(combined);
+        expect(combinedCauses).toContain(error);
+        expect(combinedCauses).toContain(settlementError);
+        expect(combinedCauses).toContain(authorityError);
+        if (completion === "reject") {
+          expect(combinedCauses).toContain(commandError);
         }
       } finally {
         settled.resolve({ kind: "completed" });
@@ -147,4 +177,47 @@ describe("state lease worker result boundary", () => {
       }
     },
   );
+
+  it("joins retained settlement after the callback completes and closes further admission", async () => {
+    const f = fixture();
+    const settled = createDeferredCore<SqliteWorkerOperationSettlement>();
+    const nextOperation = vi.fn(async () => "continued");
+    try {
+      await expect(
+        withOpenClawStateLeaseWorkerAdmission(f.lease, f.databasePath, async (scope) => {
+          const { admission } = scope.createAdmission({ settled: settled.promise });
+          try {
+            return "completed callback";
+          } finally {
+            admission.finish();
+          }
+        }),
+      ).resolves.toBe("completed callback");
+      expect(f.owner.canRelease()).toBe(false);
+      let drained = false;
+      const drain = f.owner.drain().then(() => {
+        drained = true;
+      });
+      // An event-loop turn flushes promise continuations without timing a native operation.
+      await nextMessageTurn();
+      expect(drained).toBe(false);
+      await expect(
+        Promise.resolve().then(() =>
+          withOpenClawStateLeaseWorkerAdmission(f.lease, f.databasePath, nextOperation),
+        ),
+      ).rejects.toThrow();
+      expect(nextOperation).not.toHaveBeenCalled();
+      settled.resolve({ kind: "completed" });
+      await drain;
+      expect(drained).toBe(true);
+      expect(f.owner.canRelease()).toBe(true);
+    } finally {
+      settled.resolve({ kind: "completed" });
+      try {
+        await f.owner.drain();
+      } finally {
+        f.owner.close();
+      }
+    }
+  });
 });

@@ -35,13 +35,17 @@ import type {
   SessionListRowContext,
   SessionListRowContextProvider,
 } from "./session-utils-contracts.js";
-import { deriveSessionTitle, buildStoreChildSessionIndexWork } from "./session-utils-core.js";
+import { deriveSessionTitle, buildStoreChildSessionLinksWork } from "./session-utils-core.js";
 import { getSessionDefaults } from "./session-utils-model.js";
 import {
   buildSessionListRowMetadataContext,
   populateSessionListAcpMetadataWork,
 } from "./session-utils-projection.js";
-import { buildGatewaySessionRow } from "./session-utils-row.js";
+import {
+  readSessionRowInputs,
+  materializeSessionRow,
+  presentSessionRow,
+} from "./session-utils-row.js";
 import type {
   GatewaySessionRow,
   SessionListModelCatalog,
@@ -230,7 +234,7 @@ function* prepareSessionList(
   }
   const sharedRowContext = selection.entries.length > 0 ? getRowContext() : undefined;
   const storePath = hasIncognito ? params.storePath : (params.durableStorePath ?? params.storePath);
-  const storeChildSessionsByKey = yield* buildStoreChildSessionIndexWork(
+  const storeChildSessionLinksByKey = yield* buildStoreChildSessionLinksWork(
     {
       store,
       keys: [
@@ -238,9 +242,7 @@ function* prepareSessionList(
           selection.entries.map(([key]) => params.targetsBySessionKey.get(key)?.storeKey ?? key),
         ),
       ],
-      now,
-      subagentRuns: sharedRowContext?.subagentRuns,
-      excludedChildKeys: filteredSessionKeys,
+      subagentRunsByChildSessionKey: sharedRowContext?.subagentRunsByChildSessionKey ?? new Map(),
     },
     shouldYield,
   );
@@ -259,7 +261,8 @@ function* prepareSessionList(
     now,
     configuredAgentIds,
     rowContext: sharedRowContext,
-    storeChildSessionsByKey,
+    storeChildSessionLinksByKey,
+    excludedChildKeys: filteredSessionKeys,
     storePath,
   };
 }
@@ -457,7 +460,7 @@ export async function listSessionsFromStoreAsync(
             const i = nextRowIndex++;
             const [key, entry] = expectDefined(list.entries[i], "entries entry at i");
             const target = expectDefined(targetsBySessionKey.get(key), "session row owner");
-            const row = buildGatewaySessionRow({
+            const { inputs, presentation } = readSessionRowInputs({
               cfg,
               storePath: target.storeTarget.storePath, // Aggregate paths are display-only.
               store,
@@ -467,12 +470,14 @@ export async function listSessionsFromStoreAsync(
               agentId: target.agentId,
               modelCatalog: params.modelCatalog,
               now: list.now,
-              storeChildSessionsByKey: list.storeChildSessionsByKey,
+              storeChildSessionLinksByKey: list.storeChildSessionLinksByKey,
+              excludedChildKeys: list.excludedChildKeys,
               rowContext: list.rowContext,
               configuredAgentIds: list.configuredAgentIds,
               skipTranscriptUsageFallback: true,
               lightweightListRow: true,
             });
+            const row = presentSessionRow(materializeSessionRow(inputs), presentation);
             row.key = key;
             if (entry?.sessionId && i < list.transcriptFieldRows && includeTranscriptFields) {
               const { firstUserMessage, lastMessagePreview } = expectDefined(

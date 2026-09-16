@@ -147,6 +147,7 @@ jobs:
       run_control_ui_i18n: ${{ steps.manifest.outputs.run_control_ui_i18n }}
       strict_control_ui_i18n: ${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && 'true' || steps.changed_scope.outputs.strict_control_ui_i18n }}
       run_ui_tests: ${{ steps.manifest.outputs.run_ui_tests }}
+      run_control_ui_performance: ${{ steps.manifest.outputs.run_control_ui_performance }}
       run_ui_e2e: ${{ steps.manifest.outputs.run_ui_e2e }}
       ui_e2e_matrix: ${{ steps.manifest.outputs.ui_e2e_matrix }}
       run_native_i18n: ${{ steps.manifest.outputs.run_native_i18n }}
@@ -1518,15 +1519,21 @@ jobs:
           }
 
           const compactPullRequest = isCanonicalRepository && eventName === "pull_request";
+          const ownerPathEvent = isCanonicalRepository && (
+            eventName === "pull_request" ||
+            (eventName === "push" && process.env.GITHUB_REF === "refs/heads/main")
+          );
           const dockerSeedLanes =
-            compactPullRequest &&
+            ownerPathEvent &&
             changedPaths &&
             supportsDockerSeedE2e &&
             typeof changedNodeTestPlan.resolveChangedDockerSeedLanes === "function"
               ? changedNodeTestPlan.resolveChangedDockerSeedLanes(changedPaths)
               : [];
-          if (isCanonicalRepository && eventName === "push" &&
-              process.env.GITHUB_REF === "refs/heads/main" && supportsDockerSeedE2e) {
+          // Manual CI is Full Release Validation's owner for the exact
+          // legacy-operator-state + auto-auth seed contract.
+          if (isCanonicalRepository && supportsDockerSeedE2e && (
+              eventName === "workflow_dispatch" || (ownerPathEvent && changedPaths === null))) {
             dockerSeedLanes.push("published-upgrade-survivor");
           }
           // Canonical pushes also use compact bins: 80+ single-group jobs
@@ -1575,7 +1582,7 @@ jobs:
             changedNodeTestPlan.hasBuildArtifactAffectingChange(changedPaths);
           const changedScopeHasQaImpact =
             changedPaths === null ||
-            eventName !== "pull_request" ||
+            eventName === "workflow_dispatch" ||
             typeof changedNodeTestPlan.hasQaSmokeAffectingChange !== "function" ||
             changedNodeTestPlan.hasQaSmokeAffectingChange(changedPaths);
           // Prompt snapshots only change when the generator's import graph or
@@ -1599,6 +1606,11 @@ jobs:
             changedScopeHasSqliteSessionLifecycleImpact;
           const runBuildArtifacts =
             runNodeFull && (changedScopeHasBuildImpact || runSqliteSessionLifecycle);
+          const runControlUiPerformance = (runBuildArtifacts || runUiTests) && (
+            eventName === "workflow_dispatch" || changedPaths === null ||
+            typeof changedNodeTestPlan.hasControlUiPerformanceAffectingChange !== "function" ||
+            changedNodeTestPlan.hasControlUiPerformanceAffectingChange(changedPaths)
+          );
           const runQaSmokeCi =
             runNodeFull &&
             changedScopeHasQaImpact &&
@@ -1803,6 +1815,7 @@ jobs:
             run_format_check: runFormatCheck,
             run_control_ui_i18n: runControlUiI18n,
             run_ui_tests: runUiTests,
+            run_control_ui_performance: runControlUiPerformance,
             run_ui_e2e: runUiE2e,
             ui_e2e_matrix: createMatrix(Array.from({ length: uiE2eJobCount }, (_, index) => {
               const shard = index + 1;
@@ -2531,7 +2544,7 @@ jobs:
     permissions:
       contents: read
     needs: [preflight]
-    if: needs.preflight.outputs.run_build_artifacts == 'true' || needs.preflight.outputs.run_ui_tests == 'true'
+    if: needs.preflight.outputs.run_control_ui_performance == 'true'
     runs-on: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid') && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: 15
     env:
@@ -2657,6 +2670,7 @@ jobs:
 
       - name: Test Control UI
         env:
+          OPENCLAW_UI_E2E_DIAGNOSTIC_DIR: ${{ github.workspace }}/.artifacts/control-ui-e2e-timeouts/ui-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
           OPENCLAW_NODE_TEST_CONFIGS_JSON: '["ui/vitest.config.ts"]'
           OPENCLAW_NODE_TEST_PLAN_CONCURRENCY: "1"
           OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: ${{ format('["--maxWorkers", "3", "--reporter=verbose", "--reporter=github-actions", "--reporter=./scripts/lib/vitest-resource-reporter.mts"{0}]', needs.preflight.outputs.frozen_target != 'true' && format(', "--shard={0}/3"', matrix.shard) || '') }}
@@ -2672,6 +2686,15 @@ jobs:
             # isolate:false mock-registry leaks fail close to the introducing change.
             DEBUG=vitest:browser:pool node --import tsx scripts/ci-run-node-test-shard.mts
           fi
+
+      - name: Upload Control UI timeout diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: control-ui-test-timeout-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/.artifacts/control-ui-e2e-timeouts/ui-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 7
 
   checks-ui-e2e:
     permissions:
@@ -5557,6 +5580,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Android toolchain
+        id: android-toolchain
         # Frozen targets keep their Gradle task contract, but CI toolchain pins remain
         # workflow-owned as before. Load them from the workflow revision so old targets work.
         uses: ./.ci-harness/.github/actions/setup-android-toolchain
@@ -5664,9 +5688,15 @@ jobs:
           init_script="$RUNNER_TEMP/openclaw-robolectric-init.gradle"
           mkdir -p "$maven_repo"
           cat >"$init_script" <<'GROOVY'
+          println "Gradle JVM: runtime=${System.getProperty('java.runtime.version')} vendor=${System.getProperty('java.vendor')} home=${System.getProperty('java.home')}"
           allprojects {
             tasks.withType(org.gradle.api.tasks.testing.Test).configureEach {
               systemProperty "maven.repo.local", System.getenv("OPENCLAW_ROBOLECTRIC_M2")
+              // Record the executing launcher; cached results do not prove this JVM ran tests.
+              doFirst {
+                def metadata = javaLauncher.get().metadata
+                logger.lifecycle("Test JVM ${path}: runtime=${metadata.javaRuntimeVersion} vendor=${metadata.vendor} home=${metadata.installationPath.asFile}")
+              }
             }
           }
           GROOVY
@@ -5676,6 +5706,7 @@ jobs:
       - name: Run Android ${{ matrix.task }}
         working-directory: apps/android
         env:
+          JAVA_HOME: ${{ steps.android-toolchain.outputs.gradle-java-home }}
           CI_RUNNER_BACKEND: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) || github.event_name == 'workflow_dispatch' || github.repository != 'openclaw/openclaw' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != 'openclaw/openclaw')) && 'github' || 'blacksmith' }}
           TASK: ${{ matrix.task }}
           RUN_LINT: ${{ matrix.lint && 'true' || 'false' }}
@@ -5779,6 +5810,8 @@ jobs:
             apps/android/app/build/test-results/test*UnitTest/TEST-*.xml
             apps/android/wear/build/test-results/test*UnitTest/TEST-*.xml
             apps/android/wear-shared/build/test-results/test*UnitTest/TEST-*.xml
+            apps/android/**/hs_err_pid*.log
+            apps/android/**/replay_pid*.log
           if-no-files-found: warn
           retention-days: 14
 
@@ -5896,7 +5929,7 @@ jobs:
             security-fast=${{ needs.security-fast.result }}|true
             pnpm-store-warmup=${{ needs.pnpm-store-warmup.result }}|${{ (needs.preflight.outputs.run_node == 'true' || needs.preflight.outputs.run_check_docs == 'true') && (needs.preflight.outputs.runner_profile == 'github' || needs.preflight.outputs.runner_profile == 'hybrid' || (!(github.repository == 'openclaw/openclaw' && github.event_name == 'push' && github.ref == 'refs/heads/main') && !(github.repository == 'openclaw/openclaw' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.preflight.outputs.run_node == 'true'))) }}
             build-artifacts=${{ needs.build-artifacts.result }}|${{ needs.preflight.outputs.run_build_artifacts }}
-            control-ui-performance=${{ needs.control-ui-performance.result }}|${{ needs.preflight.outputs.run_build_artifacts == 'true' || needs.preflight.outputs.run_ui_tests == 'true' }}
+            control-ui-performance=${{ needs.control-ui-performance.result }}|${{ needs.preflight.outputs.run_control_ui_performance }}
             native-i18n=${{ needs.native-i18n.result }}|${{ needs.preflight.outputs.run_native_i18n }}
             checks-ui=${{ needs.checks-ui.result }}|${{ needs.preflight.outputs.run_ui_tests }}
             checks-ui-e2e=${{ needs.checks-ui-e2e.result }}|${{ needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true' }}

@@ -97,21 +97,21 @@ describe("Reef SQLite state", () => {
     fs.rmSync(stateDir, { recursive: true, force: true });
   });
 
-  it("persists a monotonic inbox cursor for the bound Reef identity", () => {
+  it("persists a monotonic inbox cursor for the bound Reef identity", async () => {
     const binding = { handle: "molty", relayUrl: "https://reefwire.ai" };
     const store = new ReefInboxCursorStore(createRuntime(stateDir), binding);
 
-    expect(store.load()).toBe(0);
-    store.advance(12);
-    store.advance(7);
+    expect(await store.load()).toBe(0);
+    await store.advance(12);
+    await store.advance(7);
 
-    expect(new ReefInboxCursorStore(createRuntime(stateDir), binding).load()).toBe(12);
-    expect(() =>
+    expect(await new ReefInboxCursorStore(createRuntime(stateDir), binding).load()).toBe(12);
+    await expect(
       new ReefInboxCursorStore(createRuntime(stateDir), {
         handle: "clawd",
         relayUrl: "https://reefwire.ai",
       }).load(),
-    ).toThrow("different identity");
+    ).rejects.toThrow("different identity");
   });
 
   it("does not let an expired audit writer replace a committed successor link", async () => {
