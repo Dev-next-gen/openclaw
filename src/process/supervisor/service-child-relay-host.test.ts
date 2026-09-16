@@ -695,9 +695,15 @@ it.each(["EPERM", "EIO", "still present"])(
     await expect(adapter.waitForExtinction()).rejects.toThrow(
       cause ? "owned process group" : "hard deadline",
     );
-    await expect(adapter.waitForExtinction()).rejects.toSatisfy(
-      (error: unknown) => error instanceof Error && error.cause === cause,
-    );
+    if (cause) {
+      await expect(adapter.waitForExtinction()).rejects.toSatisfy(
+        (error: unknown) => error instanceof Error && error.cause === cause,
+      );
+    } else {
+      await expect(adapter.waitForExtinction()).rejects.toMatchObject({
+        cause: { durationMs: GRACEFUL_CANCEL_TIMEOUT_MS, escalationAfterMs: undefined },
+      });
+    }
     await expect(adapter.wait()).resolves.toEqual({ code: 0, signal: null });
     expect(groupProbe).toHaveBeenCalledWith(-1235, 0);
     expect(groupProbe.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
@@ -724,7 +730,7 @@ it("retains extinction ownership until the kernel group disappears", async () =>
   ]);
 });
 
-it("joins stdio cleanup when the retired relay completes after 500 ms", async () => {
+it("joins forced stdio cleanup until the retired relay actually exits", async () => {
   const {
     adapter,
     completeRoot,
@@ -735,6 +741,7 @@ it("joins stdio cleanup when the retired relay completes after 500 ms", async ()
     lineage,
     acknowledgements,
     cancellations,
+    killSpy,
   } = await createRelay("linux");
   completeRoot();
   await adapter.wait();
@@ -754,12 +761,20 @@ it("joins stdio cleanup when the retired relay completes after 500 ms", async ()
     await vi.advanceTimersByTimeAsync(500);
     expect(finished).not.toHaveBeenCalled();
     expect(extinct).not.toHaveBeenCalled();
-    expect(groupProbe).not.toHaveBeenCalled();
+    expect(groupProbe).toHaveBeenCalledExactlyOnceWith(-1235, 0);
+    expect(killSpy).toHaveBeenCalledExactlyOnceWith("SIGKILL");
     expect(cancellations).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(100);
     exitRelay();
-    await expect(closing).resolves.toBeUndefined();
-    expect(groupProbe).toHaveBeenCalledExactlyOnceWith(-1235, 0);
+    await expect(closing).resolves.toMatchObject({
+      reason: "forced-relay-exit",
+      signalRequested: "SIGKILL",
+      exit: { code: 0, signal: null },
+    });
+    expect(groupProbe.mock.calls).toEqual([
+      [-1235, 0],
+      [-1235, 0],
+    ]);
     expect(cancellations).toHaveLength(0);
   } finally {
     vi.useRealTimers();

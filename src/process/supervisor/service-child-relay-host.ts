@@ -4,7 +4,7 @@ import { performance } from "node:perf_hooks";
 import type { Duplex, Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
-import { toErrorObject } from "../../infra/errors.js";
+import { extractErrorCode, toErrorObject } from "../../infra/errors.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import {
   resolveRuntimeWorkerArgv,
@@ -29,6 +29,7 @@ import {
 import type {
   ProcessAdapterConstruction,
   ProcessAdapterStartup,
+  ProcessCleanupResult,
   SpawnProcessAdapter,
   SpawnSecretInput,
 } from "./types.js";
@@ -200,6 +201,9 @@ export async function createServiceChildRelayAdapter(
   let startupErrorAckDelivery: Promise<void> | undefined;
   let cleanupDeadline: number | undefined;
   let cleanupTimer: NodeJS.Timeout | undefined;
+  let relayKillAt: number | undefined;
+  let relayKillError: Error | undefined;
+  let cleanupResult: ProcessCleanupResult | undefined;
   let completionSettled = false;
   void Promise.allSettled([resultCompletion.promise, extinctionCompletion.promise]).then(() => {
     completionSettled = true;
@@ -261,7 +265,16 @@ export async function createServiceChildRelayAdapter(
     const message =
       "service child cleanup did not complete before its hard deadline; pending: " +
       JSON.stringify(pending);
-    const error = new Error(message);
+    const error = new Error(message, {
+      cause: {
+        durationMs: performance.now() - (cleanupDeadline! - GRACEFUL_CANCEL_TIMEOUT_MS),
+        escalationAfterMs:
+          relayKillAt === undefined
+            ? undefined
+            : relayKillAt - (cleanupDeadline! - GRACEFUL_CANCEL_TIMEOUT_MS),
+        signalError: relayKillError,
+      },
+    });
     // Extinction may already be confirmed while an output pipe remains open.
     // Reject pending results before destroy can turn that missing tail into success.
     resultError ??= error;
@@ -612,8 +625,19 @@ export async function createServiceChildRelayAdapter(
     childDisconnected = true;
     finishWindowsAuthority();
   });
-  child.once("exit", () => {
+  child.once("exit", (code, signal) => {
     childExited = true;
+    if (relayKillAt !== undefined) {
+      const startedAt = cleanupDeadline! - GRACEFUL_CANCEL_TIMEOUT_MS;
+      cleanupResult = {
+        reason: "forced-relay-exit",
+        signalRequested: "SIGKILL",
+        signalError: relayKillError,
+        exit: { code, signal },
+        durationMs: performance.now() - startedAt,
+        escalationAfterMs: relayKillAt - startedAt,
+      };
+    }
     relayExit.resolve();
     removeConstructionAbortListener();
     if (useWindowsJobAnchor) {
@@ -690,8 +714,37 @@ export async function createServiceChildRelayAdapter(
     if (normalized === "SIGKILL") {
       beginCleanupDeadline();
     }
-    // A closing receipt retires cancellation; channel/anchor exit still owns extinction.
+    // A closing receipt retires group cancellation, not the retained relay handle.
+    // After the group is gone, honor forced cleanup and join real relay exit within the same deadline.
     if (state !== "active") {
+      if (
+        normalized === "SIGKILL" &&
+        state === "closing" &&
+        !childExited &&
+        relayKillAt === undefined &&
+        anchorPid !== undefined &&
+        control?.closed &&
+        lineage?.readableEnded &&
+        stdoutRelay.ended &&
+        stderrRelay.ended &&
+        performance.now() < cleanupDeadline!
+      ) {
+        try {
+          process.kill(-anchorPid, 0);
+        } catch (error) {
+          // The relay must finish reaping its anchor before losing its own process handle.
+          if (extractErrorCode(error) === "ESRCH") {
+            relayKillAt = performance.now();
+            try {
+              if (!child.kill("SIGKILL")) {
+                relayKillError = new Error("retained relay SIGKILL was not delivered");
+              }
+            } catch (signalError) {
+              relayKillError = toErrorObject(signalError, "retained relay SIGKILL failed");
+            }
+          }
+        }
+      }
       return;
     }
     requestedSignal = normalized;
@@ -732,6 +785,9 @@ export async function createServiceChildRelayAdapter(
         : await resultCompletion.promise;
     },
     waitForExtinction: async () => await extinctionCompletion.promise,
+    get cleanupResult() {
+      return state === "closed" ? cleanupResult : undefined;
+    },
     kill,
     dispose: () => {
       if (unpipeStderr) {
