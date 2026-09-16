@@ -1,4 +1,4 @@
-// Run with node --import tsx scripts/bench-worker-transcript-commit.ts.
+// Run with pnpm test:gateway:worker-commit.
 // Measures the real committer owner with synthetic admission, not worker transport or UI delivery.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
