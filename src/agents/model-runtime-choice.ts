@@ -1,7 +1,15 @@
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { DiagnosticModelRuntimeChoiceEvent } from "../infra/diagnostic-control-plane-events.js";
+import { emitTrustedDiagnosticEvent } from "../infra/diagnostic-events.js";
 import { modelKey } from "./model-ref-shared.js";
 import { resolveProviderModelMaterializationAuthMode } from "./provider-model-route-auth.js";
+
+type RuntimeChoiceDecision = DiagnosticModelRuntimeChoiceEvent extends infer Event
+  ? Event extends DiagnosticModelRuntimeChoiceEvent
+    ? Pick<Event, "phase" | "outcome" | "reason">
+    : never
+  : never;
 
 /** Bind runtime selection and its commit check to the current published model owner. */
 export async function preparePublishedModelRuntimeChoice(params: {
@@ -22,19 +30,50 @@ export async function preparePublishedModelRuntimeChoice(params: {
     await import("./prepared-model-catalog.js");
   const { getPreparedModelRuntimeAuthStore } = await import("./prepared-model-runtime-auth.js");
   const { createModelCatalogDecisions } = await import("./model-catalog-decisions.js");
+  const checks: DiagnosticModelRuntimeChoiceEvent["checks"] = {
+    ownerLookup: "not-reached",
+    authStore: "not-reached",
+    catalogPresence: "not-reached",
+    offCatalogAuth: "not-reached",
+    offCatalogAuthMode: "not-reached",
+    offCatalogResolution: "not-reached",
+    runtimeEligibility: "not-reached",
+    commitOwnerFreshness: "not-reached",
+    nativeAvailability: "not-reached",
+  };
+  const record = (decision: RuntimeChoiceDecision) => {
+    emitTrustedDiagnosticEvent({
+      type: "model.runtime_choice",
+      version: 1,
+      ...decision,
+      // The dispatcher queues delivery. Each invocation owns an immutable snapshot.
+      checks: { ...checks },
+    });
+  };
+  const reject = (
+    reason: Extract<
+      DiagnosticModelRuntimeChoiceEvent,
+      { phase: "prepare"; outcome: "unavailable" }
+    >["reason"],
+  ) => {
+    record({ phase: "prepare", outcome: "unavailable", reason });
+    return { kind: "unavailable" as const, message: unavailable };
+  };
   const published = getPublishedPreparedModelCatalogOwnerSnapshot({
     config: params.cfg,
     agentId: params.agentId,
     workspaceDir: params.workspaceDir,
   });
   const unavailable = `Runtime "${params.runtimeId}" is not available for ${params.provider}/${params.model}. Refresh the model catalog and choose again.`;
+  checks.ownerLookup = published ? "present" : "absent";
   if (!published) {
-    return { kind: "unavailable", message: unavailable };
+    return reject("owner-missing");
   }
   const owner = materializePreparedModelCatalogOwner(published);
   const authStore = getPreparedModelRuntimeAuthStore(owner);
+  checks.authStore = authStore ? "present" : "absent";
   if (!authStore) {
-    return { kind: "unavailable", message: unavailable };
+    return reject("auth-store-missing");
   }
   const decisions = createModelCatalogDecisions({
     cfg: owner.config,
@@ -58,6 +97,7 @@ export async function preparePublishedModelRuntimeChoice(params: {
   let entry = decisions.snapshot.entries.find(
     (row) => modelKey(row.provider, row.id) === modelKey(params.provider, params.model),
   );
+  checks.catalogPresence = entry ? "present" : "absent";
   if (!entry) {
     // Explicit selections may be outside finite browse inventory. The normal
     // resolver still owns the requested model's provider and physical route.
@@ -71,8 +111,14 @@ export async function preparePublishedModelRuntimeChoice(params: {
     const authProfileMode = resolveProviderModelMaterializationAuthMode(
       selectedAuth.selectedAuthMode,
     );
+    checks.offCatalogAuth = selectedAuth.availability === true ? "available" : "unavailable";
+    checks.offCatalogAuthMode = authProfileMode ? "available" : "unavailable";
     if (selectedAuth.availability !== true || !authProfileMode) {
-      return { kind: "unavailable", message: unavailable };
+      return reject(
+        selectedAuth.availability !== true
+          ? "off-catalog-auth-unavailable"
+          : "off-catalog-auth-mode-unavailable",
+      );
     }
     const resolved = await resolveModelAsync(
       params.provider,
@@ -92,8 +138,9 @@ export async function preparePublishedModelRuntimeChoice(params: {
           : {}),
       },
     );
+    checks.offCatalogResolution = resolved.model ? "resolved" : "unresolved";
     if (!resolved.model) {
-      return { kind: "unavailable", message: unavailable };
+      return reject("off-catalog-resolution-unavailable");
     }
     entry = modelCatalogRowToEntry(resolved.model);
   }
@@ -101,19 +148,35 @@ export async function preparePublishedModelRuntimeChoice(params: {
     (row) => modelKey(row.provider, row.id) === modelKey(entry.provider, entry.id),
   );
   const choices = await decisions.runtimeChoices(entry, variants.length ? variants : [entry]);
-  if (!choices?.includes(params.runtimeId)) {
-    return { kind: "unavailable", message: unavailable };
+  const eligible = choices?.includes(params.runtimeId);
+  checks.runtimeEligibility = eligible ? "eligible" : "ineligible";
+  if (!eligible) {
+    return reject("runtime-ineligible");
   }
   const host = await decisions.evaluateEntry(
     entry,
     variants.length ? variants : [entry],
     params.runtimeId,
   );
-  const validate = () =>
-    decisions.isCurrent() &&
-    decisions.evaluateNative(entry, host, params.runtimeId).availability === true
-      ? undefined
-      : unavailable;
+  const validate = () => {
+    const current = decisions.isCurrent();
+    checks.commitOwnerFreshness = current ? "current" : "stale";
+    // Preserve the owner guard's short circuit, including on repeated validation.
+    checks.nativeAvailability = "not-reached";
+    if (!current) {
+      record({ phase: "validate", outcome: "unavailable", reason: "owner-stale" });
+      return unavailable;
+    }
+    const available = decisions.evaluateNative(entry, host, params.runtimeId).availability === true;
+    checks.nativeAvailability = available ? "available" : "unavailable";
+    record(
+      available
+        ? { phase: "validate", outcome: "ready", reason: "ready" }
+        : { phase: "validate", outcome: "unavailable", reason: "native-unavailable" },
+    );
+    return available ? undefined : unavailable;
+  };
 
+  record({ phase: "prepare", outcome: "ready", reason: "ready" });
   return { kind: "ready", validate };
 }
