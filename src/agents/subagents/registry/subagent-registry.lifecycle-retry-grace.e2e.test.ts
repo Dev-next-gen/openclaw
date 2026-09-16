@@ -1,5 +1,6 @@
 // Lifecycle retry-grace e2e tests cover completion delivery retry behavior when
 // lifecycle events race gateway waits or transient announce failures.
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionDeliveryState } from "../../../config/sessions/types.js";
 import type { CallGatewayOptions } from "../../../gateway/call.js";
@@ -109,6 +110,24 @@ vi.mock("../../../config/sessions.js", () => ({
 vi.mock("../../../config/sessions/session-accessor.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../config/sessions/session-accessor.js")>()),
   loadSessionEntry: (scope: { sessionKey: string }) => sessionStore[scope.sessionKey],
+  patchSessionEntryCore: async (
+    ...[scope, update, options = {}]: Parameters<
+      typeof import("../../../config/sessions/session-accessor.js").patchSessionEntryCore
+    >
+  ) => {
+    const entry = expectDefined(
+      sessionStore[scope.sessionKey],
+      "Expected the in-memory session fixture",
+    );
+    const patch = await update(entry, { existingEntry: entry });
+    if (patch === null) {
+      return entry;
+    }
+    options.assertCommitAllowed?.();
+    const updated = { ...entry, ...patch };
+    sessionStore[scope.sessionKey] = updated;
+    return updated;
+  },
   listSessionEntriesReadOnly: () =>
     Object.entries(sessionStore).map(([sessionKey, entry]) => ({ sessionKey, entry })),
 }));
