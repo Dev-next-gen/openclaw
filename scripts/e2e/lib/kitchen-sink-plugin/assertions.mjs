@@ -401,9 +401,10 @@ function assertClawHubExternalInstallContract(installPath) {
   }
 
   const dependencyPackagePath = path.join(installPath, "node_modules", "is-number", "package.json");
-  if (fs.existsSync(dependencyPackagePath)) {
-    assertRealPathInside(installPath, dependencyPackagePath, "kitchen-sink isolated dependency");
+  if (!fs.existsSync(dependencyPackagePath)) {
+    throw new Error(`missing kitchen-sink isolated dependency: ${dependencyPackagePath}`);
   }
+  assertRealPathInside(installPath, dependencyPackagePath, "kitchen-sink isolated dependency");
 }
 
 function inferInstallSource(spec) {

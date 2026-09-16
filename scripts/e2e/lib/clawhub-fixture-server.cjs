@@ -366,10 +366,17 @@ const profiles = {
       openclaw: { extensions: ["./index.js"] },
     },
     indexJs: `import isNumber from "is-number";
+import { realpathSync } from "node:fs";
+import { sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
-const dependencyUrl = import.meta.resolve("is-number");
-const expectedDependencyBaseUrl = new URL("./node_modules/is-number/", import.meta.url).href;
+// Captured plugin generations link dependencies to separately owned package copies.
+// Compare canonical targets; the install assertion separately enforces installed-root isolation.
+const dependencyUrl = pathToFileURL(realpathSync(new URL(import.meta.resolve("is-number")))).href;
+const expectedDependencyBaseUrl = pathToFileURL(
+  realpathSync(new URL("./node_modules/is-number/", import.meta.url)) + sep,
+).href;
 if (!dependencyUrl.startsWith(expectedDependencyBaseUrl)) {
   throw new Error(\`kitchen-sink dependency resolved outside plugin root: \${dependencyUrl}\`);
 }

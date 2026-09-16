@@ -8,6 +8,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PluginInstallRecord } from "../../src/config/types.plugins.js";
 import { checkClawHubPackageTrust } from "../../src/infra/clawhub-install-trust.js";
+import { createPluginCache, withPluginCache } from "../../src/plugins/plugin-cache.js";
+import { bindPluginInstanceModuleLoader } from "../../src/plugins/plugin-instance-module-loader.js";
+import { PluginInstance } from "../../src/plugins/plugin-instance.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { writePluginInspectFixture } from "./plugin-inspect.test-support.js";
 
@@ -185,6 +188,111 @@ describe("ClawHub fixture server", () => {
     expect(missingResponse.status).toBe(404);
     const methodResponse = await fetch(`${baseUrl}${PACKAGE_PATH}`, { method: "POST" });
     expect(methodResponse.status).toBe(405);
+  });
+
+  it("loads the kitchen-sink artifact through captured dependency links", async () => {
+    const { baseUrl } = await startFixtureServer("kitchen-sink-plugin");
+    const response = await fetch(
+      `${baseUrl}${PACKAGE_PATH}/versions/${KITCHEN_SINK_VERSION}/artifact/download`,
+    );
+    expect(response.status).toBe(200);
+    const root = tempDirs.make("kitchen-sink-captured-dependency-");
+    const archive = path.join(root, "fixture.tgz");
+    writeFileSync(archive, Buffer.from(await response.arrayBuffer()));
+    execFileSync("tar", ["-xzf", archive, "-C", root]);
+    const pluginRoot = path.join(root, "package");
+    const source = path.join(pluginRoot, "index.js");
+    const manifest = JSON.parse(readFileSync(path.join(pluginRoot, "package.json"), "utf8"));
+    expect(manifest).toMatchObject({
+      version: KITCHEN_SINK_VERSION,
+      dependencies: { "is-number": "7.0.0" },
+    });
+    const dependencyRoot = path.join(pluginRoot, "node_modules", "is-number");
+    mkdirSync(dependencyRoot, { recursive: true });
+    writeFileSync(
+      path.join(dependencyRoot, "package.json"),
+      JSON.stringify({ name: "is-number", version: "7.0.0", main: "index.js" }),
+    );
+    // A credential-free dependency sentinel, not a registry download. Parent fallback is poisoned.
+    writeFileSync(
+      path.join(dependencyRoot, "index.js"),
+      "module.exports = (value) => value === 42;\n",
+    );
+    const fallback = path.join(root, "node_modules", "is-number");
+    mkdirSync(fallback, { recursive: true });
+    writeFileSync(
+      path.join(fallback, "package.json"),
+      '{"name":"is-number","version":"7.0.0","main":"index.js"}',
+    );
+    writeFileSync(
+      path.join(fallback, "index.js"),
+      'throw new Error("host dependency fallback executed");',
+    );
+    // The dependency/capture regression uses the established explicit SDK-host fixture seam.
+    // Its one SDK export is inert; the generated plugin body and instance loader stay real.
+    const host = path.join(root, "sdk-host");
+    mkdirSync(path.join(host, "dist", "plugin-sdk"), { recursive: true });
+    mkdirSync(path.join(host, "src"));
+    mkdirSync(path.join(host, "extensions"));
+    writeFileSync(
+      path.join(host, "package.json"),
+      JSON.stringify({
+        name: "openclaw",
+        type: "module",
+        bin: { openclaw: "./openclaw.mjs" },
+        exports: { "./plugin-sdk/plugin-entry": "./dist/plugin-sdk/plugin-entry.js" },
+      }),
+    );
+    writeFileSync(path.join(host, "openclaw.mjs"), "export {};\n");
+    writeFileSync(
+      path.join(host, "dist", "plugin-sdk", "plugin-entry.js"),
+      "export const definePluginEntry = (entry) => entry;\n",
+    );
+    const instance = new PluginInstance("openclaw-kitchen-sink-fixture");
+    try {
+      withPluginCache(createPluginCache(), () =>
+        bindPluginInstanceModuleLoader({
+          instance,
+          origin: "config",
+          source,
+          rootDir: pluginRoot,
+          devSourceRoot: host,
+        }),
+      );
+      // Changing installed bytes after capture must not change this generation's dependency.
+      writeFileSync(
+        path.join(dependencyRoot, "index.js"),
+        'throw new Error("uncaptured dependency executed");',
+      );
+      const loaded = instance.loadModule(source) as {
+        default: {
+          register: (api: {
+            registerProvider: (provider: { id: string }) => void;
+            registerContextEngine: (id: string) => void;
+            registerChannel: (channel: { plugin: { id: string } }) => void;
+          }) => void;
+        };
+      };
+      const providerIds: string[] = [];
+      const contextEngineIds: string[] = [];
+      const channelIds: string[] = [];
+      loaded.default.register({
+        registerProvider: (provider) => {
+          providerIds.push(provider.id);
+        },
+        registerContextEngine: (id) => {
+          contextEngineIds.push(id);
+        },
+        registerChannel: (channel) => {
+          channelIds.push(channel.plugin.id);
+        },
+      });
+      expect(providerIds).toEqual(["kitchen-sink-provider"]);
+      expect(contextEngineIds).toEqual(["openclaw-kitchen-sink-fixture"]);
+      expect(channelIds).toEqual(["kitchen-sink-channel"]);
+    } finally {
+      await instance.dispose();
+    }
   });
 
   it("rejects missing startup arguments before binding a fixture server", () => {
