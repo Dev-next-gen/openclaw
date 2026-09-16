@@ -296,8 +296,9 @@ Stored in the shared SQLite state database at `~/.openclaw/state/openclaw.sqlite
 - pending device pairing requests (short-lived; they expire after 5 minutes)
 - paired devices + tokens
 
-Older gateways kept this state in `~/.openclaw/devices/*.json`; those files are
-imported into SQLite at gateway startup and archived with a `.migrated` suffix.
+Older gateways kept this state in `~/.openclaw/devices/*.json`. Stop the Gateway
+and run `openclaw doctor --fix` to import those files into SQLite and archive
+them with a `.migrated` suffix. Normal startup leaves legacy files unchanged.
 
 ### Notes
 
