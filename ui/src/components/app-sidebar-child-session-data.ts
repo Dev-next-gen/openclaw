@@ -1,5 +1,7 @@
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import type { GatewaySessionRow, SessionsListResult } from "../api/types.ts";
+import type { RouteId } from "../app-route-paths.ts";
+import type { ApplicationContext } from "../app/context.ts";
 import { formatUiError } from "../lib/format-error.ts";
 import { fetchChildSessionRows } from "../lib/sessions/child-session-data.ts";
 import type { SessionCapability } from "../lib/sessions/index.ts";
@@ -13,7 +15,6 @@ import {
   resolveUiSessionNavigationParentKey,
 } from "../lib/sessions/session-key.ts";
 import { matchesExistingSession } from "../lib/sessions/session-row-reconcile.ts";
-import type { SessionDataController } from "./session-data-controller.ts";
 
 const MAX_SESSION_LINEAGE_DEPTH = 16;
 
@@ -204,7 +205,15 @@ function mergeRefreshedChildSessionRows(
 }
 
 export function scheduleSidebarChildSessions(
-  owner: SessionDataController,
+  owner: {
+    readonly context: ApplicationContext<RouteId> | undefined;
+    readonly childSessionScope: object;
+    readonly isSessionDataHostConnected: boolean;
+    retireStaleChildSessions(revalidating: ReadonlySet<string>): void;
+    needsChildSessionLoad(parentKey: string): boolean;
+    loadChildSessions(parentKey: string): Promise<void>;
+    requestSessionDataUpdate(): void;
+  },
   readParents: () => Set<string>,
 ): void {
   const revalidating = readParents();
