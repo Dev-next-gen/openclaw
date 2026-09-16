@@ -209,6 +209,10 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     });
   }
 
+  private readonly handlePaneInput = () => {
+    this.sessionCompanionFocusGeneration += 1;
+  };
+
   protected readonly handlePaneFocus = () => {
     this.sessionCompanionFocusGeneration += 1;
     chatInputOwnerForContext(this.context).claim(this.inputRegion);
@@ -324,6 +328,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     }
     this.addEventListener("pointerdown", this.handlePaneFocus);
     this.addEventListener("focusin", this.handlePaneFocus);
+    this.addEventListener("input", this.handlePaneInput);
     document.addEventListener("keydown", this.handleDocumentKeydown, true);
     document.addEventListener("pointerdown", this.handleDocumentPointerdown, true);
     const chatState = this.chatState;
@@ -333,6 +338,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
       document.removeEventListener("pointerdown", this.handleDocumentPointerdown, true);
       this.removeEventListener("pointerdown", this.handlePaneFocus);
       this.removeEventListener("focusin", this.handlePaneFocus);
+      this.removeEventListener("input", this.handlePaneInput);
     });
     const pageState = createPageState(
       this.context,
@@ -572,13 +578,6 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
   }
 
   override willUpdate(changedProperties: Map<PropertyKey, unknown>) {
-    if (!this.state || !isSidebarSlotVisible(this.state.sidebarLayout, "companion")) {
-      // A later opening owns fresh presentation focus, even if this rail never mounted.
-      this.sessionCompanionFocusGeneration += 1;
-      if (this.sessionCompanionFocusRequest !== undefined) {
-        this.sessionCompanionFocusRequest = undefined;
-      }
-    }
     if (changedProperties.has("sessionKey") && this.state) {
       const catalogKey = parseCatalogSessionKey(this.sessionKey);
       const nextSessionKey = catalogKey
@@ -679,6 +678,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
   }
 
   override disconnectedCallback() {
+    this.syncSessionCompanionPresentation(false);
     this.composerPresentation?.dispose();
     this.composerPresentation = undefined;
     if (this.state) {
