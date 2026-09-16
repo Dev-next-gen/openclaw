@@ -19,6 +19,7 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/buzz/src/gateway.cold-start-recovery.test.ts",
   "extensions/codex/doctor-contract-api.test.ts",
   "extensions/codex/src/app-server/dynamic-tool-build.test.ts",
+  "extensions/codex/src/app-server/native-subagent-monitor.test.ts",
   "extensions/copilot/src/tool-bridge.test.ts",
   "extensions/crabbox/doctor-contract-api.test.ts",
   "extensions/device-pair/doctor-contract-api.test.ts",

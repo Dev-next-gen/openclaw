@@ -6,7 +6,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { bundledPluginFileAt } from "openclaw/plugin-sdk/test-fixtures";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, type TestContext } from "vitest";
 import { GATEWAY_CLIENT_CAPS } from "../../packages/gateway-protocol/src/client-info.js";
 import type {
   EventFrame,
@@ -219,6 +219,7 @@ type CodexHarnessAttemptUsage = Partial<
 >;
 
 type CodexHarnessAgentResult = {
+  runId: string;
   compactionCount: number;
   elapsedMs: number;
   events: CapturedAgentEvent[];
@@ -685,6 +686,7 @@ async function requestAgentTextWithEvents(params: {
   const { extractPayloadText } = await import("./test-helpers.agent-results.js");
   const capture = createCodexHarnessEventCapture(params);
   const { events } = capture;
+  const runId = `idem-${randomUUID()}-codex-guardian`;
   const unsubscribe = onGatewayAgentEvent(capture.onAgentEvent);
   try {
     const requestStartedAt = Date.now();
@@ -693,7 +695,7 @@ async function requestAgentTextWithEvents(params: {
       "agent",
       {
         sessionKey: params.sessionKey,
-        idempotencyKey: `idem-${randomUUID()}-codex-guardian`,
+        idempotencyKey: runId,
         message: params.message,
         deliver: false,
         thinking: CODEX_HARNESS_THINKING,
@@ -715,6 +717,7 @@ async function requestAgentTextWithEvents(params: {
         }
       | undefined;
     return {
+      runId,
       text: extractPayloadText(payload.result),
       events,
       compactionCount: Math.max(0, result?.meta?.agentMeta?.compactionCount ?? 0),
@@ -737,7 +740,7 @@ async function requestAgentText(params: {
   preserveNativeTurnSettings?: boolean;
   sessionKey: string;
 }): Promise<string> {
-  const { text, events } = await requestAgentTextWithEvents({
+  const { text, events, runId } = await requestAgentTextWithEvents({
     client: params.client,
     eventPrefix: "codex_app_server.",
     message: params.message,
@@ -746,6 +749,7 @@ async function requestAgentText(params: {
   expect(text).toContain(params.expectedReply);
   recordCodexAttemptIdentity({
     events,
+    runId,
     preserveNativeTurnSettings: params.preserveNativeTurnSettings,
     sessionKey: params.sessionKey,
   });
@@ -754,10 +758,11 @@ async function requestAgentText(params: {
 
 function recordCodexAttemptIdentity(params: {
   events: CapturedAgentEvent[];
+  runId: string;
   preserveNativeTurnSettings?: boolean;
   sessionKey: string;
 }): void {
-  const { events } = params;
+  const events = params.events.filter((event) => event.runId === params.runId);
   const turnStarting = events.find(
     (event) =>
       event.stream === "codex_app_server.lifecycle" && event.data?.phase === "turn_starting",
@@ -799,6 +804,13 @@ function recordCodexAttemptIdentity(params: {
   const action = threadReady?.data?.action;
   expect(["started", "resumed", "forked"]).toContain(action);
   observedCodexThreadActions.set(params.sessionKey, action as string);
+  logCodexLiveStep("attempt-identity", {
+    runId: params.runId,
+    sessionKey: params.sessionKey,
+    threadId,
+    clientId,
+    action,
+  });
 }
 
 async function verifyCodexMultiSessionApprovalPersistence(params: {
@@ -833,7 +845,7 @@ async function verifyCodexMultiSessionApprovalPersistence(params: {
         "*** End Patch",
       ].join("\n");
       const patchCode = `const result = await tools.apply_patch(${JSON.stringify(patch)});\ntext(result);`;
-      const { text, events } = await requestAgentTextWithEvents({
+      const { text, events, runId } = await requestAgentTextWithEvents({
         client: params.client,
         eventPrefixes: ["codex_app_server.", "tool", "approval"],
         sessionKey,
@@ -846,7 +858,7 @@ async function verifyCodexMultiSessionApprovalPersistence(params: {
         ].join("\n"),
       });
       expect(text).toContain(expectedReply);
-      recordCodexAttemptIdentity({ events, sessionKey });
+      recordCodexAttemptIdentity({ events, runId, sessionKey });
       expect(await fs.readFile(targetPath, "utf8")).toBe(`${expectedContent}\n`);
       expect(
         events.some(
@@ -1141,7 +1153,11 @@ async function verifyCodexFullContextStress(params: {
       ].join("\n\n"),
     });
     expect(result.text).toContain(acknowledgement);
-    recordCodexAttemptIdentity({ events: result.events, sessionKey: params.sessionKey });
+    recordCodexAttemptIdentity({
+      events: result.events,
+      runId: result.runId,
+      sessionKey: params.sessionKey,
+    });
     logCodexHarnessTurnMeasurement(`full-stress-${turn}`, result);
     const compaction = readCompletedCodexCompactionStats(result.events);
     expect(compaction.count, "dense threshold-building turns must not compact").toBe(0);
@@ -1192,7 +1208,11 @@ async function verifyCodexFullContextStress(params: {
     message: `Reply exactly ${triggerToken} and nothing else.`,
   });
   expect(triggerResult.text.trim()).toBe(triggerToken);
-  recordCodexAttemptIdentity({ events: triggerResult.events, sessionKey: params.sessionKey });
+  recordCodexAttemptIdentity({
+    events: triggerResult.events,
+    runId: triggerResult.runId,
+    sessionKey: params.sessionKey,
+  });
   logCodexHarnessTurnMeasurement("full-trigger", triggerResult);
   const triggerCompaction = readCompletedCodexCompactionStats(triggerResult.events);
   expect(
@@ -1245,7 +1265,11 @@ async function verifyCodexFullContextStress(params: {
     message: "Reply with exactly the value stored in durable slot A and nothing else.",
   });
   expect(recallResult.text.trim()).toBe(hiddenMarker);
-  recordCodexAttemptIdentity({ events: recallResult.events, sessionKey: params.sessionKey });
+  recordCodexAttemptIdentity({
+    events: recallResult.events,
+    runId: recallResult.runId,
+    sessionKey: params.sessionKey,
+  });
   logCodexHarnessTurnMeasurement("full-post-compaction-recall", recallResult);
 
   const outputMarkers: LongOutputMarkers = {
@@ -1269,7 +1293,11 @@ async function verifyCodexFullContextStress(params: {
     outputTokens,
     stopReason: longOutput.stopReason,
   });
-  recordCodexAttemptIdentity({ events: longOutput.events, sessionKey: params.sessionKey });
+  recordCodexAttemptIdentity({
+    events: longOutput.events,
+    runId: longOutput.runId,
+    sessionKey: params.sessionKey,
+  });
   logCodexHarnessTurnMeasurement("full-bounded-long-output", longOutput);
 
   logCodexLiveStep("full-context-threshold", {
@@ -1319,7 +1347,11 @@ async function verifyCodexCompactionStress(params: {
   let reportedCompactions = 0;
   let startedCompactions = 0;
   const observeTurn = (label: string, result: CodexHarnessAgentResult) => {
-    recordCodexAttemptIdentity({ events: result.events, sessionKey: params.sessionKey });
+    recordCodexAttemptIdentity({
+      events: result.events,
+      runId: result.runId,
+      sessionKey: params.sessionKey,
+    });
     logCodexHarnessTurnMeasurement(label, result);
     const compaction = readCompletedCodexCompactionStats(result.events);
     completedCompactions += compaction.count;
@@ -1953,6 +1985,7 @@ async function verifyCodexSubagentProbe(params: {
 
 async function verifyCodexNativeSubagentBridgeProbe(params: {
   stateEnv: NodeJS.ProcessEnv;
+  annotate: TestContext["annotate"];
   client: GatewayClient;
   events: EventFrame[];
   sessionKey: string;
@@ -1960,7 +1993,11 @@ async function verifyCodexNativeSubagentBridgeProbe(params: {
   const runId = randomUUID();
   const childToken = `CODEX-NATIVE-CHILD-${runId.slice(0, 6).toUpperCase()}`;
   const parentToken = `CODEX-NATIVE-PARENT-${runId.slice(0, 6).toUpperCase()}`;
-  const { text, events } = await requestAgentTextWithEvents({
+  const {
+    text,
+    events,
+    runId: parentRunId,
+  } = await requestAgentTextWithEvents({
     // Native Codex waiting pauses this parent turn; task delivery resumes it separately.
     acceptYieldedTimeout: true,
     client: params.client,
@@ -1976,6 +2013,11 @@ async function verifyCodexNativeSubagentBridgeProbe(params: {
     ].join("\n"),
   });
   logCodexLiveStep("native-subagent-bridge-probe:initial-reply", { text });
+  recordCodexAttemptIdentity({
+    events,
+    runId: parentRunId,
+    sessionKey: params.sessionKey,
+  });
   expect(
     events.some((event) => event.stream === "codex_app_server.lifecycle"),
     `expected Codex lifecycle events; events=${JSON.stringify(events)}`,
@@ -2000,8 +2042,26 @@ async function verifyCodexNativeSubagentBridgeProbe(params: {
   const childThreadId = deliveredTask.sourceId?.match(/^codex-thread:([^:]+)$/)?.[1];
   expect(childThreadId).toBeTypeOf("string");
   const firstRecord = loadTaskRegistryStateFromSqliteReadOnly().tasks.get(deliveredTask.id);
-  expect(asOptionalRecord(firstRecord?.detail)?.nativeTurnId).toBeTypeOf("string");
   const parentThreadId = observedCodexThreadIds.get(params.sessionKey);
+  const initialTaskSnapshot = {
+    taskId: deliveredTask.id,
+    runId: firstRecord?.runId,
+    nativeTurnId: asOptionalRecord(firstRecord?.detail)?.nativeTurnId,
+    historyParentThreadId: asOptionalRecord(asOptionalRecord(firstRecord?.detail)?.nativeHistory)
+      ?.parentThreadId,
+    parentThreadId,
+    childThreadId,
+    status: firstRecord?.status,
+    resultMatched: firstRecord?.terminalSummary === childToken,
+  };
+  logCodexLiveStep("native-subagent-bridge-probe:initial-task", initialTaskSnapshot);
+  await params.annotate("native-subagent-initial-task", {
+    body: JSON.stringify(initialTaskSnapshot),
+    bodyEncoding: "utf-8",
+    contentType: "application/json",
+  });
+  expect(asOptionalRecord(firstRecord?.detail)?.nativeTurnId).toBeTypeOf("string");
+  expect(parentThreadId).toBeTypeOf("string");
   const expectedAssignments = [
     { taskId: deliveredTask.id, result: childToken, record: firstRecord },
   ];
@@ -2024,6 +2084,24 @@ async function verifyCodexNativeSubagentBridgeProbe(params: {
         "Wait for its new result before replying. Do not answer from your own knowledge. Keep the child open for another follow-up.",
         `After the new child result returns, reply exactly ${followupParentToken} ${followupToken} and nothing else.`,
       ].join("\n"),
+    });
+    recordCodexAttemptIdentity({
+      events: followup.events,
+      runId: followup.runId,
+      sessionKey: params.sessionKey,
+    });
+    const currentFirstRecord = loadTaskRegistryStateFromSqliteReadOnly().tasks.get(
+      deliveredTask.id,
+    );
+    logCodexLiveStep("native-subagent-followup:identity", {
+      ordinal,
+      runId: followup.runId,
+      parentThreadId: observedCodexThreadIds.get(params.sessionKey),
+      childThreadId,
+      replyMatched: followup.text.trim() === `${followupParentToken} ${followupToken}`,
+      initialNativeTurnId: initialTaskSnapshot.nativeTurnId,
+      currentFirstNativeTurnId: asOptionalRecord(currentFirstRecord?.detail)?.nativeTurnId,
+      firstResultMatched: currentFirstRecord?.terminalSummary === childToken,
     });
     expect(followup.text.trim()).toBe(`${followupParentToken} ${followupToken}`);
     expect(observedCodexThreadIds.get(params.sessionKey)).toBe(parentThreadId);
@@ -2687,7 +2765,7 @@ describeLive("gateway live (Codex harness)", () => {
 
   it(
     "runs gateway agent turns through the plugin-owned Codex app-server harness",
-    async () => {
+    async (context) => {
       const modelKey = process.env.OPENCLAW_LIVE_CODEX_HARNESS_MODEL ?? DEFAULT_CODEX_MODEL;
       const token = `test-${randomUUID()}`;
       const instance = await createCodexHarnessLiveInstance(token, CODEX_HARNESS_AUTH_MODE);
@@ -2830,6 +2908,7 @@ describeLive("gateway live (Codex harness)", () => {
               logCodexLiveStep("native-subagent-bridge-probe:start", { sessionKey });
               await verifyCodexNativeSubagentBridgeProbe({
                 stateEnv: instance.env,
+                annotate: context.annotate,
                 client: activeClient,
                 events: gatewayEvents,
                 sessionKey,
