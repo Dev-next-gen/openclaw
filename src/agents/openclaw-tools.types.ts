@@ -51,6 +51,8 @@ export type OpenClawToolsOptions = {
   nativeChannelId?: string;
   /** Opaque host-issued capability for current-turn channel message actions. */
   messageActionTurnCapability?: string;
+  /** Message-only authority from a CLI grant; does not authorize plugin delivery. */
+  messageToolTurnCapability?: { token: string; sessionKey: string };
   sandboxRoot?: string;
   sandboxContainerWorkdir?: string;
   sandboxFsBridge?: SandboxFsBridge;
@@ -63,6 +65,8 @@ export type OpenClawToolsOptions = {
   config?: OpenClawConfig;
   /** Gateway-owned session policy follows runtime updates; explicit overrides stay pinned. */
   sessionConfigSource?: "runtime" | "pinned";
+  /** Host-bound history/search scope; does not change mutation or execution identity. */
+  sessionReadScopeKey?: string;
   webFetchHostnameAllowlistRef?: { value?: string[] };
   webSearchEnabled?: boolean;
   /** Capabilities declared by the gateway client that originated this run. */

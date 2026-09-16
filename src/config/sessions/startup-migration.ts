@@ -12,29 +12,30 @@ import { readAgentDatabaseAdmissionRefusal } from "../../state/agent-database-ad
 import { readAgentDeletionJournal } from "../../state/agent-deletion-journal.js";
 import { listOpenClawRegisteredAgentDatabases } from "../../state/openclaw-agent-db-registry.js";
 import {
-  closeOpenClawAgentDatabaseByPath,
+  closeOpenClawAgentDatabaseByPathAsync,
   isOpenClawAgentDatabaseOpen,
   withOpenClawAgentDatabaseAsync,
   resolveOpenClawAgentSqlitePath,
   type OpenClawAgentDatabaseOptions,
 } from "../../state/openclaw-agent-db.js";
+import { AGENT_DATABASE_PREFLIGHT_CONCURRENCY } from "../../state/openclaw-database-preflight-agent-scheduler.js";
+import { runTasksWithConcurrency } from "../../utils/run-with-concurrency.js";
 import { resolveStateDir } from "../paths.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { migrateLegacyMainSessionKeys } from "./legacy-main-session-migration.js";
 import {
   isLegacySessionRecordOwnedByTarget,
+  listLegacySessionTranscriptFiles,
   readLegacySessionStoreEntries,
   shouldFilterLegacySessionRecordsByTarget,
 } from "./legacy-store-inspection.js";
 import { SessionStoreMigrationRequiredError } from "./migration-required.js";
 import { resolveSqliteReadScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
-import {
-  isCanonicalSqliteSessionMainKeyCurrent,
-  setCanonicalSqliteSessionMainKey,
-} from "./session-canonical-key.js";
+import { isCanonicalSqliteSessionMainKeyCurrent } from "./session-canonical-key-read.js";
+import { setCanonicalSqliteSessionMainKey } from "./session-canonical-key.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 import { resolveAllAgentSessionStoreTargetsSync, resolveSessionStoreTargets } from "./targets.js";
-import { migrateManagedWorktreeCanonicalWorkspaces } from "./worktree-workspace-migration.js";
+import type { migrateManagedWorktreeCanonicalWorkspaces } from "./worktree-workspace-migration.js";
 
 export type SessionStartupMigrationLogger = Record<"info" | "warn", (message: string) => void>;
 
@@ -50,7 +51,7 @@ export function assertSessionStoreMigrationComplete(params: {
   ).filter(
     (target) => !target.agentId || !readAgentDatabaseAdmissionRefusal(target.agentId, { env }),
   );
-  const pending = readDeferredPluginMigrations({ env });
+  let pending: ReturnType<typeof readDeferredPluginMigrations> | undefined;
   const legacyRootStore = path.join(resolveStateDir(env), "sessions", "sessions.json");
   const legacyTargets = fs.existsSync(legacyRootStore)
     ? resolveSessionStoreTargets(params.cfg, { allAgents: true }, { env }).map((target) => ({
@@ -83,8 +84,10 @@ export function assertSessionStoreMigrationComplete(params: {
     for (const target of candidates) {
       if (
         !target.agentId ||
-        deferredPluginSessionStoreIds({ target: { ...target, agentId: target.agentId }, pending })
-          .length === 0
+        deferredPluginSessionStoreIds({
+          target: { ...target, agentId: target.agentId },
+          pending: (pending ??= readDeferredPluginMigrations({ env })),
+        }).length === 0
       ) {
         return true;
       }
@@ -99,16 +102,19 @@ export function assertSessionStoreMigrationComplete(params: {
     }
     // A roster entry is only a possible importer. Inspect retained source ownership
     // here, never in runtime session access, and bind parsed bytes to every receipt.
-    const issues: Array<{ code: string; message: string }> = [];
+    const issues: Array<{ code: string; message: string; sessionKey?: string }> = [];
     const source = readLegacySessionStoreEntries({ storePath }, issues);
-    if (issues.length > 0 || !source.bytes) {
+    if (issues.some((issue) => issue.code !== "entry_invalid") || !source.bytes) {
       return true;
     }
     const sourceSha256 = createHash("sha256").update(source.bytes).digest("hex");
     // Empty indexes may have unindexed history: retain the existing requirement
     // for every named owner's verified receipt rather than infer ownership here.
     const required = new Set<SourceOwner>(source.entries.length === 0 ? owners.values() : []);
-    for (const { sessionKey } of source.entries) {
+    for (const sessionKey of [
+      ...source.entries.map((entry) => entry.sessionKey),
+      ...issues.flatMap((issue) => (issue.sessionKey ? [issue.sessionKey] : [])),
+    ]) {
       const matches = [...owners.values()].filter(
         ({ target }) =>
           !shouldFilterLegacySessionRecordsByTarget(target) ||
@@ -119,11 +125,25 @@ export function assertSessionStoreMigrationComplete(params: {
       }
       required.add(matches[0]!);
     }
+    let hasUnindexedHistory: boolean | undefined;
     return [...required].some(({ target, destination }) => {
       const receipt = readDeferredPluginSessionImport({
-        target: { ...target, sqlitePath: destination },
+        cfg: params.cfg,
+        target,
+        sqlitePath: destination,
         env,
       });
+      // Owners without a database can never hold a replayable receipt (receipts bind
+      // the database identity, which a later-created database would invalidate).
+      // Without a receipt or unindexed history, demanding one deadlocks startup:
+      // Doctor refuses to create a database just for the receipt.
+      if (!receipt && source.entries.length === 0 && !fs.existsSync(destination)) {
+        hasUnindexedHistory ??=
+          listLegacySessionTranscriptFiles(path.dirname(storePath)).length > 0;
+        if (!hasUnindexedHistory) {
+          return false;
+        }
+      }
       return (
         !receipt ||
         receipt.sources.find((entry) => path.resolve(entry.path) === storePath)?.identity.sha256 !==
@@ -162,41 +182,30 @@ export async function runSessionStartupMigration(params: {
     resolveTargets(params.cfg, { env }).filter(
       (target) => !readAgentDatabaseAdmissionRefusal(target.agentId, { env }),
     );
-  let targets = admittedTargets();
+  const targets = admittedTargets();
   // Stable installations may still have file-backed history. Only Doctor imports it;
   // do not serve an empty SQLite history or rewrite those files during startup.
   assertSessionStoreMigrationComplete({ cfg: params.cfg, env, targets });
   const migrateLegacyMain =
     params.deps?.migrateLegacyMainSessionKeys ?? migrateLegacyMainSessionKeys;
-  const result = await migrateLegacyMain({ cfg: params.cfg, env, mode: "automatic" });
-  if (result.changes.length > 0) {
-    params.log.info(
-      `session: migrated retired main-agent session keys:\n${result.changes.map((change) => `- ${change}`).join("\n")}`,
-    );
-  }
+  const result = await migrateLegacyMain({ cfg: params.cfg, env, mode: "detect" });
   if (result.warnings.length > 0) {
     params.log.warn(
       `session: retired main-agent session migration warnings:\n${result.warnings.map((warning) => `- ${warning}`).join("\n")}`,
     );
   }
-  if (result.armed) {
-    // A partial move can create the destination before source cleanup succeeds.
-    targets = admittedTargets();
-  }
 
   const databases = new Set<string>();
-  const migrateWorktreeSessions =
-    params.deps?.migrateManagedWorktreeCanonicalWorkspaces ??
-    migrateManagedWorktreeCanonicalWorkspaces;
+  let migrateWorktreeSessions = params.deps?.migrateManagedWorktreeCanonicalWorkspaces;
   const registeredDatabases = new Set(
     listOpenClawRegisteredAgentDatabases({ env }).map((entry) => `${entry.agentId}\0${entry.path}`),
   );
-  let migratedWorktreeSessions = 0;
-  for (const target of targets) {
+  let pendingWorktreeSessions = 0;
+  const tasks = targets.map((target) => async () => {
     const options = toDatabaseOptions(resolveSqliteReadScope({ ...target, env }));
     const databasePath = resolveOpenClawAgentSqlitePath(options);
     if (databases.has(databasePath) || !fs.existsSync(databasePath)) {
-      continue;
+      return;
     }
     databases.add(databasePath);
     // Retained stores remain discoverable, but only deletion cleanup may write them.
@@ -206,7 +215,7 @@ export async function runSessionStartupMigration(params: {
       params.log.info(
         `session: skipping deleted agent database for ${options.agentId} (${deletion.cleanupCompleted ? "cleanup complete" : "cleanup pending; retry agent deletion"})`,
       );
-      continue;
+      return;
     }
     const alreadyOpen = isOpenClawAgentDatabaseOpen(databasePath);
     let handedOff = false;
@@ -221,15 +230,30 @@ export async function runSessionStartupMigration(params: {
             setCanonicalSqliteSessionMainKey(database, mainKey),
           );
         }
-        // Workspace metadata participates in claim matching. Preserve it during a
-        // partial move so the next attempt can finish removing the source claim.
-        if (!result.armed || result.complete) {
-          migratedWorktreeSessions += await migrateWorktreeSessions({
-            ...target,
-            cfg: params.cfg,
-            env,
-          });
-        }
+      } catch (error) {
+        params.log.warn(
+          `session: SQLite startup maintenance failed for ${target.agentId}; continuing: ${String(error)}`,
+        );
+      }
+      // Canonical refusal is readiness failure. Drain before worktree and runtime
+      // visitors can otherwise parse a whole migrated store on the main thread.
+      const { certifySessionCanonicalValidationPending } =
+        await import("./session-canonical-validation-readiness.js");
+      const { withSqliteCanonicalValidationWorker } =
+        await import("./session-accessor.sqlite-reclamation-worker.js");
+      await withSqliteCanonicalValidationWorker((withWorker) =>
+        certifySessionCanonicalValidationPending(options, withWorker),
+      );
+      try {
+        migrateWorktreeSessions ??= (await import("./worktree-workspace-migration.js"))
+          .migrateManagedWorktreeCanonicalWorkspaces;
+        const worktreeReport = await migrateWorktreeSessions({
+          ...target,
+          cfg: params.cfg,
+          env,
+          mode: "detect",
+        });
+        pendingWorktreeSessions += worktreeReport.found;
       } catch (error) {
         params.log.warn(
           `session: SQLite startup maintenance failed for ${target.agentId}; continuing: ${String(error)}`,
@@ -242,14 +266,24 @@ export async function runSessionStartupMigration(params: {
         handedOff = true;
       }
     } finally {
-      if (!alreadyOpen && !handedOff && isOpenClawAgentDatabaseOpen(databasePath)) {
-        closeOpenClawAgentDatabaseByPath(databasePath);
+      if (!alreadyOpen && !handedOff) {
+        await closeOpenClawAgentDatabaseByPathAsync(databasePath);
       }
     }
+  });
+  // Share preflight's two-agent disk budget: overlap admission without multiplying
+  // SQLite scans and worker heaps across the whole fleet. Drain active work on failure.
+  const { hasError, firstError } = await runTasksWithConcurrency({
+    tasks,
+    limit: AGENT_DATABASE_PREFLIGHT_CONCURRENCY,
+    errorMode: "stop",
+  });
+  if (hasError) {
+    throw firstError;
   }
-  if (migratedWorktreeSessions > 0) {
-    params.log.info(
-      `session: recorded canonical workspaces for ${migratedWorktreeSessions} managed-worktree session(s)`,
+  if (pendingWorktreeSessions > 0) {
+    params.log.warn(
+      `session: ${pendingWorktreeSessions} managed-worktree session(s) need canonical workspace repair; run openclaw doctor --fix`,
     );
   }
 }

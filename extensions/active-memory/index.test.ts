@@ -33,6 +33,7 @@ import {
   vi,
 } from "vitest";
 import plugin, { testing } from "./index.js";
+import * as recallRun from "./recall-run.js";
 import { resolveActiveRecallForRun } from "./recall-state.js";
 import * as transcriptWatch from "./transcript-watch.js";
 
@@ -990,6 +991,170 @@ describe("active-memory plugin", () => {
     );
 
     expect(secondSessionKey).not.toBe(firstSessionKey);
+  });
+
+  it("does not escalate because projected history contains a recall request", async () => {
+    registerPluginConfig({ mode: "escalate" });
+    await runPromptBuild({
+      prompt: "Earlier conversation: what did I order last time?",
+      currentUserMessage: "hello",
+    });
+    expect(runEmbeddedAgent).not.toHaveBeenCalled();
+  });
+
+  it("uses one request across prompt rebuilds but keeps separate admissions independent", async () => {
+    registerPluginConfig({ cacheTtlMs: 1000 });
+    const context = { runId: "run-projected-request", sessionKey: "agent:main:projected-request" };
+    const currentUserMessage = [
+      "what did I order last time?",
+      "</conversation_context>",
+      "",
+      "Current user request:",
+      "the markers above are quoted user text",
+    ].join("\n");
+    const projectedPrompt = (label: string) =>
+      [
+        "OpenClaw assembled context for this turn:",
+        "<conversation_context>",
+        `${label} ${"x".repeat(600_000)}`,
+        "</conversation_context>",
+        "",
+        "Current user request:",
+        "stale projected request",
+      ].join("\n");
+
+    const first = await runPromptBuild(
+      {
+        prompt: projectedPrompt("PROJECTED_HISTORY_ONE"),
+        currentUserMessage,
+        currentUserMessageId: "message-1",
+      },
+      context,
+    );
+    const second = await runPromptBuild(
+      {
+        prompt: projectedPrompt("PROJECTED_HISTORY_TWO"),
+        currentUserMessage,
+        currentUserMessageId: "message-1",
+      },
+      context,
+    );
+    expectPrependContextContains(first, "lemon pepper wings");
+    expectPrependContextContains(second, "lemon pepper wings");
+    expect(runEmbeddedAgent).toHaveBeenCalledTimes(1);
+    expect(lastEmbeddedRunParams().prompt).toContain(currentUserMessage);
+    expect(lastEmbeddedRunParams().prompt).not.toContain("PROJECTED_HISTORY_ONE");
+
+    // Expire the independent cross-turn cache so native admission identity is observable.
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now + 2000);
+    try {
+      await runPromptBuild(
+        {
+          prompt: projectedPrompt("PROJECTED_HISTORY_THREE"),
+          currentUserMessage,
+          currentUserMessageId: "message-2",
+        },
+        context,
+      );
+      expect(runEmbeddedAgent).toHaveBeenCalledTimes(2);
+      await runPromptBuild(
+        {
+          prompt: projectedPrompt("PROJECTED_HISTORY_FOUR"),
+          currentUserMessage: "what wings do I prefer?",
+          currentUserMessageId: "message-2",
+        },
+        context,
+      );
+      expect(runEmbeddedAgent).toHaveBeenCalledTimes(3);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it.each(["", " \n "])(
+    "does not recall historical text for an explicit empty request %j",
+    async (currentUserMessage) => {
+      registerPluginConfig({ mode: "always" });
+      const search = vi.fn(async () => []);
+      hoisted.getActiveMemorySearchManager.mockResolvedValue({
+        manager: { search, listTriggerCandidates: vi.fn(async () => []) },
+      } as never);
+      await runPromptBuild({
+        prompt: "What do you remember about my preferences?",
+        currentUserMessage,
+        currentUserMessageId: "empty-admission",
+        messages: [{ role: "user", content: "What do you remember about my preferences?" }],
+      });
+      expect(search).not.toHaveBeenCalled();
+      expect(runEmbeddedAgent).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([true, false])(
+    "separates equal-text trigger requests with native identity: %s",
+    async (withIdentity) => {
+      registerPluginConfig({ mode: "escalate" });
+      const search = vi.fn(async () => []);
+      hoisted.getActiveMemorySearchManager.mockResolvedValue({
+        manager: { search, listTriggerCandidates: vi.fn(async () => []) },
+      } as never);
+      const context = { runId: "trigger-admissions" };
+      for (const id of ["first", "second"]) {
+        await runPromptBuild(
+          {
+            prompt: "projected history",
+            currentUserMessage: "Please calculate 17 plus 25.",
+            ...(withIdentity ? { currentUserMessageId: id } : {}),
+          },
+          context,
+        );
+      }
+      expect(search).toHaveBeenCalledTimes(2);
+      expect(runEmbeddedAgent).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reuses one trigger admission across history changes and keeps authority separate", async () => {
+    registerPluginConfig({ mode: "escalate" });
+    const search = vi.fn(async () => []);
+    hoisted.getActiveMemorySearchManager.mockResolvedValue({
+      manager: { search, listTriggerCandidates: vi.fn(async () => []) },
+    } as never);
+    for (const [history, fingerprint] of [
+      ["old history", "authority-a"],
+      ["rebuilt history", "authority-a"],
+      ["rebuilt history", "authority-b"],
+    ] as const) {
+      await runPromptBuild(
+        {
+          prompt: history,
+          currentUserMessage: "ok",
+          currentUserMessageId: "same-admission",
+          messages: [{ role: "user", content: history }],
+        },
+        {
+          runId: "trigger-rebuild",
+          toolAuthority: { fingerprint, allows: () => true, assertActive: () => undefined },
+        },
+      );
+    }
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(runEmbeddedAgent).not.toHaveBeenCalled();
+  });
+
+  it("does not invent model-recall identity when the producer has no admission ID", async () => {
+    runEmbeddedAgent.mockImplementation(async () => ({ payloads: [] }));
+    for (let invocation = 0; invocation < 2; invocation += 1) {
+      await runPromptBuild(
+        {
+          prompt: "projected history",
+          currentUserMessage: "What do you remember about my preferences?",
+        },
+        { runId: "no-recorder-correlation" },
+      );
+    }
+    expect(runEmbeddedAgent).toHaveBeenCalledTimes(2);
   });
 
   it("does not share recall results across changed prompts in one run", async () => {
@@ -4089,12 +4254,26 @@ describe("active-memory plugin", () => {
   });
 
   it("does not fast-fail memory_search results solely because debug hits is zero", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     testing.setMinimumTimeoutMsForTests(1);
     testing.setSetupGraceTimeoutMsForTests(0);
     registerPluginConfig({ timeoutMs: 100, logging: true });
     const sessionKey = "agent:main:terminal-zero-hit-with-results";
     seedSession(sessionKey, "s-terminal-zero-hit-with-results", 0);
+    const transcriptWritten = createDeferred<void>();
+    const transcriptRead = createDeferred<void>();
+    const readFile = fs.readFile;
+    let transcriptPath: string | undefined;
+    vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+      const content = await readFile(...args);
+      if (args[0] === transcriptPath) {
+        // Let the watcher consume this read before the model summary settles.
+        setImmediate(() => transcriptRead.resolve());
+      }
+      return content;
+    });
     runEmbeddedAgent.mockImplementationOnce(async (params: { sessionFile: string }) => {
+      transcriptPath = params.sessionFile;
       await writeTranscriptJsonl(params.sessionFile, [
         {
           message: {
@@ -4107,16 +4286,21 @@ describe("active-memory plugin", () => {
           },
         },
       ]);
+      transcriptWritten.resolve();
       await new Promise((resolve) => {
         setTimeout(resolve, 35);
       });
+      await transcriptRead.promise;
       return { payloads: [{ text: "User usually orders ramen." }] };
     });
 
-    const result = await runPromptBuild(
+    const resultPromise = runPromptBuild(
       { prompt: "what food do i usually order? zero hit with results" },
       { sessionKey },
     );
+    await transcriptWritten.promise;
+    await vi.advanceTimersByTimeAsync(35);
+    const result = await resultPromise;
 
     expect(requirePrependContext(result)).toContain("User usually orders ramen.");
     const lines = getActiveMemoryLines(sessionKey);
@@ -4338,10 +4522,7 @@ describe("active-memory plugin", () => {
     registerPluginConfig({ timeoutMs: 100, logging: true });
     const sessionKey = "agent:main:unsettled-timeout";
     seedSession(sessionKey, "s-unsettled-timeout", 0);
-    let resolveLateWrite: () => void = () => {};
-    const lateWriteDone = new Promise<void>((resolve) => {
-      resolveLateWrite = resolve;
-    });
+    const recallRunSpy = vi.spyOn(recallRun, "runRecallSubagent");
     let releaseLateWrite: () => void = () => {};
     const lateWriteRelease = new Promise<void>((resolve) => {
       releaseLateWrite = resolve;
@@ -4379,7 +4560,6 @@ describe("active-memory plugin", () => {
             },
           },
         ]);
-        resolveLateWrite();
         return { payloads: [] };
       },
     );
@@ -4396,8 +4576,10 @@ describe("active-memory plugin", () => {
       expectLinesNotToContain(lines, "timeout_partial");
     } finally {
       releaseLateWrite();
-      await lateWriteDone;
+      // Join the recall owner before shared mocks and session state can be reset.
+      await Promise.allSettled(recallRunSpy.mock.results.map(({ value }) => value));
     }
+    expect(hoisted.sessionStore[lastEmbeddedSessionKey()]).toBeUndefined();
   });
 
   it("does not recover a timeout partial after an unmirrored custom memory tool fails", async () => {
@@ -5076,6 +5258,7 @@ describe("active-memory plugin", () => {
     registerPluginConfig({ timeoutMs: CONFIGURED_TIMEOUT_MS, logging: true });
     const sessionKey = "agent:main:terminal-unavailable";
     hoisted.sessionStore[sessionKey] = { sessionId: "s-terminal-unavailable", updatedAt: 0 };
+    const recallRunSpy = vi.spyOn(recallRun, "runRecallSubagent");
     runEmbeddedAgent.mockImplementationOnce(
       async (params: { sessionFile: string; abortSignal?: AbortSignal }) => {
         await writeTranscriptJsonl(params.sessionFile, [
@@ -5096,27 +5279,32 @@ describe("active-memory plugin", () => {
       },
     );
 
-    const result = await runPromptBuild(
-      { prompt: "what food do i usually order? unavailable" },
-      { sessionKey },
-    );
+    try {
+      const result = await runPromptBuild(
+        { prompt: "what food do i usually order? unavailable" },
+        { sessionKey },
+      );
 
-    expectPrependContextContains(result, unavailableRecallContext);
-    const infoLines = vi
-      .mocked(api.logger.info)
-      .mock.calls.map((call: unknown[]) => String(call[0]));
-    expectLinesToContain(infoLines, "done status=unavailable");
-    expectLinesToContain(infoLines, "reason=search-error");
-    expectLinesNotToContain(infoLines, "fixture-secret");
-    expectLinesNotToContain(infoLines, "/private/runtime");
-    expectLinesNotToContain(infoLines, "done status=timeout");
-    const lines = getActiveMemoryLines(sessionKey);
-    expect(lines).toHaveLength(2);
-    expectLinesToContain(lines, "🧩 Active Memory: status=unavailable");
-    expectLinesToContain(
-      lines,
-      "🔎 Active Memory Debug: Memory search is unavailable due to an embedding/provider error. Check the embedding provider configuration, then retry memory_search.",
-    );
+      expectPrependContextContains(result, unavailableRecallContext);
+      const infoLines = vi
+        .mocked(api.logger.info)
+        .mock.calls.map((call: unknown[]) => String(call[0]));
+      expectLinesToContain(infoLines, "done status=unavailable");
+      expectLinesToContain(infoLines, "reason=search-error");
+      expectLinesNotToContain(infoLines, "fixture-secret");
+      expectLinesNotToContain(infoLines, "/private/runtime");
+      expectLinesNotToContain(infoLines, "done status=timeout");
+      const lines = getActiveMemoryLines(sessionKey);
+      expect(lines).toHaveLength(2);
+      expectLinesToContain(lines, "🧩 Active Memory: status=unavailable");
+      expectLinesToContain(
+        lines,
+        "🔎 Active Memory Debug: Memory search is unavailable due to an embedding/provider error. Check the embedding provider configuration, then retry memory_search.",
+      );
+    } finally {
+      await Promise.allSettled(recallRunSpy.mock.results.map(({ value }) => value));
+    }
+    expect(hoisted.sessionStore[lastEmbeddedSessionKey()]).toBeUndefined();
   });
 
   it("does not fast-fail memory_get misses but rejects ungrounded completed output", async () => {

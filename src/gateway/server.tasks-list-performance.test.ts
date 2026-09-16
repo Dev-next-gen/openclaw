@@ -183,42 +183,49 @@ describe("tasks.list Gateway performance", () => {
         );
         sortedInputLengths.length = 0;
         const accessOrder: string[] = [];
-        const visibilityPromise = new Promise<RpcResponse<Record<string, unknown>>>(
-          (resolve, reject) => {
-            setTimeout(() => {
-              void sendRpc<Record<string, unknown>>(
-                admin,
-                "session-visibility",
-                "session.visibility.set",
-                {
-                  sessionKey: FOREIGN_SESSION_KEY,
-                  agentId: "main",
-                  visibility: "draft",
-                },
-              ).then((response) => {
-                accessOrder.push("visibility");
-                resolve(response);
-              }, reject);
-            }, 50);
-          },
-        );
-        const restrictedPromise = sendRpc<TasksListResult>(viewer, "tasks-owned", "tasks.list", {
-          limit: 25,
-        }).then((response) => {
-          accessOrder.push("tasks.list");
-          return response;
-        });
-        const [restricted, visibility] = await Promise.all([restrictedPromise, visibilityPromise]);
-        expect(visibility.ok, JSON.stringify(visibility.error)).toBe(true);
-        expect(restricted.ok, JSON.stringify(restricted.error)).toBe(true);
-        expect(restricted.payload?.tasks.map((task) => task.id)).toEqual(viewerExpected);
-        expect(restricted.payload?.tasks).toHaveLength(25);
-        expect(
-          restricted.payload?.tasks.every((task) => task.sessionKey === OWNED_SESSION_KEY),
-        ).toBe(true);
-        expect(restricted.payload?.nextCursor).toEqual(expect.any(String));
-        expect(accessOrder[0]).toBe("visibility");
-        expect(Math.max(0, ...sortedInputLengths)).toBeLessThanOrEqual(25);
+        const taskRuntime = await import("../tasks/runtime-internal.js");
+        const selectPage = taskRuntime.listTaskRecordPage;
+        let visibility: RpcResponse<Record<string, unknown>> | undefined;
+        // Hold one completed selection until the real sharing RPC commits; the handler
+        // must reject that stale page and select again with current access.
+        const pageSelections = vi
+          .spyOn(taskRuntime, "listTaskRecordPage")
+          .mockImplementationOnce(async (params) => {
+            const page = await selectPage(params);
+            visibility = await sendRpc<Record<string, unknown>>(
+              admin,
+              "session-visibility",
+              "session.visibility.set",
+              {
+                sessionKey: FOREIGN_SESSION_KEY,
+                agentId: "main",
+                visibility: "draft",
+              },
+            );
+            accessOrder.push("visibility");
+            return page;
+          });
+        try {
+          const restricted = await sendRpc<TasksListResult>(viewer, "tasks-owned", "tasks.list", {
+            limit: 25,
+          }).then((response) => {
+            accessOrder.push("tasks.list");
+            return response;
+          });
+          expect(visibility?.ok, JSON.stringify(visibility?.error)).toBe(true);
+          expect(restricted.ok, JSON.stringify(restricted.error)).toBe(true);
+          expect(restricted.payload?.tasks.map((task) => task.id)).toEqual(viewerExpected);
+          expect(restricted.payload?.tasks).toHaveLength(25);
+          expect(
+            restricted.payload?.tasks.every((task) => task.sessionKey === OWNED_SESSION_KEY),
+          ).toBe(true);
+          expect(restricted.payload?.nextCursor).toEqual(expect.any(String));
+          expect(accessOrder[0]).toBe("visibility");
+          expect(Math.max(0, ...sortedInputLengths)).toBeLessThanOrEqual(25);
+          expect(pageSelections).toHaveBeenCalledTimes(2);
+        } finally {
+          pageSelections.mockRestore();
+        }
         const accessCursor = sessionCursor.split(".");
         accessCursor[3] = String(Number(accessCursor[3]) + 1);
         await expectCursorRejected(admin, "tasks-access-revision", {
@@ -372,14 +379,13 @@ describe("tasks.list Gateway performance", () => {
             loadSnapshot: () => ({ tasks: accessTasks, deliveryStates: new Map() }),
           },
         });
-        let accessChurnActive = true;
         let accessMutationCount = 0;
-        const accessChurn = async () => {
-          while (true) {
-            if (!accessChurnActive) {
-              return;
-            }
-            const nextVisibility = accessMutationCount % 2 === 0 ? "shared" : "draft";
+        // Invalidate every completed page before the handler checks access again.
+        // A free-running RPC loop can leave a stable gap between its writes.
+        const accessChurn = vi
+          .spyOn(taskRuntime, "listTaskRecordPage")
+          .mockImplementation(async (params) => {
+            const page = await selectPage(params);
             const response = await sendRpc<Record<string, unknown>>(
               admin,
               `visibility-churn-${accessMutationCount}`,
@@ -387,34 +393,33 @@ describe("tasks.list Gateway performance", () => {
               {
                 sessionKey: FOREIGN_SESSION_KEY,
                 agentId: "main",
-                visibility: nextVisibility,
+                visibility: accessMutationCount % 2 === 0 ? "shared" : "draft",
               },
             );
-            if (!response.ok) {
-              throw new Error(`visibility churn failed: ${response.error?.message}`);
-            }
+            expect(response.ok, JSON.stringify(response.error)).toBe(true);
             accessMutationCount += 1;
-          }
-        };
-        const accessChurnPromise = accessChurn();
-        const unstableAccess = await sendRpc<Record<string, unknown>>(
-          viewer,
-          "tasks-unstable-access",
-          "tasks.list",
-          { limit: 1 },
-        );
-        accessChurnActive = false;
-        await accessChurnPromise;
-        expect(accessMutationCount).toBeGreaterThanOrEqual(3);
-        expect(unstableAccess).toMatchObject({
-          ok: false,
-          error: {
-            code: "UNAVAILABLE",
-            message: "Task activity did not stabilize. Wait a moment, then refresh Tasks.",
-            retryable: true,
-            retryAfterMs: 250,
-          },
-        });
+            return page;
+          });
+        try {
+          const unstableAccess = await sendRpc<Record<string, unknown>>(
+            viewer,
+            "tasks-unstable-access",
+            "tasks.list",
+            { limit: 1 },
+          );
+          expect(accessMutationCount).toBe(3);
+          expect(unstableAccess).toMatchObject({
+            ok: false,
+            error: {
+              code: "UNAVAILABLE",
+              message: "Task activity did not stabilize. Wait a moment, then refresh Tasks.",
+              retryable: true,
+              retryAfterMs: 250,
+            },
+          });
+        } finally {
+          accessChurn.mockRestore();
+        }
       } finally {
         sortSpy.mockRestore();
         accessWork.mockRestore();

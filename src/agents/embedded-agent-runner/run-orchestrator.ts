@@ -255,6 +255,7 @@ async function runEmbeddedAgentInternal(
       let assistantErrorTranscript: ReturnType<typeof createAssistantErrorTranscript> | undefined;
       const ownsAssistantErrorTranscript = params.assistantErrorTranscript === undefined;
       const onAgentEvent = params.onAgentEvent;
+      const onAttemptStart = params.onAttemptStart;
       const runGeneration = async (): Promise<EmbeddedAgentRunResult> => {
         throwIfAborted();
         // Subscription-scoped claude-cli auth executes via the CLI backend;
@@ -349,6 +350,8 @@ async function runEmbeddedAgentInternal(
         const work = new AsyncWorkScope();
         let context = work.run(() => AsyncLocalStorage.snapshot());
         let preparedRuntimeResource: AsyncDisposable | undefined;
+        let initialWriterResource: AsyncDisposable | undefined;
+        let initialWriterCleanup = Promise.resolve();
         const runPreparedCandidate = async () => {
           // Configless direct hosts reuse one idle generation. The prepared-runtime lifecycle keeps
           // gateway run generations in its own bounded cache so one-off paths cannot accumulate.
@@ -540,10 +543,17 @@ async function runEmbeddedAgentInternal(
                     });
               const runTerminal = terminal;
               return await runPreparedEmbeddedLoop(refresh, {
+                onInitialWriterPrepared: (resource) => {
+                  initialWriterResource = resource;
+                },
                 runParams: {
                   ...params,
                   assistantErrorTranscript,
                   deferTerminalLifecycle: true,
+                  onAttemptStart: () => {
+                    runTerminal?.beginAttempt();
+                    onAttemptStart?.();
+                  },
                   onAgentEvent: runTerminal
                     ? (event) => {
                         runTerminal.note(event);
@@ -590,6 +600,13 @@ async function runEmbeddedAgentInternal(
                 )
               : await runWithPreparedRuntime();
           } finally {
+            const initialWriter = initialWriterResource;
+            if (initialWriter) {
+              initialWriterCleanup = context(() =>
+                work.track(async () => await initialWriter[Symbol.asyncDispose]()),
+              );
+              void initialWriterCleanup.catch(() => {});
+            }
             preparedLeaseActive = false;
           }
         };
@@ -612,7 +629,11 @@ async function runEmbeddedAgentInternal(
               );
             } finally {
               try {
-                await preparedRuntimeResource?.[Symbol.asyncDispose]();
+                try {
+                  await initialWriterCleanup;
+                } finally {
+                  await preparedRuntimeResource?.[Symbol.asyncDispose]();
+                }
               } finally {
                 parentSignal?.removeEventListener("abort", closeWork);
               }
@@ -674,11 +695,15 @@ async function runEmbeddedAgentInternal(
         }
         refresh.mergeTerminalReceipt(result);
         const error = result.meta.error?.message ?? terminal?.getDeferredError();
-        terminal?.emit(
-          error ? "error" : "end",
-          error ? new Error(error) : result,
-          resolveAgentLifecycleTerminalMetadata(result.meta),
-        );
+        terminal?.emit(error ? "error" : "end", error ? new Error(error) : result, {
+          ...resolveAgentLifecycleTerminalMetadata(result.meta),
+          ...(result.meta.agentMeta?.terminalReceipt
+            ? {
+                assistantTranscriptIdempotencyKey:
+                  result.meta.agentMeta.terminalReceipt.assistantTranscriptIdempotencyKey,
+              }
+            : {}),
+        });
         return result;
       } catch (error) {
         terminal?.emit("error", error);

@@ -98,8 +98,9 @@ function historyMessages() {
   }));
 }
 
-async function openQuestionPage(viewport = { height: 900, width: 1440 }) {
+async function openQuestionPage(viewport = { height: 900, width: 1440 }, hasTouch = false) {
   context = await suite.browser.newContext({
+    hasTouch,
     locale: "en-US",
     serviceWorkers: "block",
     viewport,
@@ -167,7 +168,8 @@ function panelFor(page: Page, prompt: string) {
   return page.locator("openclaw-chat-question-panel").filter({ hasText: prompt });
 }
 
-async function expectQuestionAttention(page: Page, present: boolean): Promise<void> {
+async function expectQuestionAttention(page: Page, preview: string | null): Promise<void> {
+  const present = preview !== null;
   const session = page.locator(`[data-session-key="${questionSessionKey}"]`).first();
   const questionAttention = session.locator('[data-session-attention="question"]');
   const expectedCount = present ? 1 : 0;
@@ -177,11 +179,12 @@ async function expectQuestionAttention(page: Page, present: boolean): Promise<vo
       .poll(() =>
         questionAttention.evaluate(
           (element) =>
-            (element.closest("openclaw-tooltip") as (HTMLElement & { content?: string }) | null)
-              ?.content,
+            element
+              .closest("openclaw-tooltip")
+              ?.querySelector(".sidebar-session-attention-tooltip__preview")?.textContent,
         ),
       )
-      .toBe("Waiting for your answer");
+      .toBe(preview);
     await expect.poll(() => session.locator(".sidebar-recent-session__subtitle").count()).toBe(0);
   }
 }
@@ -212,6 +215,52 @@ suite.define(() => {
   afterEach(async () => {
     await context?.close().catch(() => {});
     context = undefined;
+  });
+
+  it("reveals sidebar attention on touch without navigating or closing the drawer", async () => {
+    const { gateway, page } = await openQuestionPage({ width: 390, height: 844 }, true);
+    const request = questionRecord("sidebar-touch-question", [
+      {
+        questionId: "environment",
+        header: "Environment",
+        question: "Which environment should I use for the preview?",
+        options: [{ label: "Staging" }, { label: "Production" }],
+        isOther: false,
+      },
+    ]);
+    await emitRequested(gateway, request);
+    await expectQuestionAttention(page, request.questions[0]!.question);
+    await page.locator(".topbar-nav-toggle:visible, .chat-pane__nav-toggle:visible").first().tap();
+    const row = page.locator(`[data-session-key="${questionSessionKey}"]`).first();
+    const shell = page.locator(".shell");
+    const attention = row.locator('[data-session-attention="question"]');
+    const tooltip = row.locator("openclaw-tooltip wa-tooltip[open]");
+    const route = page.url();
+
+    await attention.tap();
+    try {
+      await expect.poll(() => tooltip.count()).toBe(1);
+    } finally {
+      await screenshot(page, "01-sidebar-attention-tapped.png");
+    }
+    expect(await shell.getAttribute("class")).toContain("shell--nav-drawer-open");
+    expect(page.url()).toBe(route);
+    expect(await row.getByText(request.questions[0]!.question, { exact: true }).isVisible()).toBe(
+      true,
+    );
+    expect(await gateway.getRequests("question.resolve")).toHaveLength(0);
+
+    await attention.tap();
+    await expect.poll(() => tooltip.count()).toBe(0);
+    expect(await shell.getAttribute("class")).toContain("shell--nav-drawer-open");
+    await attention.tap();
+    await expect.poll(() => tooltip.count()).toBe(1);
+    await page.keyboard.press("Escape");
+    await expect.poll(() => tooltip.count()).toBe(0);
+    expect(await shell.getAttribute("class")).toContain("shell--nav-drawer-open");
+
+    await row.locator(".sidebar-recent-session__link").tap();
+    await expect.poll(() => shell.getAttribute("class")).not.toContain("shell--nav-drawer-open");
   });
 
   it("opens an external question step without answering until completion is submitted", async () => {
@@ -251,7 +300,7 @@ suite.define(() => {
     await screenshot(popup, "02-external-step-opened.png");
     await popup.close();
     await panel.waitFor();
-    await expectQuestionAttention(page, true);
+    await expectQuestionAttention(page, request.questions[0]!.question);
     expect(await gateway.getRequests("question.resolve")).toHaveLength(0);
     expect(await panel.getByRole("button", { name: "Submit", exact: true }).isDisabled()).toBe(
       true,
@@ -278,7 +327,7 @@ suite.define(() => {
     expect(resolved.params).toEqual({ id: request.id, answers });
     expect(await gateway.getRequests("question.resolve")).toHaveLength(1);
     await expect.poll(() => panel.count()).toBe(0);
-    await expectQuestionAttention(page, false);
+    await expectQuestionAttention(page, null);
     await screenshot(page, "04-external-step-completed.png");
   });
 
@@ -462,7 +511,7 @@ suite.define(() => {
     await emitRequested(gateway, request);
     const panel = panelFor(page, "Where should I deploy?");
     await panel.waitFor();
-    await expectQuestionAttention(page, true);
+    await expectQuestionAttention(page, request.questions[0]!.question);
     await expect
       .poll(() => page.locator(".chat-thread openclaw-chat-question-panel").count())
       .toBe(0);
@@ -533,7 +582,7 @@ suite.define(() => {
     expect(resolveRequest.params).toEqual({ id: request.id, answers });
 
     await expect.poll(() => panel.count()).toBe(0);
-    await expectQuestionAttention(page, false);
+    await expectQuestionAttention(page, null);
     const summary = page.locator(".chat-question-summary").filter({ hasText: "Deploy:" });
     await summary.waitFor();
     await expect
@@ -741,7 +790,7 @@ suite.define(() => {
     await emitRequested(gateway, request);
     const panel = panelFor(page, "Should I continue the deployment?");
     await panel.waitFor();
-    await expectQuestionAttention(page, true);
+    await expectQuestionAttention(page, request.questions[0]!.question);
     await gateway.setMethodResponse("question.resolve", {
       status: "cancelled",
     } satisfies QuestionResolveResult);
@@ -750,7 +799,7 @@ suite.define(() => {
     const resolveRequest = await gateway.waitForRequest("question.resolve");
     expect(resolveRequest.params).toEqual({ id: request.id, cancel: true });
     await expect.poll(() => panel.count()).toBe(0);
-    await expectQuestionAttention(page, false);
+    await expectQuestionAttention(page, null);
     await page.locator(".agent-chat__composer-combobox textarea").waitFor();
     await expect
       .poll(() => page.locator(".chat-question-summary").filter({ hasText: "Skipped" }).count())
@@ -792,7 +841,7 @@ suite.define(() => {
       await emitRequested(gateway, request);
       const panels = panelFor(page, "Where should both panes deploy?");
       await expect.poll(() => panels.count()).toBe(2);
-      await expectQuestionAttention(page, true);
+      await expectQuestionAttention(page, request.questions[0]!.question);
 
       const answers = { answers: { deploy_target: ["Staging"] } };
       const result: QuestionResolveResult =
@@ -820,7 +869,7 @@ suite.define(() => {
       if (closeSubmittingPane) {
         await submittingPane.getByRole("button", { name: "Close pane", exact: true }).click();
         await expect.poll(() => remainingPanes.count()).toBe(1);
-        await expectQuestionAttention(page, true);
+        await expectQuestionAttention(page, request.questions[0]!.question);
         await gateway.resolveDeferred("question.resolve", result);
       }
       const remainingCount = closeSubmittingPane ? 1 : 2;
@@ -837,7 +886,7 @@ suite.define(() => {
             .count(),
         )
         .toBe(remainingCount);
-      await expectQuestionAttention(page, false);
+      await expectQuestionAttention(page, null);
     },
   );
 
@@ -858,7 +907,7 @@ suite.define(() => {
     await emitRequested(gateway, request);
     const panel = panelFor(page, "Where should I deploy after reconnecting?");
     await panel.waitFor();
-    await expectQuestionAttention(page, true);
+    await expectQuestionAttention(page, request.questions[0]!.question);
     await expect.poll(() => favicon.getAttribute("href")).toMatch(/^data:image\/svg\+xml,/);
 
     await gateway.setMethodResponse("question.list", { questions: [] });
@@ -874,7 +923,7 @@ suite.define(() => {
     expect(recovery.params).toEqual({ id: request.id });
 
     await expect.poll(() => panel.count()).toBe(0);
-    await expectQuestionAttention(page, false);
+    await expectQuestionAttention(page, null);
     await page.locator(".agent-chat__composer-combobox textarea").waitFor();
     await expect.poll(() => favicon.getAttribute("href")).toBe(originalFavicon);
   });

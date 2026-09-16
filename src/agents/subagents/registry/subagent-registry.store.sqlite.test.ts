@@ -5,7 +5,8 @@ import path from "node:path";
 import { DatabaseSync, constants } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { sql } from "kysely";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as sqliteQueries from "../../../infra/kysely-sync.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../../infra/kysely-sync.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../../state/openclaw-state-db.generated.js";
 import {
@@ -14,12 +15,19 @@ import {
 } from "../../../state/openclaw-state-db.js";
 import { withEnvAsync } from "../../../test-utils/env.js";
 import {
+  clearSubagentRunsReadCacheForTest,
+  getSubagentRunsSnapshotForRead,
+  getSubagentSessionListRunsSnapshotForRead,
+  getSubagentSessionListRunsSnapshotForSessions,
+  persistSubagentRunsToDiskOrThrow,
+} from "./subagent-registry-state.js";
+import {
   readSubagentRun,
   loadSubagentRunsForChildSessionFromSqlite,
   loadSubagentRunsForControllerFromSqlite,
   loadSubagentRegistryFromSqlite,
   loadSubagentSessionListRunsFromSqlite,
-  loadSubagentSessionListRunsForSessionsFromSqlite,
+  loadSubagentRunsForSessionsFromSqlite,
   saveSubagentRegistryChangesToSqlite,
   saveSubagentRegistryToSqlite,
 } from "./subagent-registry.store.sqlite.js";
@@ -145,58 +153,169 @@ describe("subagent registry sqlite store", () => {
     return await withEnvAsync({ OPENCLAW_STATE_DIR: tempStateDir }, fn);
   }
 
-  it("keeps identity selection and metadata in one snapshot across an external move", async () => {
-    await withTempStateEnv(async () => {
-      const run = createRun({ model: "original-model" });
-      saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
-      const { db, path: databasePath } = openOpenClawStateDatabase();
-      const writer = new DatabaseSync(databasePath);
-      let moved = false;
-      db.setAuthorizer((action, table, column) => {
-        if (
-          !moved &&
-          action === constants.SQLITE_READ &&
-          table === "subagent_runs" &&
-          column === "payload_json"
-        ) {
-          moved = true;
-          writer
-            .prepare(
-              "UPDATE subagent_runs SET requester_session_key = ?, payload_json = ? WHERE run_id = ?",
-            )
-            .run(
-              "agent:main:other",
-              JSON.stringify({ ...run, model: "replacement-model" }),
-              run.runId,
-            );
-        }
-        return constants.SQLITE_OK;
-      });
-      try {
-        const before = loadSubagentSessionListRunsForSessionsFromSqlite(
-          [run.requesterSessionKey],
-          [],
-        );
-        expect(moved).toBe(true);
-        expect(before.runs.get(run.runId)).toMatchObject({
-          requesterSessionKey: run.requesterSessionKey,
-          model: "original-model",
+  it.each(["empty", "whole"] as const)(
+    "reuses a complete %s compact tree with isolated full records and owner writes",
+    async (kind) => {
+      await withTempStateEnv(async () => {
+        await withEnvAsync({ OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE: "1" }, async () => {
+          const run = createRun({ model: "original-model" });
+          const keys = [run.requesterSessionKey];
+          saveSubagentRegistryToSqlite(kind === "empty" ? new Map() : new Map([[run.runId, run]]));
+          const now = Date.now();
+          const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+          const queries = vi.spyOn(sqliteQueries, "executeSqliteQuerySync");
+          clearSubagentRunsReadCacheForTest();
+          try {
+            const first = getSubagentSessionListRunsSnapshotForSessions(new Map(), keys);
+            expect(first.size).toBe(kind === "empty" ? 0 : 1);
+            expect(queries).toHaveBeenCalled();
+            queries.mockClear();
+            expect(getSubagentSessionListRunsSnapshotForSessions(new Map(), keys)).toEqual(first);
+            expect(getSubagentSessionListRunsSnapshotForRead(new Map(), keys)).toEqual(first);
+            expect(queries).not.toHaveBeenCalled();
+
+            const replaced = { ...run, model: "updated-model" };
+            persistSubagentRunsToDiskOrThrow(new Map([[run.runId, replaced]]), [run.runId]);
+            expect(getSubagentRunsSnapshotForRead(new Map()).get(run.runId)).toMatchObject({
+              model: replaced.model,
+              task: run.task,
+              completion: run.completion,
+              delivery: run.delivery,
+            });
+            queries.mockClear();
+            clock.mockReturnValue(now + 60_000);
+            const refreshed = getSubagentSessionListRunsSnapshotForSessions(new Map(), keys);
+            expect(refreshed.get(run.runId)?.model).toBe(replaced.model);
+            expect(refreshed.get(run.runId)).not.toHaveProperty("task");
+            expect(refreshed.get(run.runId)).not.toHaveProperty("completion");
+            expect(queries).not.toHaveBeenCalled();
+
+            const moved = { ...replaced, controllerSessionKey: "agent:main:other" };
+            const live = new Map([[run.runId, moved]]);
+            expect(getSubagentSessionListRunsSnapshotForRead(live, keys).size).toBe(0);
+            expect(
+              getSubagentSessionListRunsSnapshotForRead(live, [moved.controllerSessionKey]).get(
+                run.runId,
+              )?.model,
+            ).toBe(replaced.model);
+
+            const published = { ...replaced, model: "published-model" };
+            persistSubagentRunsToDiskOrThrow(new Map([[run.runId, published]]), [run.runId]);
+            expect(
+              getSubagentSessionListRunsSnapshotForSessions(new Map(), keys).get(run.runId)?.model,
+            ).toBe(published.model);
+            expect(getSubagentRunsSnapshotForRead(new Map()).get(run.runId)?.task).toBe(run.task);
+            expect(loadSubagentRegistryFromSqlite().get(run.runId)?.model).toBe(published.model);
+            persistSubagentRunsToDiskOrThrow(new Map(), [run.runId]);
+            expect(getSubagentSessionListRunsSnapshotForRead(new Map(), keys).size).toBe(0);
+            expect(getSubagentRunsSnapshotForRead(new Map()).size).toBe(0);
+            expect(loadSubagentRegistryFromSqlite().size).toBe(0);
+          } finally {
+            queries.mockRestore();
+            clock.mockRestore();
+            clearSubagentRunsReadCacheForTest();
+          }
         });
-        db.setAuthorizer(null);
-        expect(
-          loadSubagentSessionListRunsForSessionsFromSqlite([run.requesterSessionKey], []).runs.size,
-        ).toBe(0);
-        expect(
-          loadSubagentSessionListRunsForSessionsFromSqlite(["agent:main:other"], []).runs.get(
-            run.runId,
-          )?.model,
-        ).toBe("replacement-model");
-      } finally {
-        db.setAuthorizer(null);
-        writer.close();
-      }
-    });
-  });
+      });
+    },
+  );
+
+  it.each([false, true])(
+    "keeps partial trees out of the complete compact snapshot, including run-ID collisions (%s)",
+    async (collision) => {
+      await withTempStateEnv(async () => {
+        await withEnvAsync({ OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE: "1" }, async () => {
+          const selected = createRun();
+          const other = createRun({
+            runId: "other",
+            childSessionKey: "agent:main:subagent:other",
+            requesterSessionKey: "agent:main:other",
+            createdAt: 200,
+          });
+          const unrelated = { ...other, runId: "unrelated" };
+          saveSubagentRegistryToSqlite(
+            new Map([selected, other, unrelated].map((run) => [run.runId, run])),
+          );
+          if (collision) {
+            openOpenClawStateDatabase()
+              .db.prepare("UPDATE subagent_runs SET run_id = ? WHERE run_id = ?")
+              .run(` ${selected.runId} `, other.runId);
+          }
+          const queries = vi.spyOn(sqliteQueries, "executeSqliteQuerySync");
+          clearSubagentRunsReadCacheForTest();
+          try {
+            const tree = getSubagentSessionListRunsSnapshotForSessions(new Map(), [
+              selected.requesterSessionKey,
+            ]);
+            expect([...tree.keys()]).toEqual(collision ? [] : [selected.runId]);
+            queries.mockClear();
+            const all = getSubagentSessionListRunsSnapshotForRead(new Map());
+            expect(queries).toHaveBeenCalled();
+            expect(all.has(unrelated.runId)).toBe(true);
+            expect(all.get(selected.runId)?.childSessionKey).toBe(
+              collision ? other.childSessionKey : selected.childSessionKey,
+            );
+          } finally {
+            queries.mockRestore();
+            clearSubagentRunsReadCacheForTest();
+          }
+        });
+      });
+    },
+  );
+
+  it.each([
+    [
+      "session-list",
+      (keys: readonly string[]) => loadSubagentRunsForSessionsFromSqlite(keys, [], "session-list"),
+    ],
+    ["full", (keys: readonly string[]) => loadSubagentRunsForSessionsFromSqlite(keys, [], "full")],
+  ] as const)(
+    "keeps %s identity selection and records in one snapshot across an external move",
+    async (_kind, read) => {
+      await withTempStateEnv(async () => {
+        const run = createRun({ model: "original-model" });
+        saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
+        const { db, path: databasePath } = openOpenClawStateDatabase();
+        const writer = new DatabaseSync(databasePath);
+        let moved = false;
+        db.setAuthorizer((action, table, column) => {
+          if (
+            !moved &&
+            action === constants.SQLITE_READ &&
+            table === "subagent_runs" &&
+            column === "payload_json"
+          ) {
+            moved = true;
+            writer
+              .prepare(
+                "UPDATE subagent_runs SET requester_session_key = ?, payload_json = ? WHERE run_id = ?",
+              )
+              .run(
+                "agent:main:other",
+                JSON.stringify({ ...run, model: "replacement-model" }),
+                run.runId,
+              );
+          }
+          return constants.SQLITE_OK;
+        });
+        try {
+          const before = read([run.requesterSessionKey]);
+          expect(moved).toBe(true);
+          expect(before.runs.get(run.runId)).toMatchObject({
+            requesterSessionKey: run.requesterSessionKey,
+            model: "original-model",
+          });
+          db.setAuthorizer(null);
+          expect(read([run.requesterSessionKey]).runs.size).toBe(0);
+          expect(read(["agent:main:other"]).runs.get(run.runId)?.model).toBe("replacement-model");
+        } finally {
+          db.setAuthorizer(null);
+          writer.close();
+        }
+      });
+    },
+  );
 
   it.each(["pending", "in_progress", "delivered", "failed", "suspended"] as const)(
     "preserves private %s handoffs across every current reader and restart",

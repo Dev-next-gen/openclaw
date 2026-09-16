@@ -337,6 +337,19 @@ describe("filtered sidebar session event refresh", () => {
         );
         expect(controller.sessionsResult?.sessions).toHaveLength(pageSize);
 
+        // A mutation of the previous agent can settle after this selection.
+        await controller.refreshSidebarSessions("main");
+        controller.hostUpdated();
+        expect(list).toHaveBeenLastCalledWith(
+          expect.objectContaining({ agentId: "main", involvingMe: true }),
+        );
+        expect(controller.sessionsAgentId).toBe("research");
+        await controller.loadMoreSidebarSessions();
+        expect(list).toHaveBeenLastCalledWith(
+          expect.objectContaining({ agentId: "research", involvingMe: true, offset: pageSize }),
+        );
+        expect(controller.sessionsResult?.sessions).toHaveLength(pageSize * 2);
+
         await selectMembership({ ownerId: "profile-ada", involvingMe: false });
         expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ ownerId: "profile-ada" }));
         expect(list.mock.lastCall?.[0]?.involvingMe).toBeUndefined();
@@ -695,7 +708,9 @@ describe("filtered sidebar session event refresh", () => {
     expect(list).toHaveBeenCalledOnce();
 
     resolveFirstRefresh(refreshedPage);
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(list).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
 
     expect(list).toHaveBeenCalledTimes(2);
     expect(controller.sessionsResult?.sessions[0]?.updatedAt).toBe(2);

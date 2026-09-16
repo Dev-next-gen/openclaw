@@ -8,12 +8,15 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
+import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { runScopedSqliteArchiveOperation } from "./session-accessor.sqlite-archive-session.js";
 import type {
   MaterializedSessionStateDeletePlan,
   SessionStateDeletePlan,
   TranscriptArchivePublishPlan,
   TranscriptArchivePublishResult,
+  TranscriptArchiveReadPlan,
+  TranscriptArchiveReadResult,
   TranscriptArchiveWorkerPlan,
   TranscriptArchiveWorkerResult,
 } from "./session-accessor.sqlite-archive-types.js";
@@ -22,6 +25,7 @@ import {
   readSessionStateDeleteSnapshot,
   sqliteSessionStateDeleteSnapshotsEqual,
 } from "./session-accessor.sqlite-delete-snapshot.js";
+import { withSqliteMutationWorkerCoordination } from "./session-accessor.sqlite-worker-coordination.js";
 import {
   runSqliteMutationWorkerRequest,
   type SqliteMutationWorkerValidationOwner,
@@ -59,8 +63,17 @@ type TranscriptArchiveWorkerOperation<Result> =
     };
 
 function spawnSqliteTranscriptArchiveWorkerOperation<Result>(
-  params: TranscriptArchiveWorkerOperation<Result>,
+  input: TranscriptArchiveWorkerOperation<Result>,
 ): Promise<Result[]> {
+  const params =
+    input.expectedMessageType === "reclaimed"
+      ? {
+          ...input,
+          stateContext: captureOpenClawStateWorkerContext({
+            env: input.workerData.plan.databaseOptions.env,
+          }),
+        }
+      : input;
   let worker: Worker;
   try {
     worker = createSqliteTranscriptArchiveWorker(params.workerData);
@@ -76,17 +89,28 @@ function spawnSqliteTranscriptArchiveWorkerOperation<Result>(
       params.diagnostics.workerThreadId = workerThreadId;
     }
     // Cold mutations retain their one-shot cleanup/exit lifetime, never a sweep connection.
-    const operation = runSqliteMutationWorkerRequest<Result>({
+    const operation = withSqliteMutationWorkerCoordination(
+      params.stateContext,
       worker,
-      operationId: 0,
-      completion: "exit",
-      onCommitRequest: params.onCommitRequest,
-      withWriteAdmission: params.withWriteAdmission,
-      validationOwner: params.validationOwner,
-      onExit: (code) => {
-        exitCode = code;
-      },
-    }).then((result) => [result]);
+      0,
+      (coordination) =>
+        runSqliteMutationWorkerRequest<Result>({
+          worker,
+          operationId: 0,
+          completion: "exit",
+          onCommitRequest: params.onCommitRequest,
+          withWriteAdmission: params.withWriteAdmission,
+          validationOwner: params.validationOwner,
+          onExit: (code) => {
+            exitCode = code;
+          },
+          dispatch: () =>
+            worker.postMessage(
+              { type: "mutate", coordination },
+              coordination.stateLifecycle ? [coordination.stateLifecycle] : [],
+            ),
+        }),
+    ).then((result) => [result]);
     const observe = (outcome: "resolved" | "rejected") => {
       const elapsedMs = Math.round(performance.now() - startedAt);
       if (elapsedMs >= 1_000) {
@@ -208,6 +232,24 @@ export function runSqliteTranscriptArchivePublishWorker(
     expectedMessageType: "published",
     workerData: { operation: "publish", type: "sqlite-transcript-archive-v2", plans },
   });
+}
+
+export async function runSqliteTranscriptArchiveReadWorker(
+  plans: readonly TranscriptArchiveReadPlan[],
+): Promise<TranscriptArchiveReadResult[]> {
+  const scoped = runScopedSqliteArchiveOperation(
+    { operation: "read-final", plans },
+    createSqliteTranscriptArchiveWorker,
+    runExclusiveSqliteTranscriptArchiveWorker,
+  );
+  if (!scoped) {
+    throw new Error("SQLite archive reads require their captured database scope");
+  }
+  const result = await scoped;
+  if (result.type !== "final-read") {
+    throw new Error("SQLite archive Worker returned another operation's result");
+  }
+  return result.results;
 }
 
 function validateEmptyTranscriptArchivePlan(plan: TranscriptArchiveWorkerPlan): void {

@@ -2,21 +2,18 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { validatePluginCategories } from "../../packages/plugin-package-contract/src/index.js";
 import {
-  createClawHubError,
-  decodeClawHubResponseBody,
   fetchClawHubJson,
-  readClawHubBytes,
+  isClawHubTelemetryDisabled,
   readClawHubStringArrayField,
   readClawHubStringField,
   readRequiredClawHubBooleanField as readRequiredBoolean,
   readRequiredClawHubNumberField,
   readRequiredClawHubStringField,
   resolveClawHubImageUrl,
-  withClawHubResponse,
   type ClawHubFetch,
 } from "./clawhub-client.js";
 import {
-  fetchClawHubPackageSecurity,
+  parseClawHubPackageSecurityResponse,
   type ClawHubPackageSecurityResponse,
 } from "./clawhub-packages.js";
 
@@ -41,11 +38,13 @@ export type ClawHubPluginCatalogEntry = {
 };
 
 export type ClawHubPluginDetail = ClawHubPluginCatalogEntry & {
-  owner?: { handle?: string; displayName?: string; imageUrl?: string };
+  owner?: { handle?: string; displayName?: string; imageUrl?: string; official?: boolean };
   topics: string[];
   createdAt?: number;
   updatedAt?: number;
   readme?: string;
+  repositoryUrl?: string;
+  documentationUrl?: string;
   compatibility?: ClawHubPluginCompatibility;
   configFields: ClawHubPluginConfigField[];
   mcpServers: string[];
@@ -428,6 +427,7 @@ function projectSecurity(value: ClawHubPackageSecurityResponse): ClawHubPluginSe
         : (moderationStatus ?? trust.scanStatus ?? "unknown");
   return {
     status,
+    ...(value.verdict ? { verdict: value.verdict } : {}),
     auditUrl: value.securityAuditUrl,
     summary: value.overview,
   };
@@ -451,45 +451,10 @@ function parseVersions(value: unknown): ClawHubPluginVersion[] {
   });
 }
 
-async function fetchOptionalReadme(
-  params: ClawHubReadOptions & { packageName: string; version?: string },
-): Promise<string | undefined> {
-  return await withClawHubResponse(
-    {
-      baseUrl: params.baseUrl,
-      token: params.token,
-      skipAuth: params.skipAuth,
-      timeoutMs: params.timeoutMs,
-      fetchImpl: params.fetchImpl,
-      path: `/api/v1/packages/${encodeURIComponent(params.packageName)}/file`,
-      search: {
-        path: "README.md",
-        preview: "1",
-        version: params.version,
-      },
-      headers: { Accept: "text/plain" },
-    },
-    async ({ response, url, hasToken }) => {
-      if ([403, 404, 415, 423].includes(response.status)) {
-        return undefined;
-      }
-      if (!response.ok) {
-        throw await createClawHubError(response, url, hasToken, params.timeoutMs);
-      }
-      const bytes = await readClawHubBytes({
-        response,
-        maxBytes: 512 * 1024,
-        timeoutMs: params.timeoutMs,
-        resourceLabel: `${url.pathname} README`,
-      });
-      return decodeClawHubResponseBody(bytes);
-    },
-  );
-}
-
 export async function fetchClawHubPluginCatalog(
   params: ClawHubReadOptions & {
     query?: string;
+    searchSource?: "openclaw-control-ui";
     intent?: "all" | "trending" | "official" | "featured";
     category?: string;
     cursor?: string;
@@ -504,11 +469,15 @@ export async function fetchClawHubPluginCatalog(
     fetchImpl: params.fetchImpl,
   };
   if (query) {
+    const searchSource = isClawHubTelemetryDisabled() ? undefined : params.searchSource;
     const value = await fetchClawHubJson<unknown>({
       ...shared,
       path: "/api/v1/plugins/search",
+      // Marked searches record demand; replay could duplicate a committed observation.
+      retryTransientReads: searchSource === undefined,
       search: {
         q: query,
+        searchSource,
         category: params.category,
         isOfficial: params.intent === "official" ? "true" : undefined,
         limit: params.limit ? String(params.limit) : undefined,
@@ -628,9 +597,11 @@ export async function fetchClawHubPluginDetail(
   const value = await fetchClawHubJson<unknown>({
     baseUrl: params.baseUrl,
     token: params.token,
+    skipAuth: params.skipAuth,
     timeoutMs: params.timeoutMs,
     fetchImpl: params.fetchImpl,
-    path: `/api/v1/packages/${encodeURIComponent(params.packageName)}`,
+    path: `/api/v1/packages/${encodeURIComponent(params.packageName)}/detail`,
+    search: { version: params.version },
   });
   if (!isRecord(value)) {
     throw new Error("Malformed ClawHub plugin detail response: expected an object.");
@@ -657,42 +628,19 @@ export async function fetchClawHubPluginDetail(
     ? readClawHubStringField(ownerRecord, "image", "plugin owner")
     : undefined;
 
-  const shared = {
-    baseUrl: params.baseUrl,
-    token: params.token,
-    timeoutMs: params.timeoutMs,
-    fetchImpl: params.fetchImpl,
-  };
-  const version = params.version ?? catalog.latestVersion;
-  const [versionsValue, versionValue, readme, security] = await Promise.all([
-    fetchClawHubJson<unknown>({
-      ...shared,
-      path: `/api/v1/packages/${encodeURIComponent(params.packageName)}/versions`,
-      search: { limit: "10" },
-    }),
-    version
-      ? fetchClawHubJson<unknown>({
-          ...shared,
-          path: `/api/v1/packages/${encodeURIComponent(params.packageName)}/versions/${encodeURIComponent(version)}`,
-        })
-      : Promise.resolve(undefined),
-    fetchOptionalReadme({ ...shared, packageName: params.packageName, version }),
-    version
-      ? fetchClawHubPackageSecurity({
-          ...shared,
-          name: params.packageName,
-          version,
-        })
-          .then(projectSecurity)
-          .catch(() => undefined)
-      : Promise.resolve(undefined),
-  ]);
-  if (versionValue !== undefined && !isRecord(versionValue)) {
-    throw new Error("Malformed ClawHub plugin version response: expected an object.");
+  const versionRecord = readOptionalRecord(value, "version", "plugin detail response");
+  const readme = readClawHubStringField(value, "readme", "plugin detail response");
+  if (readme && Buffer.byteLength(readme, "utf8") > 512 * 1024) {
+    throw new Error("ClawHub plugin README exceeded 524288 bytes.");
   }
-  const versionRecord = versionValue
-    ? readOptionalRecord(versionValue, "version", "plugin version response")
-    : undefined;
+  let security: ClawHubPluginSecurity | undefined;
+  if (value.security != null) {
+    try {
+      security = projectSecurity(parseClawHubPackageSecurityResponse(value.security));
+    } catch {
+      // Security metadata is optional; malformed audit data must not hide the package.
+    }
+  }
   const manifest = parseManifest(
     versionRecord
       ? readOptionalRecord(versionRecord, "pluginManifestSummary", "plugin version")
@@ -707,6 +655,7 @@ export async function fetchClawHubPluginDetail(
     ...(ownerHandle ? { handle: ownerHandle } : {}),
     ...(ownerDisplayName ? { displayName: ownerDisplayName } : {}),
     ...(ownerImageUrl ? { imageUrl: ownerImageUrl } : {}),
+    ...(typeof ownerRecord?.official === "boolean" ? { official: ownerRecord.official } : {}),
   };
   return {
     ...catalog,
@@ -716,13 +665,14 @@ export async function fetchClawHubPluginDetail(
     ...(createdAt !== undefined ? { createdAt } : {}),
     ...(updatedAt !== undefined ? { updatedAt } : {}),
     ...(readme ? { readme } : {}),
+    ...(verification?.sourceRepo ? { repositoryUrl: verification.sourceRepo } : {}),
     ...((manifest.compatibility ?? packageCompatibility)
       ? { compatibility: manifest.compatibility ?? packageCompatibility }
       : {}),
     configFields: manifest.configFields,
     mcpServers: manifest.mcpServers,
     skills: manifest.skills,
-    versions: parseVersions(versionsValue),
+    versions: parseVersions(value.versions),
     ...(verification ? { verification } : {}),
     ...(security ? { security } : {}),
   };

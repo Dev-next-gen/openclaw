@@ -6,6 +6,7 @@ import fs from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { CANCEL_SYMBOL, isCancel } from "@clack/core";
 import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { Command } from "commander";
@@ -54,6 +55,7 @@ import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contra
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { captureEnv, withEnvAsync } from "../test-utils/env.js";
+import { createCommandResult as commandResult } from "../test-utils/npm-spec-install-test-helpers.js";
 import { getFreePort } from "../test-utils/ports.js";
 import type { TempHomeEnv } from "../test-utils/temp-home.js";
 import { VERSION } from "../version.js";
@@ -74,7 +76,6 @@ const confirm = vi.fn();
 const select = vi.fn();
 const text = vi.fn();
 const spinner = vi.fn(() => ({ start: vi.fn(), stop: vi.fn(), clear: vi.fn() }));
-const isCancel = (value: unknown) => value === "cancel";
 const triageCommand = vi.fn<typeof import("../commands/triage.js").triageCommand>();
 const triageAfterFailure =
   vi.fn<typeof import("../commands/triage-failure.js").triageAfterFailure>();
@@ -105,6 +106,9 @@ const managedUpdateHandoff = vi.hoisted(() => ({
   cancel: vi.fn(),
 }));
 const candidateValidation = vi.hoisted(() => vi.fn());
+const sourceRuntimeCompletion = vi.hoisted(() =>
+  vi.fn<typeof import("./update-cli/update-command-runtime.js").completeSourceUpdateRuntime>(),
+);
 const pluginAvailabilityPreflight = vi.hoisted(() => vi.fn());
 vi.mock("./update-cli/update-command-plugin-preflight.js", () => ({
   preflightConfiguredNpmPluginTargets: pluginAvailabilityPreflight,
@@ -205,6 +209,11 @@ vi.mock("../infra/update-repair-agent.js", () => ({
 }));
 vi.mock("../infra/update-candidate-canary.js", () => ({
   validateUpdateCandidateCanary: candidateValidation,
+}));
+// Runtime generation and publication have real owner/process coverage; CLI
+// orchestration must not rebuild the checkout behind its simulated updater.
+vi.mock("./update-cli/update-command-runtime.js", () => ({
+  completeSourceUpdateRuntime: sourceRuntimeCompletion,
 }));
 vi.mock("../infra/update-candidate-state.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/update-candidate-state.js")>()),
@@ -1373,25 +1382,6 @@ describe("update-cli", () => {
     ]);
   };
 
-  const commandResult = (
-    overrides: Partial<{
-      stdout: string;
-      stderr: string;
-      code: number;
-      signal: NodeJS.Signals | null;
-      killed: boolean;
-      termination: "exit" | "timeout";
-    }> = {},
-  ) => ({
-    stdout: "",
-    stderr: "",
-    code: 0,
-    signal: null,
-    killed: false,
-    termination: "exit" as const,
-    ...overrides,
-  });
-
   const writeNpmPackageInstall = async (
     argv: string[],
     packageRoot: string,
@@ -2150,6 +2140,7 @@ describe("update-cli", () => {
     const { getFileLockProcessStartTime } = await import("../shared/pid-alive.js");
     expect(getFileLockProcessStartTime(process.pid)).not.toBeNull();
     pluginAvailabilityPreflight.mockResolvedValue([]);
+    sourceRuntimeCompletion.mockResolvedValue({ changed: false });
     triageAfterFailure.mockResolvedValue(undefined);
     unattendedRepair.mockResolvedValue({
       status: "unavailable",
@@ -2422,6 +2413,7 @@ describe("update-cli", () => {
       });
       await invokeUpdateCli(yes ? { yes: true } : {});
       expect(runGatewayUpdate).toHaveBeenCalledOnce();
+      expect(sourceRuntimeCompletion).toHaveBeenCalledOnce();
       expect(confirm).not.toHaveBeenCalled();
       expect(select).not.toHaveBeenCalled();
       expect(updateFailureActionMocks.runInteractiveUpdateFailureAction).not.toHaveBeenCalled();
@@ -2697,6 +2689,7 @@ describe("update-cli", () => {
         expectPackageInstallSpec("openclaw@9999.0.0", true);
       } else {
         expect(runGatewayUpdate).toHaveBeenCalledOnce();
+        expect(sourceRuntimeCompletion).toHaveBeenCalledWith(expect.objectContaining({ root }));
       }
       expect(serviceStop).toHaveBeenCalledTimes(restart ? 1 : 0);
       expect(freshRestartCalls().length).toBe(restart ? 1 : 0);
@@ -5837,6 +5830,42 @@ describe("update-cli", () => {
     expect(cleanupStaleManagedServiceUpdateHandoffs).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { installKind: "git", installedVersion: "2026.9.3" },
+    { installKind: "package", installedVersion: "2026.9.3" },
+    { installKind: "git", installedVersion: null },
+  ] as const)(
+    "registered update CLI previews known versions for $installKind ($installedVersion)",
+    async ({ installKind, installedVersion }) => {
+      await mockPackageInstallAtCaseDir("openclaw-preview-version");
+      vi.mocked(resolveUpdateInstallKind).mockResolvedValue(installKind);
+      readPackageVersion.mockResolvedValue(installedVersion);
+      vi.mocked(readConfigFileSnapshot).mockResolvedValue({
+        ...baseSnapshot,
+        config: { update: { channel: "dev" } },
+      });
+
+      await invokeUpdateCli({ dryRun: true, json: true, restart: false });
+
+      expect(lastWriteJsonCall()).toMatchObject({
+        currentVersion: installedVersion ?? VERSION,
+        targetVersion: null,
+        targetVersionReason: expect.stringContaining("Git"),
+        switchToGit: installKind === "package",
+        run: {
+          before: { version: installedVersion ?? VERSION },
+          status: "skipped",
+          reason: "dry-run",
+        },
+      });
+      await invokeUpdateCli({ dryRun: true, restart: false });
+      expect(getLogOutput()).toContain(`Current version: ${installedVersion ?? VERSION}`);
+      expect(getLogOutput()).toContain("Target version: unresolved");
+      expectNoSideEffects(runGatewayUpdate, replaceConfigFile, runDaemonInstall, runDaemonRestart);
+      expect(packageInstallCommandCall()).toBeUndefined();
+    },
+  );
+
   it("does not clean managed-service handoffs during a JSON dry run", async () => {
     const stateDir = tempDirs.make("openclaw-update-run-preview-");
     initializeExistingUpdateProfile({ ...process.env, OPENCLAW_STATE_DIR: stateDir });
@@ -6576,6 +6605,7 @@ describe("update-cli", () => {
     expect(lastWriteJsonCall()).toMatchObject({
       dryRun: true,
       targetVersion: null,
+      targetVersionReason: "The package artifact is not staged during a dry-run.",
       notes: expect.arrayContaining([
         expect.stringContaining(
           "Configured plugin availability will be checked against the staged package",
@@ -6608,6 +6638,7 @@ describe("update-cli", () => {
         `Run global package manager update with spec ${packageSpec}`,
       ]),
     });
+    expect(lastWriteJsonCall()).not.toHaveProperty("targetVersionReason");
   });
 
   it("previews the resolved package owner without probing for another manager", async () => {
@@ -13534,6 +13565,12 @@ describe("update-cli", () => {
       new ExitError(1),
     );
 
+    expect(lastWriteJsonCall()).toMatchObject({
+      status: "error",
+      steps: expect.arrayContaining([
+        expect.objectContaining({ name: "gateway verification", exitCode: 1 }),
+      ]),
+    });
     const diagnostics = getErrorOutput();
     expect(defaultRuntime.exit).not.toHaveBeenCalled();
     expect(diagnostics).toContain("Gateway probe failed: timeout");
@@ -14521,17 +14558,25 @@ describe("update-cli", () => {
     ).toBe(shouldRunPackageUpdate);
   });
 
-  it("opens and cancels the wizard without inspecting update freshness", async () => {
-    setTty(true);
-    select.mockResolvedValue("cancel");
-    vi.mocked(checkUpdateStatus).mockRejectedValue(new Error("Freshness inspection unavailable"));
+  it.each(["channel", "restart"])(
+    "cancels the wizard at %s without inspecting update freshness",
+    async (prompt) => {
+      setTty(true);
+      if (prompt === "channel") {
+        select.mockResolvedValue(CANCEL_SYMBOL);
+      } else {
+        confirm.mockResolvedValue(CANCEL_SYMBOL);
+      }
+      vi.mocked(checkUpdateStatus).mockRejectedValue(new Error("Freshness inspection unavailable"));
 
-    await updateWizardCommand();
+      await updateWizardCommand();
 
-    expect(select).toHaveBeenCalledWith(expect.objectContaining({ message: "Update channel" }));
-    expect(defaultRuntime.log).toHaveBeenCalledWith(expect.stringContaining("Update cancelled."));
-    expect(runGatewayUpdate).not.toHaveBeenCalled();
-  });
+      expect(select).toHaveBeenCalledWith(expect.objectContaining({ message: "Update channel" }));
+      expect(defaultRuntime.log).toHaveBeenCalledWith(expect.stringContaining("Update cancelled."));
+      expect(runGatewayUpdate).not.toHaveBeenCalled();
+      expect(sourceRuntimeCompletion).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["before", "after"])(
     "update wizard forwards explicit consent %s the subcommand",

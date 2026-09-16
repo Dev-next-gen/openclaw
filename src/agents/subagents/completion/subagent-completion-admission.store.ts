@@ -3,6 +3,10 @@ import {
   loadDeliveryQueueEntryInDatabase,
   upsertBoundDeliveryQueueEntryInDatabase,
 } from "../../../infra/delivery-queue-sqlite-bound.js";
+import {
+  getDeliveryQueueEntryOwnersInDatabase,
+  type DeliveryQueueStoredStatus,
+} from "../../../infra/delivery-queue-sqlite.kernel.js";
 import { scheduleSessionDelivery } from "../../../infra/session-delivery-queue-runtime.js";
 import {
   prepareClaimedSessionDelivery,
@@ -42,6 +46,7 @@ import {
   markRequesterSettleWakePending,
 } from "../registry/subagent-registry-lifecycle-delivery.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
+import { publishSubagentRunsAfterAtomicStore } from "../registry/subagent-registry-state.js";
 import {
   bindSubagentRunRecord,
   loadSubagentRunsForChildSessionFromSqlite,
@@ -70,7 +75,10 @@ function invokeSynchronousHook(hook: (() => unknown) | undefined): void {
   }
 }
 
-function publishCommittedSubagent(subagent: SubagentRunRecord): void {
+function publishCommittedSubagent(
+  subagent: SubagentRunRecord,
+  deferredObserverEvents: Array<() => void> = [],
+): Array<() => void> {
   const live = subagentRuns.get(subagent.runId);
   if (live) {
     for (const key of Object.keys(live)) {
@@ -80,11 +88,13 @@ function publishCommittedSubagent(subagent: SubagentRunRecord): void {
   } else {
     subagentRuns.set(subagent.runId, subagent);
   }
+  publishSubagentRunsAfterAtomicStore(subagentRuns, [subagent.runId], deferredObserverEvents);
+  return deferredObserverEvents;
 }
 
 export function publishCommittedRecords(subagent: SubagentRunRecord, task: TaskRecord): void {
-  publishCommittedSubagent(subagent);
   const deferredObserverEvents: Array<() => void> = [];
+  publishCommittedSubagent(subagent, deferredObserverEvents);
   const published = publishTaskRecordAfterAtomicStore(task, { deferredObserverEvents });
   syncFlowFromTaskAfterTaskMutation(published, "atomic completion admission");
   for (const emitObserverEvent of deferredObserverEvents) {
@@ -124,7 +134,7 @@ export function admitSubagentCompletionDelivery(params: {
   databaseOptions?: OpenClawStateDatabaseOptions;
   /** Transaction cut points used by the real-store crash-consistency tests. */
   testHooks?: AdmissionTestHooks;
-}): { claimed: boolean } {
+}): { claimed: boolean; status: DeliveryQueueStoredStatus } {
   assertCorrelatedEntry(params);
   const boundQueue = bindDeliveryQueueEntry({
     queueName: SESSION_DELIVERY_QUEUE_NAME,
@@ -164,7 +174,13 @@ export function admitSubagentCompletionDelivery(params: {
       invokeSynchronousHook(() => params.testHooks?.afterMutation?.("subagent", database));
       upsertTaskRunRowInDatabase(database, boundTask);
       invokeSynchronousHook(() => params.testHooks?.afterMutation?.("task", database));
-      return { claimed };
+      const status =
+        getDeliveryQueueEntryOwnersInDatabase(
+          database,
+          [SESSION_DELIVERY_QUEUE_NAME],
+          params.queueEntry.id,
+        ).get(SESSION_DELIVERY_QUEUE_NAME)?.status ?? "pending";
+      return { claimed, status };
     },
     params.databaseOptions,
     { operationLabel: "subagent completion delivery admission" },
@@ -266,7 +282,9 @@ export function reconcileRetiredSubagentCancellation(
     }
     subagent.killReconciliation = undefined;
     upsertSubagentRunRowInDatabase(database, bindSubagentRunRecord(subagent));
-    deferSqlitePostCommitPublication(database.db, () => publishCommittedSubagent(subagent));
+    deferSqlitePostCommitPublication(database.db, () => {
+      publishCommittedSubagent(subagent).forEach((emit) => emit());
+    });
     return true;
   });
 }
@@ -308,7 +326,9 @@ export function blockSubagentCompletionDelivery(params: {
       });
       subagent.suppressCompletionDelivery = true;
       upsertSubagentRunRowInDatabase(database, bindSubagentRunRecord(subagent));
-      deferSqlitePostCommitPublication(database.db, () => publishCommittedSubagent(subagent));
+      deferSqlitePostCommitPublication(database.db, () => {
+        publishCommittedSubagent(subagent).forEach((emit) => emit());
+      });
       return true;
     }
     if (

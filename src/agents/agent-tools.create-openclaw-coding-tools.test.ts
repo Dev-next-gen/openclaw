@@ -55,7 +55,11 @@ import {
   createSandboxFsBridgeFromResolver,
 } from "./test-helpers/host-sandbox-fs-bridge.js";
 import { buildEmptyExplicitToolAllowlistError } from "./tool-allowlist-guard.js";
-import { DEFAULT_PLUGIN_TOOLS_ALLOWLIST_ENTRY, normalizeToolPolicyName } from "./tool-policy.js";
+import {
+  attachToolAllowlistIntersection,
+  DEFAULT_PLUGIN_TOOLS_ALLOWLIST_ENTRY,
+  normalizeToolPolicyName,
+} from "./tool-policy.js";
 import { replaceWithEffectiveCronCreatorToolAllowlist } from "./tools/cron-tool.js";
 import { getGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 
@@ -699,19 +703,30 @@ describe("createOpenClawCodingTools", () => {
     expect(inheritedAllow?.includes("exec")).toBe(false);
   });
 
-  it("lets direct restricted callers inherit runtime toolsAllow into subagent spawns", () => {
+  it.each([
+    {
+      label: "explicit tools",
+      toolsAllow: ["sessions_spawn", "read"],
+      expected: ["sessions_spawn", "read"],
+    },
+    {
+      label: "overlapping globs",
+      toolsAllow: attachToolAllowlistIntersection([], [["sessions_*"], ["*_spawn"]]),
+      expected: ["sessions_spawn"],
+    },
+  ])("lets direct callers inherit $label into subagent spawns", ({ toolsAllow, expected }) => {
     const createOpenClawToolsMock = vi.mocked(createOpenClawTools);
     createOpenClawToolsMock.mockClear();
 
     createOpenClawCodingTools({
       config: testConfig,
-      runtimeToolAllowlist: ["sessions_spawn", "read"],
+      runtimeToolAllowlist: toolsAllow,
       inheritRuntimeToolAllowlist: true,
     });
 
     expect(createOpenClawToolsMock).toHaveBeenCalledTimes(1);
     const inheritedAllow = latestCreateOpenClawToolsOptions().inheritedToolAllowlist;
-    expectListIncludes(inheritedAllow, ["sessions_spawn", "read"]);
+    expectListIncludes(inheritedAllow, expected);
     expect(inheritedAllow?.includes("exec")).toBe(false);
   });
 
@@ -1513,7 +1528,7 @@ describe("createOpenClawCodingTools", () => {
     }
   });
 
-  it("forwards the native channel id through standard tool construction", () => {
+  it("forwards prepared runtime context through standard tool construction", () => {
     const createOpenClawToolsMock = vi.mocked(createOpenClawTools);
     createOpenClawToolsMock.mockClear();
 
@@ -1522,6 +1537,9 @@ describe("createOpenClawCodingTools", () => {
       chatType: "group",
       nativeChannelId: "oc_native_chat",
       messageActionTurnCapability: "turn-capability-1",
+      modelProvider: "custom",
+      modelId: "alias",
+      requesterModel: { provider: "custom", model: "custom/resolved" },
     });
 
     expect(latestCreateOpenClawToolsOptions().nativeChannelId).toBe("oc_native_chat");
@@ -1529,6 +1547,10 @@ describe("createOpenClawCodingTools", () => {
     expect(latestCreateOpenClawToolsOptions().messageActionTurnCapability).toBe(
       "turn-capability-1",
     );
+    expect(latestCreateOpenClawToolsOptions().requesterModel).toEqual({
+      provider: "custom",
+      model: "custom/resolved",
+    });
   });
 
   it("separates scheduled Gateway authority from the live delivery account", () => {

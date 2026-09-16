@@ -260,18 +260,16 @@ export function registerDiscordMonitorListeners(params: {
     params.client.listeners,
     new DiscordMessageListener(params.messageHandler, params.logger, params.trackInboundEvent),
   );
-  registerDiscordListener(
-    params.client.listeners,
-    new DiscordGuildJoinIntroductionListener({
-      readPolicy: params.readPolicy,
-      cfg: params.cfg,
-      accountId: params.accountId,
-      botUserId: params.botUserId,
-      groupPolicy: params.groupPolicy,
-      guildEntries: params.guildEntries,
-      logger: params.logger,
-    }),
-  );
+  const guildJoinListener = new DiscordGuildJoinIntroductionListener({
+    readPolicy: params.readPolicy,
+    cfg: params.cfg,
+    accountId: params.accountId,
+    botUserId: params.botUserId,
+    groupPolicy: params.groupPolicy,
+    guildEntries: params.guildEntries,
+    logger: params.logger,
+  });
+  registerDiscordListener(params.client.listeners, guildJoinListener);
 
   const reactionListenerOptions: ConstructorParameters<typeof DiscordReactionListener>[0] = {
     readPolicy: params.readPolicy,
@@ -307,8 +305,9 @@ export function registerDiscordMonitorListeners(params: {
     new DiscordThreadDeleteListener(params.cfg, params.accountId, params.logger),
   );
 
+  let presenceListener: DiscordPresenceListener | undefined;
   if (params.discordConfig.intents?.presence) {
-    const presenceListener = new DiscordPresenceListener({
+    presenceListener = new DiscordPresenceListener({
       readPolicy: params.readPolicy,
       cfg: params.cfg,
       logger: params.logger,
@@ -331,4 +330,12 @@ export function registerDiscordMonitorListeners(params: {
     );
     params.runtime.log?.("discord: GuildPresences intent enabled — presence listener registered");
   }
+  return async () => {
+    const introductionsStopped = guildJoinListener.stop();
+    try {
+      await presenceListener?.stop();
+    } finally {
+      await introductionsStopped;
+    }
+  };
 }

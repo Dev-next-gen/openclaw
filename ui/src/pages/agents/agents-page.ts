@@ -42,8 +42,8 @@ import {
   loadCronScopeStats,
   loadCronStatus,
   runCronJob,
-  type CronState,
 } from "../../lib/cron/index.ts";
+import type { CronState } from "../../lib/cron/types.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { isGatewayAvailable } from "../../lib/gateway-availability.ts";
 import {
@@ -64,8 +64,10 @@ import {
   loadAgentFileContent,
   overwriteAgentFile,
   reloadAgentFile,
+  retainAgentFileDrafts,
   resetAgentFile,
   saveAgentFile,
+  type RetainedAgentFileDrafts,
 } from "./files.ts";
 import {
   resetIdentityDraft,
@@ -125,6 +127,7 @@ class AgentsPage
   @state() agentFileActive: string | null = null;
   @state() agentFileSaving = false;
   readonly agentFileWriteRevisions = new Map<string, number>();
+  private readonly retainedFileDrafts = new Map<string, RetainedAgentFileDrafts>();
   @state() agentIdentityLoading = false;
   @state() agentIdentityError: string | null = null;
   @state() identityDraft: AgentIdentityDraft = { name: null, emoji: null, avatar: null };
@@ -204,6 +207,7 @@ class AgentsPage
           if (
             !this.applyingRouteSelection &&
             this.routeDataInitialized &&
+            this.routeData &&
             agentId &&
             route.matches[0]?.routeId === "agents" &&
             (!route.pendingMatches.length || route.pendingMatches[0]?.routeId === "agents")
@@ -378,8 +382,23 @@ class AgentsPage
   private syncSettingsSelection() {
     const selectedId = this.context.settingsAgentSelection.state.selectedId;
     if (selectedId !== this.agentsSelectedId) {
+      if (this.agentsSelectedId) {
+        const drafts = retainAgentFileDrafts(this);
+        if (drafts) {
+          this.retainedFileDrafts.set(this.agentsSelectedId, drafts);
+        }
+      }
       this.agentsSelectedId = selectedId;
       this.resetSelectionState();
+      const retained = selectedId ? this.retainedFileDrafts.get(selectedId) : undefined;
+      if (retained && selectedId) {
+        this.retainedFileDrafts.delete(selectedId);
+        this.agentFileDrafts = retained.drafts;
+        this.agentFileHashes = retained.hashes;
+        this.agentFileActive = retained.active;
+        this.agentFileConflict = retained.conflict;
+        // Loaded bases stay empty: returning must read disk while retaining the draft's ancestry.
+      }
     }
   }
 
@@ -409,6 +428,7 @@ class AgentsPage
   }
 
   private resetForSourceChange() {
+    this.retainedFileDrafts.clear();
     this.agentsList = null;
     this.agentsSelectedId = null;
     this.resetSelectionState();
@@ -418,6 +438,7 @@ class AgentsPage
     this.gateway.invalidate();
     this.agentFilesLoading = false;
     this.agentFileSaving = false;
+    this.identitySaving = false;
     this.agentIdentityLoading = false;
     this.agentSkillsLoading = false;
     this.toolsCatalogLoading = false;
@@ -437,6 +458,7 @@ class AgentsPage
   private applyRouteData() {
     const data = this.routeData;
     if (!data) {
+      this.routeDataInitialized = false;
       return;
     }
     this.routeDataInitialized = true;
@@ -502,7 +524,7 @@ class AgentsPage
   }
 
   private ensureInitialData() {
-    if (!this.connected || !this.client || !this.routeDataInitialized) {
+    if (!this.connected || !this.client || !this.routeDataInitialized || !this.routeData) {
       return;
     }
     if (
@@ -562,6 +584,10 @@ class AgentsPage
   }
 
   private loadActivePanelData() {
+    // A reused page can receive a roster before its next route data commits.
+    if (!this.routeData) {
+      return;
+    }
     const agentId = this.resolveSelectedAgentId();
     if (!agentId) {
       return;

@@ -33,7 +33,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -82,7 +81,6 @@ import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -455,6 +453,16 @@ internal fun OpenClawSidebar(
   val rowHost = remember { SidebarRowHost() }
   val agentPicker = agentPickerState(agents, selectedAgentId)
   val storedGroups by viewModel.sessionCustomGroups.collectAsState()
+  val questions by viewModel.chatQuestions.collectAsState()
+  val approvalInbox by viewModel.execApprovalInbox.collectAsState()
+  val defaultAgentId by viewModel.gatewayDefaultAgentId.collectAsState()
+  val gatewayStableId by viewModel.activeGatewayStableId.collectAsState()
+  val attentionRequests = remember(questions, approvalInbox, defaultAgentId) { sidebarAttentionRequests(questions, approvalInbox.approvals, defaultAgentId) }
+
+  fun attentionFor(keys: Collection<String>): SidebarAttention? {
+    val canonical = keys.mapTo(mutableSetOf()) { sidebarAttentionSessionKey(it, selectedAgentId ?: defaultAgentId) }
+    return summarizeSidebarAttention(attentionRequests.filter { it.sessionKey in canonical }, gatewayStableId)
+  }
   val catalogState by viewModel.sessionCatalogState.collectAsState()
   val sessionCreating by viewModel.chatSessionCreating.collectAsState()
   val catalogAvailable by viewModel.sessionCatalogAvailable.collectAsState()
@@ -503,7 +511,6 @@ internal fun OpenClawSidebar(
   val recentSections = recentPresentation.recentSections
   val orderedPages = orderedSidebarDestinations(pageOrder)
   val visiblePageIdSet = visiblePageIds.toSet()
-  val connectionLabel = gatewayStatusLabel(connection)
   val setSessionPinned: (String, String?, Boolean) -> Unit = { key, ownerAgentId, pinned ->
     scope.launch {
       viewModel.patchChatSession(key = key, ownerAgentId = ownerAgentId, pinned = pinned)
@@ -677,6 +684,7 @@ internal fun OpenClawSidebar(
                   searchResults.forEach { session ->
                     SidebarSessionRow(
                       session = session,
+                      attention = attentionFor(listOf(sidebarAttentionSessionKey(session.key, session.ownerAgentId ?: selectedAgentId ?: defaultAgentId))),
                       rowHost = rowHost,
                       selected = session.key == activeSessionKey,
                       palette = palette,
@@ -749,6 +757,7 @@ internal fun OpenClawSidebar(
           }
           SidebarCollapsibleHeader(
             label = nativeString("Pinned"),
+            attention = if (pinnedExpanded) null else attentionFor(pinnedSessions.map { sidebarAttentionSessionKey(it.key, it.ownerAgentId ?: selectedAgentId ?: defaultAgentId) }),
             expanded = pinnedExpanded,
             palette = palette,
             onClick = { pinnedExpanded = !pinnedExpanded },
@@ -767,6 +776,7 @@ internal fun OpenClawSidebar(
                 pinnedSessions.forEach { session ->
                   SidebarSessionRow(
                     session = session,
+                    attention = attentionFor(listOf(sidebarAttentionSessionKey(session.key, session.ownerAgentId ?: selectedAgentId ?: defaultAgentId))),
                     rowHost = rowHost,
                     selected = session.key == activeSessionKey,
                     palette = palette,
@@ -811,6 +821,7 @@ internal fun OpenClawSidebar(
                   key("catalog:${catalog.id}") {
                     SidebarCollapsibleHeader(
                       label = catalog.label,
+                      attention = if (section.expanded) null else attentionFor(sidebarVisibleCatalogSessionKeys(listOf(catalog))),
                       expanded = section.expanded,
                       palette = palette,
                       iconContent = {
@@ -844,6 +855,7 @@ internal fun OpenClawSidebar(
                     )
                     if (section.expanded) {
                       SidebarSessionCatalog(
+                        attentionFor = ::attentionFor,
                         rowHost = rowHost,
                         state = catalogState,
                         catalog = catalog,
@@ -884,6 +896,7 @@ internal fun OpenClawSidebar(
 
           SidebarCollapsibleHeader(
             label = nativeString("Recent"),
+            attention = if (recentExpanded) null else attentionFor(sidebarRecentSessions(sessions).filter { it.pinned != true && it.key !in catalogSessionKeys }.map { it.key }),
             expanded = recentExpanded,
             palette = palette,
             onClick = { recentExpanded = !recentExpanded },
@@ -903,6 +916,7 @@ internal fun OpenClawSidebar(
                   section.entries.forEach { session ->
                     SidebarSessionRow(
                       session = session,
+                      attention = attentionFor(listOf(sidebarAttentionSessionKey(session.key, session.ownerAgentId ?: selectedAgentId ?: defaultAgentId))),
                       rowHost = rowHost,
                       selected = session.key == activeSessionKey,
                       palette = palette,
@@ -941,31 +955,9 @@ internal fun OpenClawSidebar(
       }
     }
     HorizontalDivider(color = palette.hairline)
-    Row(
-      modifier =
-        Modifier
-          .fillMaxWidth()
-          .heightIn(min = 48.dp)
-          .semantics(mergeDescendants = true) {
-            stateDescription = connectionLabel
-          }.padding(horizontal = 12.dp),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(9.dp),
-    ) {
-      Box(
-        modifier =
-          Modifier
-            .size(8.dp)
-            .clip(CircleShape)
-            .background(if (connection.isConnected) ClawTheme.colors.success else palette.muted)
-            .clearAndSetSemantics {},
-      )
-      Text(
-        text = connectionLabel,
-        style = ClawTheme.type.caption,
-        color = palette.muted,
-        maxLines = 1,
-      )
+    SidebarGatewayControl(viewModel, connection, palette) {
+      viewModel.openGatewaySettings()
+      onClose()
     }
   }
 }
@@ -1134,6 +1126,7 @@ private fun SidebarPagesHeader(
 
 @Composable
 private fun SidebarSessionCatalog(
+  attentionFor: (Collection<String>) -> SidebarAttention?,
   rowHost: SidebarRowHost,
   state: SessionCatalogState,
   catalog: SessionCatalog,
@@ -1223,6 +1216,7 @@ private fun SidebarSessionCatalog(
               )
             }
           }
+          if (!hostExpanded) attentionFor(host.workspaces.flatMap { it.sessions }.mapNotNull { it.sessionKey })?.let { SidebarAttentionIndicator(it, palette) }
         }
         if (hostExpanded) {
           host.errorText?.let { SidebarCatalogStatus(it, palette) }
@@ -1279,11 +1273,13 @@ private fun SidebarSessionCatalog(
                 color = palette.muted,
                 maxLines = 1,
               )
+              if (!expanded) attentionFor(workspace.sessions.mapNotNull { it.sessionKey })?.let { SidebarAttentionIndicator(it, palette) }
             }
             if (expanded) {
               workspace.sessions.forEach { session ->
                 SidebarCatalogSessionRow(
                   session = session,
+                  attention = session.sessionKey?.let { attentionFor(listOf(sidebarAttentionSessionKey(it, session.agentId ?: state.agentId))) },
                   rowHost = rowHost,
                   liveSession = session.sessionKey?.let(liveSessionsByKey::get),
                   selected = session.sessionKey == activeSessionKey,
@@ -1328,6 +1324,7 @@ internal fun sidebarCatalogSessionSelectionEnabled(
 @Composable
 private fun SidebarCatalogSessionRow(
   session: SessionCatalogEntry,
+  attention: SidebarAttention?,
   rowHost: SidebarRowHost,
   liveSession: ChatSessionEntry?,
   selected: Boolean,
@@ -1362,6 +1359,7 @@ private fun SidebarCatalogSessionRow(
     )
   SidebarRowSurface(
     selected = selected,
+    stateDescription = attention?.status,
     rowHost = rowHost,
     palette = palette,
     enabled = enabled && selectionEnabled,
@@ -1394,8 +1392,10 @@ private fun SidebarCatalogSessionRow(
         Text(text = detail, style = ClawTheme.type.caption, color = palette.muted, maxLines = 1)
       }
     }
-    activity?.let {
-      SidebarSessionActivityIndicator(activity = it, palette = palette)
+    if (attention != null) {
+      SidebarAttentionIndicator(attention, palette)
+    } else {
+      activity?.let { SidebarSessionActivityIndicator(activity = it, palette = palette) }
     }
   }
 }

@@ -517,7 +517,7 @@ describe("gateway sessions patch", () => {
 
   test.each([
     ["agent:main:dashboard:child", { spawnedBy: MAIN_SESSION_KEY }],
-    ["agent:main:dashboard:child", { parentSessionKey: MAIN_SESSION_KEY }],
+    ["agent:main:dashboard:child", { parentSessionKey: "agent:main:dashboard:parent" }],
     ["agent:main:subagent:child", {}],
   ] as const)("rejects child pins on %s with %j", async (key, lineage) => {
     const original: SessionEntry = { sessionId: "child", updatedAt: 1, pinnedAt: 10, ...lineage };
@@ -565,6 +565,39 @@ describe("gateway sessions patch", () => {
       }),
     );
     expect(pinned.pinnedAt).toEqual(expect.any(Number));
+  });
+
+  test.each([
+    ["agent:main:dashboard:work", { parentSessionKey: MAIN_SESSION_KEY }],
+    ["agent:other:dashboard:work", { parentSessionKey: "agent:other:main" }],
+  ] as const)("allows pins on Home-parented sessions on %s", async (key, lineage) => {
+    const pinned = expectPatchOk(
+      await runPatch({
+        storeKey: key,
+        store: { [key]: { sessionId: "work", updatedAt: 1, ...lineage } },
+        patch: { key, pinned: true },
+      }),
+    );
+    expect(pinned.pinnedAt).toEqual(expect.any(Number));
+  });
+
+  test("preserves existing pins on Home-parented sessions through metadata patches", async () => {
+    const key = "agent:main:dashboard:work";
+    const updated = expectPatchOk(
+      await runPatch({
+        storeKey: key,
+        store: {
+          [key]: {
+            sessionId: "work",
+            updatedAt: 1,
+            pinnedAt: 10,
+            parentSessionKey: MAIN_SESSION_KEY,
+          },
+        },
+        patch: { key, label: "Work session" },
+      }),
+    );
+    expect(updated.pinnedAt).toBe(10);
   });
 
   test("marks archived sessions unread and clears the marker when read", async () => {
@@ -630,13 +663,23 @@ describe("gateway sessions patch", () => {
     expect(entry.agentStatus).toBeUndefined();
   });
 
-  test("persists thinkingLevel=off (does not clear)", async () => {
+  test.each([
+    { field: "thinkingLevel", value: "off" },
+    { field: "responseUsage", value: "off" },
+    { field: "reasoningLevel", value: "off" },
+    { field: "fastMode", value: false },
+    { field: "fastMode", value: true },
+    { field: "verboseLevel", value: "full" },
+    { field: "elevatedLevel", value: "off" },
+    { field: "elevatedLevel", value: "on" },
+  ] as const)("persists explicit $field=$value", async ({ field, value }) => {
     const entry = expectPatchOk(
       await runPatch({
-        patch: { key: MAIN_SESSION_KEY, thinkingLevel: "off" },
+        patch: { key: MAIN_SESSION_KEY, [field]: value },
       }),
     );
-    expect(entry.thinkingLevel).toBe("off");
+    // Explicit off values must survive configured defaults, including messages.responseUsage.
+    expect(entry[field]).toBe(value);
   });
 
   test.each(["thinkingLevel", "contextWindow"] as const)(
@@ -658,17 +701,6 @@ describe("gateway sessions patch", () => {
     },
   );
 
-  test("persists responseUsage=off (does not clear)", async () => {
-    const entry = expectPatchOk(
-      await runPatch({
-        patch: { key: MAIN_SESSION_KEY, responseUsage: "off" },
-      }),
-    );
-    // Explicit off must persist so a configured messages.responseUsage default
-    // cannot re-enable the footer the user turned off.
-    expect(entry.responseUsage).toBe("off");
-  });
-
   test("clears responseUsage when patch sets null", async () => {
     const store: Record<string, SessionEntry> = {
       [MAIN_SESSION_KEY]: { responseUsage: "tokens" } as SessionEntry,
@@ -682,15 +714,6 @@ describe("gateway sessions patch", () => {
     expect(entry.responseUsage).toBeUndefined();
   });
 
-  test("persists reasoningLevel=off (does not clear)", async () => {
-    const entry = expectPatchOk(
-      await runPatch({
-        patch: { key: MAIN_SESSION_KEY, reasoningLevel: "off" },
-      }),
-    );
-    expect(entry.reasoningLevel).toBe("off");
-  });
-
   test("clears reasoningLevel when patch sets null", async () => {
     const store: Record<string, SessionEntry> = {
       [MAIN_SESSION_KEY]: { reasoningLevel: "stream" } as SessionEntry,
@@ -702,24 +725,6 @@ describe("gateway sessions patch", () => {
       }),
     );
     expect(entry.reasoningLevel).toBeUndefined();
-  });
-
-  test("persists fastMode=false (does not clear)", async () => {
-    const entry = expectPatchOk(
-      await runPatch({
-        patch: { key: MAIN_SESSION_KEY, fastMode: false },
-      }),
-    );
-    expect(entry.fastMode).toBe(false);
-  });
-
-  test("persists fastMode=true", async () => {
-    const entry = expectPatchOk(
-      await runPatch({
-        patch: { key: MAIN_SESSION_KEY, fastMode: true },
-      }),
-    );
-    expect(entry.fastMode).toBe(true);
   });
 
   test("recreates partial rows without dropping session settings", async () => {
@@ -905,38 +910,11 @@ describe("gateway sessions patch", () => {
     expect(cleared.toolOverrides).toBeUndefined();
   });
 
-  test("persists verboseLevel=full", async () => {
-    const entry = expectPatchOk(
-      await runPatch({
-        patch: { key: MAIN_SESSION_KEY, verboseLevel: "full" },
-      }),
-    );
-    expect(entry.verboseLevel).toBe("full");
-  });
-
   test("rejects invalid verboseLevel values with all valid choices in the error", async () => {
     const result = await runPatch({
       patch: { key: MAIN_SESSION_KEY, verboseLevel: "maybe" },
     });
     expectPatchError(result, 'invalid verboseLevel (use "on"|"off"|"full")');
-  });
-
-  test("persists elevatedLevel=off (does not clear)", async () => {
-    const entry = expectPatchOk(
-      await runPatch({
-        patch: { key: MAIN_SESSION_KEY, elevatedLevel: "off" },
-      }),
-    );
-    expect(entry.elevatedLevel).toBe("off");
-  });
-
-  test("persists elevatedLevel=on", async () => {
-    const entry = expectPatchOk(
-      await runPatch({
-        patch: { key: MAIN_SESSION_KEY, elevatedLevel: "on" },
-      }),
-    );
-    expect(entry.elevatedLevel).toBe("on");
   });
 
   test("clears elevatedLevel when patch sets null", async () => {
@@ -1673,6 +1651,45 @@ describe("gateway sessions patch", () => {
 
     expect(entry.thinkingLevel).toBe("xhigh");
   });
+
+  test.each([
+    { requested: "max", nativeEffort: "max", accepted: true },
+    { requested: "max", nativeEffort: "high", accepted: false },
+  ] as const)(
+    "validates thinking against the selected runtime variant ($nativeEffort, accepted=$accepted)",
+    async ({ requested, nativeEffort, accepted }) => {
+      const host: ModelCatalogEntry = {
+        provider: "runtime-fixture",
+        id: "reasoner",
+        name: "Reasoner",
+        reasoning: true,
+        compat: { supportedReasoningEfforts: [accepted ? "high" : "max"] },
+      };
+      const native: ModelCatalogEntry = {
+        ...host,
+        nativeRuntime: "fixture-native",
+        compat: { supportedReasoningEfforts: [nativeEffort] },
+      };
+      const result = await projectSessionsPatchEntry({
+        cfg: { agents: { defaults: { model: "runtime-fixture/reasoner" } } },
+        storeKey: MAIN_SESSION_KEY,
+        existingEntry: mainStoreEntry({})[MAIN_SESSION_KEY],
+        isLabelInUse: () => false,
+        preparedAgentRuntime: "fixture-native",
+        patch: { key: MAIN_SESSION_KEY, thinkingLevel: requested },
+        loadGatewayModelCatalogSnapshot: async () => ({
+          entries: [host],
+          routeVariants: [host, native],
+        }),
+      });
+
+      if (accepted) {
+        expect(expectPatchOk(result).thinkingLevel).toBe(requested);
+      } else {
+        expectPatchError(result, 'thinkingLevel "max" is not supported');
+      }
+    },
+  );
 
   test("validates global patches against the selected agent", async () => {
     const entry = expectPatchOk(

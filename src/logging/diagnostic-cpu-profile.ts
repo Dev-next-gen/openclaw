@@ -113,16 +113,15 @@ function sanitizeProfile(profile: Profiler.Profile, packageRoot: string | null) 
     assertProfile(Number.isSafeInteger(node.id) && node.id > 0 && !ids.has(node.id));
     ids.add(node.id);
     const frame = node.callFrame;
+    // V8 emits signed source offsets and negative script IDs for WebAssembly wrappers.
     assertProfile(
       Boolean(frame) &&
         typeof frame.functionName === "string" &&
         typeof frame.url === "string" &&
         typeof frame.scriptId === "string" &&
-        /^\d{1,32}$/.test(frame.scriptId) &&
+        /^-?\d{1,32}$/.test(frame.scriptId) &&
         Number.isSafeInteger(frame.lineNumber) &&
-        frame.lineNumber >= -1 &&
-        Number.isSafeInteger(frame.columnNumber) &&
-        frame.columnNumber >= -1,
+        Number.isSafeInteger(frame.columnNumber),
     );
     const url = codeUrl(frame.url, packageRoot);
     const engine = frame.url === "" && ENGINE_NAMES.has(frame.functionName);
@@ -147,10 +146,7 @@ function sanitizeProfile(profile: Profiler.Profile, packageRoot: string | null) 
       assertProfile(Array.isArray(node.positionTicks));
       for (const tick of node.positionTicks) {
         assertProfile(
-          Number.isSafeInteger(tick.line) &&
-            tick.line >= 0 &&
-            Number.isSafeInteger(tick.ticks) &&
-            tick.ticks >= 0,
+          Number.isSafeInteger(tick.line) && Number.isSafeInteger(tick.ticks) && tick.ticks >= 0,
         );
       }
     }
@@ -185,7 +181,8 @@ function sanitizeProfile(profile: Profiler.Profile, packageRoot: string | null) 
   }
   assertProfile(visited.size === nodes.length);
   assertProfile(profile.samples.every((id) => ids.has(id)));
-  assertProfile(profile.timeDeltas.every((delta) => Number.isFinite(delta) && delta >= 0));
+  // V8 deoptimization samples can arrive out of timestamp order; preserve their signed deltas.
+  assertProfile(profile.timeDeltas.every((delta) => Number.isFinite(delta)));
   const result = {
     requestedDurationMs: DURATION_MS,
     actualDurationMs: (profile.endTime - profile.startTime) / 1_000,

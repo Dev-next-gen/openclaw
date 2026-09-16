@@ -67,6 +67,8 @@ export const SETTINGS_SEARCH_TARGETS = {
     searchKeys: [],
     nativeSearchKeys: {
       "configPage.deviceSettings.app": (snapshot) => snapshot.app !== undefined,
+      "configPage.deviceSettings.nativeExperience": (snapshot) =>
+        snapshot.app?.nativeExperienceEnabled !== undefined,
       "configPage.deviceSettings.appearance": (snapshot) => snapshot.app?.appearance !== undefined,
       "configPage.deviceSettings.notificationsEnabled": (snapshot) =>
         snapshot.app?.notificationsEnabled !== undefined,
@@ -262,6 +264,18 @@ export const SETTINGS_SEARCH_TARGETS = {
       "configView.appearance.accents.slate",
     ],
     aliases: "colour swatch palette highlight green purple neutral",
+  },
+  appearanceTypography: {
+    routeId: "appearance",
+    labelKey: "configView.appearance.typography",
+    search: "?section=__appearance__",
+    hash: `#${APPEARANCE_SETTINGS_TARGET_IDS.typography}`,
+    searchKeys: [
+      "configView.appearance.fonts.ui",
+      "configView.appearance.fonts.chat",
+      "configView.appearance.fonts.themeDefault",
+    ],
+    aliases: "font fonts typeface",
   },
   appearanceTextSize: {
     routeId: "appearance",

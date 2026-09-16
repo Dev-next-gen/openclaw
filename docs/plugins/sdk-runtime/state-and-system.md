@@ -239,8 +239,8 @@ state errors use their existing codec; other native causes retain bounded causal
 messages and error codes. Arbitrary custom properties and original stacks do not
 cross the worker boundary.
 
-Slack uses scalar conditional deletion when relinquishing a presence cooldown.
-On older hosts without that optional capability, it leaves the cooldown to expire
+Discord and Slack use scalar conditional deletion when relinquishing a presence
+cooldown. On older hosts without that optional capability, they leave it to expire
 instead of risking deletion of a newer reservation.
 
 This deprecation adds editor annotations, documentation, and compatibility
@@ -283,6 +283,29 @@ For an already borrowed handle, pass its exact `DatabaseSync` as the third
 argument. After waiting, the helper rejects a closed or replaced handle rather
 than opening a replacement on its behalf. Keep the original borrow alive until
 the operation settles. The caller still owns transactions and authorization.
+For large native publications, `openOpenClawAgentSqliteWorkerStore(options, borrowedDb, { moduleUrl, input })`
+retains the original borrowed handle, physical identity, and a separate agent lease
+for a pooled SQLite Worker connection. Its `run(operation, assertCurrent)` joins
+the existing agent writer queue. The operation receives only the retained store's
+`execute` method; finish it before calling `close()`. Close revokes new work,
+drains accepted operations, closes native storage, and then releases custody.
+
+A backend used with this owner requests `transaction` admission after BEGIN and
+`commit` admission immediately before COMMIT through
+`requestSqliteWorkerOperationAdmission`. The host checks current authority at
+both points without waiting synchronously for the native transaction. An accepted
+commit grant orders the commit before later revocation; an earlier refusal rolls
+back. Callers must preserve committed or unknown outcomes and never replay them.
+Private file owners can use `runSqliteWorkerStoreWrite` with their own admission
+and lifetime; it does not supply the shared agent queue or lease.
+
+Backends whose failure handling can leave an unusable native connection implement
+synchronous `assertSettled()`. The broker calls it after a command returns or
+throws. A failed assertion retires the Worker and waits for native exit before
+releasing operation admission. Use `assertTransactionUsable(db)` to detect the
+transaction owner's retained failure, and reject any surviving open transaction.
+Ordinary failures that rolled back safely can still return their domain result.
+
 For example, given an existing `borrowedDb`, a live-owner `assertCurrent()` check,
 and synchronous `applyPreparedChanges(db)`:
 

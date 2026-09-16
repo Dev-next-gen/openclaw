@@ -8,6 +8,7 @@ import {
   createCodeModeTools,
 } from "../code-mode.js";
 import { resolveConversationCapabilityProfile } from "../conversation-capability-profile.js";
+import { mergeForcedEmbeddedAttemptToolsAllow } from "../embedded-agent-runner/run/attempt-tool-construction-plan.js";
 import {
   filterLocalModelLeanTools,
   resolveLocalModelLeanPreserveToolNames,
@@ -68,6 +69,7 @@ export function createAgentHarnessToolSurfaceRuntimeCore(params: {
   modelId?: string;
   modelProvider?: string;
   codeModeOverride?: boolean | "auto";
+  disableToolSearch?: true;
   modelToolsEnabled: boolean;
   prompt?: string;
   runId?: string;
@@ -93,6 +95,7 @@ export function createAgentHarnessToolSurfaceRuntimeCore(params: {
     modelProvider: params.modelProvider,
     modelId: params.modelId,
     codeModeOverride: params.codeModeOverride,
+    disableToolSearch: params.disableToolSearch,
     toolsEnabled: params.modelToolsEnabled,
     disableTools: params.disableTools,
     isRawModelRun: params.isRawModelRun === true,
@@ -100,18 +103,12 @@ export function createAgentHarnessToolSurfaceRuntimeCore(params: {
   });
   const toolSearchCatalogRef =
     toolSearchControlsEnabled || codeModeControlsEnabled ? createToolSearchCatalogRef() : undefined;
-  const runtimeToolAllowlist =
-    (toolSearchControlsEnabled || codeModeControlsEnabled) && params.runtimeToolAllowlist
-      ? [
-          ...new Set([
-            ...params.runtimeToolAllowlist,
-            ...(toolSearchControlsEnabled ? TOOL_SEARCH_CONTROL_ALLOWLIST_NAMES : []),
-            ...(codeModeControlsEnabled ? CODE_MODE_CONTROL_ALLOWLIST_NAMES : []),
-          ]),
-        ]
-      : params.runtimeToolAllowlist
-        ? [...params.runtimeToolAllowlist]
-        : undefined;
+  const runtimeToolAllowlist = mergeForcedEmbeddedAttemptToolsAllow(params.runtimeToolAllowlist, {
+    forceToolNames: [
+      ...(toolSearchControlsEnabled ? TOOL_SEARCH_CONTROL_ALLOWLIST_NAMES : []),
+      ...(codeModeControlsEnabled ? CODE_MODE_CONTROL_ALLOWLIST_NAMES : []),
+    ],
+  });
   const toolSearchCatalogExecutor =
     toolSearchControlsEnabled || codeModeControlsEnabled ? params.executeTool : undefined;
   const capabilityProfile = resolveConversationCapabilityProfile({

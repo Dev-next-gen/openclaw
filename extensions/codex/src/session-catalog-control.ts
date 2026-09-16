@@ -30,29 +30,30 @@ import {
 } from "./session-catalog-diagnostics.js";
 import { createCodexCatalogHomeResolver, type CodexCatalogHome } from "./session-catalog-homes.js";
 import {
-  MAX_TITLE_SEARCH_CATALOG_PAGES,
+  CodexCatalogIndex,
+  createCodexCatalogIndexResolver,
+  CODEX_CATALOG_CACHE_TTL_MS,
+  CODEX_SESSION_CATALOG_LIST_CACHE_MAX_ENTRIES,
+} from "./session-catalog-index.js";
+import {
   MAX_ACTION_CATALOG_PAGES,
+  MAX_TITLE_SEARCH_CATALOG_PAGES,
+  filterCatalogPageByTitle,
   CODEX_SESSION_CATALOG_MAX_PAGE_LIMIT,
   CatalogParamsError,
   isInteractiveThreadSource,
-  normalizeLimit,
+  readPageParams,
   readControlCursor,
-  toCatalogSession,
 } from "./session-catalog-parsing.js";
-import {
-  isOpenClawManagedCodexThread,
-  readCodexSessionMeta,
-} from "./session-catalog-provenance.js";
+import { projectCodexCatalogPage } from "./session-catalog-projection.js";
+import { readCodexSessionMeta } from "./session-catalog-provenance.js";
+import { CodexCatalogSourceBackoff } from "./session-catalog-source-backoff.js";
 import type {
   CodexSessionCatalogControl,
   CodexSessionCatalogControlFactory,
   CodexSessionCatalogPage,
   CodexSessionCatalogPageParams,
-  CodexSessionCatalogSession,
 } from "./session-catalog-types.js";
-
-const CODEX_SESSION_CATALOG_LIST_TTL_MS = 32_000;
-const CODEX_SESSION_CATALOG_LIST_CACHE_MAX_ENTRIES = 32;
 
 type CodexCatalogRequestOptions = {
   agentDir: string | undefined;
@@ -62,7 +63,7 @@ type CodexCatalogRequestOptions = {
 
 type CodexCatalogControlSource = Pick<
   CodexCatalogHome,
-  "appServer" | "localSessionsRoot" | "sourceHomeId"
+  "appServer" | "localSessionsRoot" | "sourceHomeId" | "assertCurrent"
 > & { agentDir?: string };
 
 type CodexCatalogPageCacheEntry = {
@@ -98,6 +99,8 @@ function codexCatalogPageCacheKey(
 }
 
 type CodexSessionCatalogRequestSnapshot = {
+  beginList: () => ReturnType<CodexCatalogSourceBackoff["begin"]>;
+  index: (cwd?: string) => CodexCatalogIndex;
   requestTimeoutMs: number;
   listThreads(
     params: CodexThreadListParams,
@@ -133,8 +136,12 @@ type CodexCatalogRequest = <M extends CodexCatalogRequestMethod>(
 function createCodexCatalogRequestSnapshot(
   requestTimeoutMs: number,
   request: CodexCatalogRequest,
+  index: (cwd?: string) => CodexCatalogIndex,
+  beginList: CodexSessionCatalogRequestSnapshot["beginList"],
 ): CodexSessionCatalogRequestSnapshot {
   return {
+    index,
+    beginList,
     requestTimeoutMs,
     listThreads: (params, timeoutMs, observation) =>
       request(CODEX_CONTROL_METHODS.listThreads, params, timeoutMs, undefined, observation),
@@ -273,58 +280,37 @@ function createCodexSessionCatalogControlFromRequests(params: {
     retireConnection: params.retireConnection,
     async listPage(pageParams, diagnostics = startCodexCatalogPageDiagnostics("uncached")) {
       let outcome: "resolved" | "rejected" = "rejected";
+      let sourceAttempt: ReturnType<CodexCatalogSourceBackoff["begin"]> | undefined;
       try {
-        const limit = normalizeLimit(pageParams.limit, "limit");
-        // App Server search also matches transcript previews. Scan native pages
-        // without that filter so this catalog remains a title-only surface.
-        const search = pageParams.searchTerm?.trim().toLocaleLowerCase() || undefined;
-        const cwd = pageParams.cwd?.trim() || undefined;
-        const maxPages = search ? MAX_TITLE_SEARCH_CATALOG_PAGES : 1;
-        const sessions: CodexSessionCatalogSession[] = [];
-        const managedThreads: Array<{ threadId: string; rolloutPath?: string }> = [];
-        let cursor = readControlCursor(pageParams.cursor, "request");
-        let nextCursor: string | undefined;
-        let backwardsCursor: string | undefined;
-        const seenCursors = new Set(cursor ? [cursor] : []);
-        const requests = params.createRequestSnapshot(pageParams);
+        readControlCursor(pageParams.cursor, "request");
+        const queryParams = readPageParams(pageParams);
+        const requests = params.createRequestSnapshot(queryParams);
         const deadline = params.now() + requests.requestTimeoutMs;
-        // Keep config/home sampling before the import and charge cold loading to this deadline.
         const { sanitizeTerminalText } = await import("openclaw/plugin-sdk/text-chunking");
-
-        for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+        const readNative = async (query: CodexThreadListParams) => {
           const remainingTimeoutMs = Math.ceil(deadline - params.now());
           if (remainingTimeoutMs <= 0) {
             throw new Error("Codex session catalog listing timed out");
           }
-          const requestStarted = diagnostics ? performance.now() : 0;
+          sourceAttempt ??= requests.beginList();
+          if (!sourceAttempt.allowed) {
+            throw sourceAttempt.error;
+          }
+          const started = performance.now();
           if (diagnostics) {
             diagnostics.fields.controlRequestCalls++;
           }
-          let response: CodexThreadListResponse;
           const observation = startCodexCatalogControlRequestDiagnostics(diagnostics);
+          let response: CodexThreadListResponse;
           try {
-            response = await requests.listThreads(
-              {
-                archived: false,
-                limit: limit - sessions.length,
-                modelProviders: [],
-                // Match Codex's resume picker/latest-session ordering so a session
-                // created outside OpenClaw enters the first catalog page immediately.
-                sortKey: "updated_at",
-                sortDirection: "desc",
-                ...(cwd ? { cwd } : {}),
-                ...(cursor ? { cursor } : {}),
-              },
-              remainingTimeoutMs,
-              observation,
-            );
+            response = await requests.listThreads(query, remainingTimeoutMs, observation);
           } catch (error) {
             observation?.rejected();
             throw error;
           } finally {
             observation?.close();
             if (diagnostics) {
-              const elapsed = performance.now() - requestStarted;
+              const elapsed = performance.now() - started;
               diagnostics.fields.inclusiveControlRequestWaitMs =
                 (diagnostics.fields.inclusiveControlRequestWaitMs ?? 0) + elapsed;
               diagnostics.fields.inclusiveControlRequestWaitMaxMs = Math.max(
@@ -333,64 +319,67 @@ function createCodexSessionCatalogControlFromRequests(params: {
               );
             }
           }
-          const responseStarted = diagnostics ? performance.now() : 0;
-          try {
-            if (pageIndex === 0) {
-              backwardsCursor = readControlCursor(response.backwardsCursor, "backwards response");
-            }
-            for (const thread of response.data) {
-              if (
-                await isOpenClawManagedCodexThread(
-                  thread,
-                  params.localSessionsRoot,
-                  diagnostics ?? undefined,
-                )
-              ) {
-                const rolloutPath = typeof thread.path === "string" ? thread.path.trim() : "";
-                managedThreads.push({
-                  threadId: thread.id,
-                  ...(rolloutPath ? { rolloutPath } : {}),
-                });
-                continue;
-              }
-              const session = toCatalogSession(thread, false, sanitizeTerminalText);
-              if (
-                session &&
-                (!search ||
-                  (session.name ?? session.fallbackName)?.toLocaleLowerCase().includes(search))
-              ) {
-                sessions.push(session);
-              }
-            }
-            nextCursor = readControlCursor(response.nextCursor, "next response");
-            if (!nextCursor || sessions.length >= limit) {
-              if (diagnostics) {
-                diagnostics.fields.stopReason = nextCursor ? "limit" : "exhausted";
-              }
-              break;
-            }
-            if (seenCursors.has(nextCursor)) {
-              throw new Error("Codex session catalog returned a repeated search cursor");
-            }
-            seenCursors.add(nextCursor);
-            cursor = nextCursor;
-          } finally {
-            if (diagnostics) {
-              diagnostics.fields.postResponseMs =
-                (diagnostics.fields.postResponseMs ?? 0) + performance.now() - responseStarted;
-            }
+          return await projectCodexCatalogPage(response, {
+            localSessionsRoot: params.localSessionsRoot,
+            diagnostics,
+            sanitize: sanitizeTerminalText,
+          });
+        };
+        const sessions: CodexSessionCatalogPage["sessions"] = [];
+        const managedThreads: NonNullable<CodexSessionCatalogPage["managedThreads"]> = [];
+        const search = queryParams.searchTerm?.trim();
+        let cursor = queryParams.cursor;
+        let backwardsCursor: string | undefined;
+        const seen = new Set(cursor ? [cursor] : []);
+        const maxPages = search ? MAX_TITLE_SEARCH_CATALOG_PAGES : 1;
+        let stopReason: "limit" | "exhausted" | "page-bound" = "page-bound";
+        for (let i = 0; i < maxPages; i++) {
+          const native = await requests.index(queryParams.cwd).list(
+            {
+              limit: queryParams.limit - sessions.length,
+              ...(cursor ? { cursor } : {}),
+            },
+            readNative,
+          );
+          if (i === 0) {
+            backwardsCursor = native.backwardsCursor;
           }
+          const page = filterCatalogPageByTitle(native, search);
+          sessions.push(...page.sessions);
+          managedThreads.push(...(native.managedThreads ?? []));
+          cursor = native.nextCursor;
+          if (!cursor || sessions.length >= queryParams.limit || !search) {
+            stopReason = !cursor
+              ? "exhausted"
+              : sessions.length >= queryParams.limit
+                ? "limit"
+                : "page-bound";
+            break;
+          }
+          if (seen.has(cursor)) {
+            throw new Error("Codex session catalog returned a repeated search cursor");
+          }
+          seen.add(cursor);
         }
-        if (diagnostics) {
-          diagnostics.fields.stopReason ??= "page-bound";
-        }
-        outcome = "resolved";
-        return {
+        const catalogPage: CodexSessionCatalogPage = {
           sessions,
-          ...(managedThreads.length > 0 ? { managedThreads } : {}),
-          ...(nextCursor ? { nextCursor } : {}),
+          ...(managedThreads.length ? { managedThreads } : {}),
+          ...(cursor ? { nextCursor: cursor } : {}),
           ...(backwardsCursor ? { backwardsCursor } : {}),
         };
+        if (diagnostics) {
+          diagnostics.fields.stopReason = stopReason;
+        }
+        if (sourceAttempt?.allowed) {
+          sourceAttempt.resolved();
+        }
+        outcome = "resolved";
+        return catalogPage;
+      } catch (error) {
+        if (sourceAttempt?.allowed) {
+          sourceAttempt.rejected(error);
+        }
+        throw error;
       } finally {
         diagnostics?.finish(outcome);
       }
@@ -429,9 +418,11 @@ export function createCodexSessionCatalogControl(params: {
   managedThreads?: CodexManagedThreadStore;
 }): CodexSessionCatalogControlFactory {
   const now = params.now ?? Date.now;
+  const sourceBackoff = new CodexCatalogSourceBackoff(now);
+  const noConfig: OpenClawConfig = {};
   const getPluginConfig = () => params.getPluginConfig();
   const homeResolver = createCodexCatalogHomeResolver({
-    config: params.getRuntimeConfig() ?? params.config ?? {},
+    config: params.config ?? {},
     getRuntimeConfig: params.getRuntimeConfig,
     getPluginConfig: params.getPluginConfig,
     resolveRuntimeOptions: params.resolveRuntimeOptions,
@@ -441,12 +432,16 @@ export function createCodexSessionCatalogControl(params: {
     OpenClawConfig,
     Map<string, CodexCatalogRequestOptions>
   >();
-  const catalogPagesByConfig = new WeakMap<OpenClawConfig, CodexCatalogPageCache>();
+  const catalogPagesByConfig = new WeakMap<OpenClawConfig, Map<string, CodexCatalogPageCache>>();
+  const indexFor = createCodexCatalogIndexResolver({
+    now,
+  });
   const resolveRequestOptions = (
     startOptions: CodexAppServerStartOptions,
     agentId: string | undefined,
     source?: CodexCatalogControlSource,
   ): CodexCatalogRequestOptions => {
+    source?.assertCurrent();
     const runtimeConfig = params.getRuntimeConfig();
     const agentDir =
       source?.agentDir ?? (agentId ? resolveAgentDir(runtimeConfig ?? {}, agentId) : undefined);
@@ -488,7 +483,7 @@ export function createCodexSessionCatalogControl(params: {
     const requestOptions = resolveRequestOptions(runtime.start, agentId, source);
     const catalogListKey =
       pageParams && requestOptions.config
-        ? { scope: requestOptions, key: codexCatalogPageCacheKey(pageParams, agentId, source) }
+        ? { scope: requestOptions, key: `index:${JSON.stringify(pageParams.cwd?.trim() || null)}` }
         : undefined;
     return createCodexCatalogRequestSnapshot(
       runtime.requestTimeoutMs,
@@ -505,6 +500,8 @@ export function createCodexSessionCatalogControl(params: {
           ...(timeoutMs === undefined ? {} : { timeoutMs }),
         });
       },
+      (cwd) => indexFor(agentId, source, runtime, requestOptions.config, cwd),
+      () => sourceBackoff.begin(requestOptions.config ?? noConfig, agentId, source?.sourceHomeId),
     );
   };
 
@@ -512,6 +509,7 @@ export function createCodexSessionCatalogControl(params: {
     agentId: string | undefined,
     source?: CodexCatalogControlSource,
   ): CodexSessionCatalogControl => {
+    source?.assertCurrent();
     const withPinnedConnection: CodexSessionCatalogControl["withPinnedConnection"] = async (
       run,
     ) => {
@@ -557,6 +555,8 @@ export function createCodexSessionCatalogControl(params: {
               assertCurrent,
               ...(observation ? { controlObservation: observation } : {}),
             }),
+          (cwd) => indexFor(agentId, source, runtime, runtimeConfig, cwd),
+          () => sourceBackoff.begin(runtimeConfig ?? noConfig, agentId, source?.sourceHomeId),
         );
         const pinnedControl: CodexSessionCatalogControl =
           createCodexSessionCatalogControlFromRequests({
@@ -597,15 +597,23 @@ export function createCodexSessionCatalogControl(params: {
       requireEligibleThread: (threadId) =>
         withPinnedConnection((pinned) => pinned.requireEligibleThread(threadId)),
       async listPage(pageParams: CodexSessionCatalogPageParams) {
+        source?.assertCurrent();
         const listDiagnostics = currentCodexCatalogListDiagnostics();
         const runtimeConfig = params.getRuntimeConfig();
         if (!runtimeConfig) {
           return await control.listPage(pageParams);
         }
-        let cache = catalogPagesByConfig.get(runtimeConfig);
+        let sources = catalogPagesByConfig.get(runtimeConfig);
+        if (!sources) {
+          sources = new Map();
+          catalogPagesByConfig.set(runtimeConfig, sources);
+        }
+        // A full walk of other homes must not evict this source before its next poll.
+        const sourceKey = JSON.stringify([agentId, source?.sourceHomeId ?? null]);
+        let cache = sources.get(sourceKey);
         if (!cache) {
           cache = { settled: new Map(), pending: new Map() };
-          catalogPagesByConfig.set(runtimeConfig, cache);
+          sources.set(sourceKey, cache);
         }
         const key = codexCatalogPageCacheKey(pageParams, agentId, source);
         const cached = cache.settled.get(key);
@@ -650,7 +658,7 @@ export function createCodexSessionCatalogControl(params: {
               cache.settled.delete(key);
               cache.settled.set(key, {
                 value,
-                expiresAt: now() + CODEX_SESSION_CATALOG_LIST_TTL_MS,
+                expiresAt: now() + CODEX_CATALOG_CACHE_TTL_MS,
               });
               pruneMapToMaxSize(cache.settled, CODEX_SESSION_CATALOG_LIST_CACHE_MAX_ENTRIES);
               return value;
@@ -680,11 +688,10 @@ export function createCodexSessionCatalogControl(params: {
       },
     };
   };
-  const homesForAgent = (agentId: string) => homeResolver.forAgent(agentId);
-  const forUpstream = (agentId: string, connectionFingerprint: string) => {
+  const forUpstream = async (agentId: string, connectionFingerprint: string) => {
     // A fingerprint is correlation only. A miss must stay fail-closed instead of selecting a
     // different home whose thread namespace could contain the same copied identifier.
-    const source = homesForAgent(agentId).find(
+    const source = (await homeResolver.forAgent(agentId)).find(
       (home) =>
         buildCodexAppServerConnectionFingerprint(home.appServer, home.agentDir) ===
         connectionFingerprint,
@@ -694,9 +701,9 @@ export function createCodexSessionCatalogControl(params: {
   return {
     forRequest,
     forUpstream,
-    homesForAgent,
-    forNode(agentId) {
-      const source = homeResolver.forNode(agentId);
+    homesForAgent: homeResolver.forAgent,
+    async forNode(agentId) {
+      const source = await homeResolver.forNode(agentId);
       return {
         control: forRequest(source.agentId, source),
         sourceHomeId: source.sourceHomeId,

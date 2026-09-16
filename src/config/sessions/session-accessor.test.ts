@@ -90,7 +90,7 @@ import {
   iterateSessionEntryKeys,
 } from "./session-accessor.sqlite-entry-store.js";
 import { loadExactSessionEntry, replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
-import { importSqliteSessionRows } from "./session-accessor.sqlite-import.js";
+import { importSqliteSessionRows } from "./session-accessor.sqlite-import.test-support.js";
 import { recordSessionParticipant } from "./session-accessor.sqlite-participants.js";
 import { applySessionEntryCanonicalReplacements } from "./session-accessor.sqlite-replacement-projection.js";
 import {
@@ -2860,8 +2860,8 @@ describe("session accessor seam", () => {
     }).path;
     const database = openOpenClawAgentDatabase({ agentId: "main", path: databasePath });
     database.db.exec(`
-      CREATE TRIGGER fail_mixed_replacement_after_exact_write
-      BEFORE UPDATE OF entry_json ON session_nodes
+      CREATE TEMP TRIGGER fail_mixed_replacement_after_exact_write
+      BEFORE UPDATE OF entry_json ON main.session_nodes
       WHEN NEW.session_key = '${canonicalKey}'
         AND (
           SELECT json_extract(entry_json, '$.label')
@@ -3582,18 +3582,21 @@ describe("session accessor seam", () => {
     );
     const database = openOpenClawAgentDatabase({ agentId: "main", path: databasePath });
     database.db.exec(`
-      CREATE TRIGGER reject_manual_compact_metadata_update
-      BEFORE UPDATE OF entry_json ON session_nodes
+      CREATE TEMP TRIGGER reject_manual_compact_metadata_update
+      BEFORE UPDATE OF entry_json ON main.session_nodes
       WHEN OLD.session_key = '${sessionKey}'
       BEGIN
         SELECT RAISE(ABORT, 'injected manual compact metadata failure');
       END;
     `);
 
-    await expect(
-      trimSessionTranscriptForManualCompact(scope, { maxLines: 3, nowMs: 500 }),
-    ).rejects.toThrow("injected manual compact metadata failure");
-    database.db.exec("DROP TRIGGER reject_manual_compact_metadata_update;");
+    try {
+      await expect(
+        trimSessionTranscriptForManualCompact(scope, { maxLines: 3, nowMs: 500 }),
+      ).rejects.toThrow("injected manual compact metadata failure");
+    } finally {
+      database.db.exec("DROP TRIGGER reject_manual_compact_metadata_update;");
+    }
 
     expect(await loadTranscriptEvents(scope)).toEqual(records);
     expect(loadSessionEntry(scope)).toEqual(entryBeforeCompact);
@@ -4297,14 +4300,8 @@ describe("session accessor seam", () => {
       sessionId: scope.sessionId,
       updatedAt: 10,
     });
-    let markShouldAppendEntered!: () => void;
-    const shouldAppendEntered = new Promise<void>((resolve) => {
-      markShouldAppendEntered = resolve;
-    });
-    let resumeShouldAppend!: () => void;
-    const shouldAppendReleased = new Promise<boolean>((resolve) => {
-      resumeShouldAppend = () => resolve(true);
-    });
+    const shouldAppendEntered = createDeferred();
+    const shouldAppendReleased = createDeferred<boolean>();
 
     const turnPromise = persistSessionTranscriptTurn(scope, {
       cwd: tempDir,
@@ -4316,8 +4313,8 @@ describe("session accessor seam", () => {
             timestamp: 100,
           },
           shouldAppend: async () => {
-            markShouldAppendEntered();
-            return await shouldAppendReleased;
+            shouldAppendEntered.resolve();
+            return await shouldAppendReleased.promise;
           },
         },
       ],
@@ -4326,7 +4323,7 @@ describe("session accessor seam", () => {
       updateMode: "file-only",
     });
 
-    await shouldAppendEntered;
+    await shouldAppendEntered.promise;
     let unrelatedWriteError: unknown;
     try {
       appendSqliteTrajectoryRuntimeEvents({ sessionId: scope.sessionId, storePath }, [
@@ -4339,7 +4336,7 @@ describe("session accessor seam", () => {
       cwd: tempDir,
       message: makeUserMessage("queued prompt", 200),
     });
-    resumeShouldAppend();
+    shouldAppendReleased.resolve(true);
 
     const results = Promise.all([turnPromise, queuedAppendPromise]);
     await withTestTimeout(results, 1_000, "timed out waiting for queued transcript writes");
@@ -4358,14 +4355,8 @@ describe("session accessor seam", () => {
       sessionId: scope.sessionId,
       updatedAt: 10,
     });
-    let markAdmissionEntered!: () => void;
-    const admissionEntered = new Promise<void>((resolve) => {
-      markAdmissionEntered = resolve;
-    });
-    let resumeAdmission!: () => void;
-    const admissionReleased = new Promise<boolean>((resolve) => {
-      resumeAdmission = () => resolve(true);
-    });
+    const admissionEntered = createDeferred();
+    const admissionReleased = createDeferred<boolean>();
 
     const turnPromise = persistSessionTranscriptTurn(scope, {
       cwd: tempDir,
@@ -4377,8 +4368,8 @@ describe("session accessor seam", () => {
             timestamp: 200,
           },
           shouldAppend: async () => {
-            markAdmissionEntered();
-            return await admissionReleased;
+            admissionEntered.resolve();
+            return await admissionReleased.promise;
           },
           shouldAppendInTransaction: (latestAssistantMessage) => {
             const latest = latestAssistantMessage as { content?: unknown } | undefined;
@@ -4391,7 +4382,7 @@ describe("session accessor seam", () => {
       updateMode: "file-only",
     });
 
-    await admissionEntered;
+    await admissionEntered.promise;
     appendTranscriptMessageSync(scope, {
       idempotencyLookup: "caller-checked",
       message: {
@@ -4401,7 +4392,7 @@ describe("session accessor seam", () => {
         timestamp: 100,
       },
     });
-    resumeAdmission();
+    admissionReleased.resolve(true);
     await turnPromise;
 
     const assistantMessages = (await loadTranscriptEvents(scope)).flatMap((event) => {
@@ -4647,14 +4638,8 @@ describe("session accessor seam", () => {
       sessionId: scope.sessionId,
       updatedAt: 10,
     });
-    let releasePredicate!: () => void;
-    let markPredicateStarted!: () => void;
-    const predicateStarted = new Promise<void>((resolve) => {
-      markPredicateStarted = resolve;
-    });
-    const predicateGate = new Promise<void>((resolve) => {
-      releasePredicate = resolve;
-    });
+    const predicateStarted = createDeferred();
+    const predicateGate = createDeferred();
     const pendingTurn = persistSessionTranscriptTurn(scope, {
       expectedLifecycleRevision: "predicate-revision",
       expectedSessionId: scope.sessionId,
@@ -4662,8 +4647,8 @@ describe("session accessor seam", () => {
         {
           message: { role: "assistant", content: "late reply", timestamp: 100 },
           shouldAppend: async () => {
-            markPredicateStarted();
-            await predicateGate;
+            predicateStarted.resolve();
+            await predicateGate.promise;
             return true;
           },
         },
@@ -4672,7 +4657,7 @@ describe("session accessor seam", () => {
       updateMode: "file-only",
     });
 
-    await predicateStarted;
+    await predicateStarted.promise;
     let replacementError: unknown;
     try {
       replaceSessionEntrySync(scope, {
@@ -4683,7 +4668,7 @@ describe("session accessor seam", () => {
     } catch (error) {
       replacementError = error;
     } finally {
-      releasePredicate();
+      predicateGate.resolve();
     }
     const result = await pendingTurn;
 
@@ -4760,14 +4745,8 @@ describe("session accessor seam", () => {
       restartRecoveryTerminalRunIds: stored.restartRecoveryTerminalRunIds,
       status: stored.status,
     };
-    let releasePredicate!: () => void;
-    let markPredicateStarted!: () => void;
-    const predicateStarted = new Promise<void>((resolve) => {
-      markPredicateStarted = resolve;
-    });
-    const predicateGate = new Promise<void>((resolve) => {
-      releasePredicate = resolve;
-    });
+    const predicateStarted = createDeferred();
+    const predicateGate = createDeferred();
     const pendingTurn = persistSessionTranscriptTurn(scope, {
       expectedSessionId: scope.sessionId,
       expectedSessionState,
@@ -4775,8 +4754,8 @@ describe("session accessor seam", () => {
         {
           message: { role: "assistant", content: "stale recovery notice", timestamp: 100 },
           shouldAppend: async () => {
-            markPredicateStarted();
-            await predicateGate;
+            predicateStarted.resolve();
+            await predicateGate.promise;
             return true;
           },
         },
@@ -4785,7 +4764,7 @@ describe("session accessor seam", () => {
       updateMode: "file-only",
     });
 
-    await predicateStarted;
+    await predicateStarted.promise;
     replaceSessionEntrySync(scope, {
       abortedLastRun: false,
       restartRecoveryDeliveryRunId: "new-run",
@@ -4794,7 +4773,7 @@ describe("session accessor seam", () => {
       status: "running",
       updatedAt: 20,
     });
-    releasePredicate();
+    predicateGate.resolve();
     const result = await pendingTurn;
 
     expect(result).toMatchObject({ appendedCount: 0, rejectedReason: "session-rebound" });
