@@ -1,6 +1,7 @@
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ProviderRuntimeModel } from "../plugins/provider-runtime-model.types.js";
+import { FailoverError } from "./failover/error.js";
 import { modelKey, type ModelRef } from "./model-ref-shared.js";
 import { resolveProviderModelMaterializationAuthMode } from "./provider-model-route-auth.js";
 
@@ -172,18 +173,26 @@ export async function prepareModelChoice(params: {
             };
           }
           if (resolution.model) {
-            const model = validatePreparedRuntimeModel({
-              provider: ref.provider,
-              modelId: ref.model,
-              config,
-              workspaceDir: owner.workspaceDir,
-              metadataSnapshot: owner.metadataSnapshot,
-              route: auth.selectedRoute
-                ? { ...auth.selectedRoute, provider: ref.provider, modelId: ref.model }
-                : undefined,
-              model: resolution.model,
-            });
-            return { kind: "resolved", ref: resolution.logicalRef, model };
+            try {
+              const model = validatePreparedRuntimeModel({
+                provider: ref.provider,
+                modelId: ref.model,
+                config,
+                workspaceDir: owner.workspaceDir,
+                metadataSnapshot: owner.metadataSnapshot,
+                route: auth.selectedRoute
+                  ? { ...auth.selectedRoute, provider: ref.provider, modelId: ref.model }
+                  : undefined,
+                model: resolution.model,
+              });
+              return { kind: "resolved", ref: resolution.logicalRef, model };
+            } catch (error) {
+              // A retired final route rejects this candidate, not its remaining fallbacks.
+              if (error instanceof FailoverError && error.reason === "model_not_found") {
+                return { kind: "unavailable", error: error.message };
+              }
+              throw error;
+            }
           }
           // Automatic choices must not turn an unobserved dynamic catalog into a network probe.
           return resolution.deferred === "provider-dynamic-model"
