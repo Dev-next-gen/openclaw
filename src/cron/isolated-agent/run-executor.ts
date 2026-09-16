@@ -241,6 +241,7 @@ export type CronExecutionResult = CronCompletedPromptRun & {
 };
 
 type CronRunExecutionParams = {
+  runId: string;
   cfg: OpenClawConfig;
   cfgWithAgentDefaults: OpenClawConfig;
   job: CronStoredJob;
@@ -340,7 +341,7 @@ function createCronPromptExecutor(
     callerOrigin: params.job.toolsAllowProvenance?.callerOrigin,
     execTarget: params.job.toolsAllowExecTarget,
   });
-  const { sourceDelivery } = params;
+  const { sourceDelivery, runId } = params;
   const sourceReplyDeliveryMode = sourceDelivery.sourceReplyDeliveryMode;
   const messageChannel = sourceDelivery.target.channel ?? params.resolvedDelivery.channel;
   if (scheduledToolPolicy?.mode === "account") {
@@ -447,7 +448,6 @@ function createCronPromptExecutor(
             errorContext: "cron user turn transcript",
           });
     pendingUserTurn = { promptText, recorder: userTurnTranscriptRecorder };
-    const runId = params.cronSession.sessionEntry.sessionId;
     const basePreparedRunAdmission = prepareAgentRunAdmission({
       operationalRunInstance: createOperationalRunInstanceRef(runId),
       cfg: params.cfgWithAgentDefaults,
@@ -657,9 +657,6 @@ function createCronPromptExecutor(
             config: params.cfgWithAgentDefaults,
             agentId: params.agentId,
           });
-          // Cron intentionally reuses its durable session id as the run id; turn
-          // claims stay unique via per-claim ids and the worker gate handles this
-          // via credential rotation (see worker-environments/service.ts fences).
           // Keep CLI work visible to recovery until execution and settlement finish.
           const deferredLifecycle = createDeferredEmbeddedRunLifecycleManager({
             runId,
@@ -888,7 +885,7 @@ function createCronPromptExecutor(
               }
             : undefined,
           sourceReplyDeliveryMode,
-          runId: params.cronSession.sessionEntry.sessionId,
+          runId,
           deferTerminalLifecycle: true,
           onAgentEvent: params.lifecycle.note,
           allowEmptyAssistantReplyAsSilent,
@@ -970,7 +967,7 @@ export async function executeCronRun(params: CronRunExecutionParams): Promise<Cr
     normalizeVerboseLevel(params.cronSession.sessionEntry.verboseLevel) ??
     normalizeVerboseLevel(params.agentVerboseDefault) ??
     "off";
-  registerAgentRunContext(params.cronSession.sessionEntry.sessionId, {
+  registerAgentRunContext(params.runId, {
     sessionKey: params.runSessionKey,
     sessionId: params.cronSession.sessionEntry.sessionId,
     verboseLevel: resolvedVerboseLevel,
