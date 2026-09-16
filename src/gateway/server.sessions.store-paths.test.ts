@@ -45,10 +45,8 @@ test("session RPC paths name the physical SQLite store", async () => {
 });
 
 test("sessions.list reads completed models from each physical agent store", async () => {
-  const stateDir = process.env.OPENCLAW_STATE_DIR;
-  if (!stateDir) {
-    throw new Error("OPENCLAW_STATE_DIR is required for gateway session tests");
-  }
+  const { dir: stateDir } = await createSessionStoreDir();
+  testState.sessionStorePath = undefined;
   const storeTemplate = path.join(stateDir, "agents", "{agentId}", "sessions", "sessions.json");
   testState.sessionConfig = { store: storeTemplate };
   testState.agentsConfig = { list: [{ id: "main", default: true }, { id: "ops" }] };
@@ -117,10 +115,8 @@ test("sessions.list reads completed models from each physical agent store", asyn
 test.runIf(process.platform !== "win32")(
   "requested-agent path projection collapses physical store aliases",
   async () => {
-    const stateDir = process.env.OPENCLAW_STATE_DIR;
-    if (!stateDir) {
-      throw new Error("OPENCLAW_STATE_DIR is required for gateway session tests");
-    }
+    const { dir: stateDir } = await createSessionStoreDir();
+    testState.sessionStorePath = undefined;
     const aliasStateDir = `${stateDir}-alias`;
     fsSync.symlinkSync(stateDir, aliasStateDir, "dir");
     try {
@@ -132,6 +128,10 @@ test.runIf(process.platform !== "win32")(
         "sessions",
         "sessions.json",
       );
+      testState.sessionConfig = {
+        store: path.join(stateDir, "agents", "{agentId}", "sessions", "sessions.json"),
+      };
+      testState.agentsConfig = { list: [{ id: "main", default: true }] };
       await writeSessionStore({
         agentId: "main",
         entries: {
@@ -140,8 +140,9 @@ test.runIf(process.platform !== "win32")(
         storePath: realStore,
       });
       testState.sessionConfig = { store: aliasTemplate };
-      testState.agentsConfig = { list: [{ id: "main", default: true }] };
-
+      const { clearRuntimeConfigSnapshot, getRuntimeConfig } = await getGatewayConfigModule();
+      clearRuntimeConfigSnapshot();
+      getRuntimeConfig();
       const listed = await directSessionReq<{
         path: string;
         sessions: Array<{ key: string }>;
@@ -163,11 +164,8 @@ test.runIf(process.platform !== "win32")(
 );
 
 test("configured-only multi-store target preparation is reused across distinct lists", async () => {
-  const rootStateDir = process.env.OPENCLAW_STATE_DIR;
-  if (!rootStateDir) {
-    throw new Error("OPENCLAW_STATE_DIR is required for gateway session tests");
-  }
-  const stateDir = path.join(rootStateDir, "configured-path-scaling");
+  const { dir: stateDir } = await createSessionStoreDir();
+  testState.sessionStorePath = undefined;
   await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
     const agentIds = Array.from({ length: 29 }, (_, index) => `agent-${index}`);
     const storeTemplate = path.join(stateDir, "agents", "{agentId}", "sessions", "sessions.json");
@@ -231,11 +229,8 @@ test("configured-only multi-store target preparation is reused across distinct l
 });
 
 test("automatic list and search projection reuse conventional state-directory preparation", async () => {
-  const rootStateDir = process.env.OPENCLAW_STATE_DIR;
-  if (!rootStateDir) {
-    throw new Error("OPENCLAW_STATE_DIR is required for gateway session tests");
-  }
-  const home = path.join(rootStateDir, "conventional-path-scaling");
+  const { dir: home } = await createSessionStoreDir();
+  testState.sessionStorePath = undefined;
   const stateDir = path.join(home, ".openclaw");
   const legacyStateDir = path.join(home, ".clawdbot");
   await fs.mkdir(stateDir, { recursive: true });
@@ -341,11 +336,8 @@ test("automatic list and search projection reuse conventional state-directory pr
 });
 
 test("configured-only parent-owned stores keep lineage children without directory discovery", async () => {
-  const rootStateDir = process.env.OPENCLAW_STATE_DIR;
-  if (!rootStateDir) {
-    throw new Error("OPENCLAW_STATE_DIR is required for gateway session tests");
-  }
-  const stateDir = path.join(rootStateDir, "fixed-configured-list-regression");
+  const { dir: stateDir } = await createSessionStoreDir();
+  testState.sessionStorePath = undefined;
   await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
     const storeTemplate = path.join(stateDir, "agents", "{agentId}", "sessions", "sessions.json");
     const storePath = storeTemplate.replace("{agentId}", "ops");
