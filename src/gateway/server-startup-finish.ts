@@ -29,6 +29,7 @@ import { assertGatewayRuntimeSecurityConfig } from "./server-runtime-config.js";
 import { getRequiredSharedGatewaySessionGeneration } from "./server-shared-auth-generation.js";
 import { startGatewayTlsRenewal } from "./server-tls-renewal.js";
 import type { GatewayHttpTransport } from "./server-transport-bridge.js";
+import { collectGatewayWorkerPoolMetrics } from "./server/process-vitals.js";
 import { disconnectDisallowedGatewayBrowserOriginClients } from "./server/ws-origin-policy.js";
 import { DEFAULT_TERMINAL_DETACH_SECONDS } from "./terminal/session-limits.js";
 
@@ -365,7 +366,10 @@ export async function finishGatewayStartup(params: {
     ),
   );
   kernel.setPostAttachHandles(postAttachHandles);
-  startupTrace.detail("memory.ready", collectGatewayProcessMemoryUsageMb());
+  startupTrace.detail("memory.ready", [
+    ...collectGatewayProcessMemoryUsageMb(),
+    ...(minimalTestGateway ? [] : await collectGatewayWorkerPoolMetrics()),
+  ]);
   startupTrace.mark("ready");
   if (sidecarStartup === "defer") {
     log.info("gateway ready");

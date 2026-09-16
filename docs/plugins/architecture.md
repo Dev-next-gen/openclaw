@@ -223,8 +223,13 @@ Runtime and setup retirement remove captured artifacts asynchronously and wait
 for removal to finish. Plugin callback deadlines do not end custody of those
 files; synchronous source inspection and failed capture still clean up before returning.
 
-Model-catalog workers keep their captured plugin files in a directory owned by
-one worker. The parent removes any remaining captures after that worker exits,
+Configured Gateway agents share one model-catalog worker per plugin-inventory
+lifetime. Agent and authentication facts belong to each task; plugin registrations
+and captured source remain with the shared inventory. Standalone hosts that supply
+their own environment retain an isolated catalog worker for that environment.
+
+Model-catalog workers keep their captured plugin files in a worker-owned directory.
+The parent removes any remaining captures after that worker exits,
 including cancellation and crashes. Files remain available while the worker is
 running, and retiring one worker does not remove another generation's captures.
 Cancellation releases compute capacity after the worker exits; terminal shutdown
