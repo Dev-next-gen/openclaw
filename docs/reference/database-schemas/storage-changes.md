@@ -355,6 +355,8 @@ process-local owner.
 
 Node Gateway session listings prepare complete per-agent metadata in the existing
 SQLite worker broker. Independent durable inventories load at most four at a time.
+Serialized replies move owned byte buffers to the caller; shared or partial views
+are copied into an exact owned buffer before transfer.
 All started reads settle before target-order assembly, which rechecks logical and
 physical admission when consuming each result. Synchronous callers retain their
 one-target-at-a-time reads and assembly. The entry-cache owner still owns completed metadata and its

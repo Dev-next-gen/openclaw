@@ -31,6 +31,7 @@ import {
   attachStateLifecycleDelegate,
   withStateDatabaseCoordinatorRuntimeDirectory,
 } from "./state-database-coordinator.js";
+import { ownedWorkerBytes } from "./worker-transfer-bytes.js";
 
 const port = parentPort;
 if (!port) {
@@ -394,7 +395,12 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
     operationAdmission?.port.close();
     operationAdmission = undefined;
   }
-  port!.postMessage(reply, []);
+  if (reply.ok) {
+    const bytes = ownedWorkerBytes(reply.value);
+    port!.postMessage({ ...reply, value: bytes }, [bytes.buffer]);
+  } else {
+    port!.postMessage(reply, []);
+  }
 }
 
 // The broker sends one request at a time, including module initialization.
