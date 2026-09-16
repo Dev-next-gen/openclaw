@@ -10,9 +10,9 @@ import { SESSIONS_LIST_OWNER_LIMIT } from "../shared/session-list-limits.js";
 import { runSynchronousWork, type SynchronousWork } from "../shared/synchronous-work.js";
 import { gatewayClientSessionCreator } from "./server-methods/gateway-client-identity.js";
 import { resolveGatewayModelSelectionPolicy } from "./server-methods/session-model-selection-policy.js";
-import type { SessionListDiagnostics } from "./server-methods/sessions-list-diagnostics.js";
 import type { GatewayClient, GatewayRequestContext } from "./server-methods/types.js";
 import { readPreparedGatewayModelCatalogMetadata } from "./server-model-catalog-view.js";
+import type { SessionListDiagnostics } from "./session-list-diagnostics.types.js";
 import {
   filterSessionEntries,
   type SessionListFilteredEntries,
@@ -24,13 +24,6 @@ import type { SessionRowProjection } from "./session-row-projection.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
 import { getSessionDefaults } from "./session-utils-model.js";
 import type { GatewaySessionRow, SessionsListResult } from "./session-utils.types.js";
-
-export type SessionListProjectionTiming = {
-  prepareSyncMs: number;
-  rowSyncMs: number;
-  yieldWaitMs: number;
-  yieldCount: number;
-};
 
 type SessionEntrySelection = Omit<SessionListFilteredEntries, "ownerEntries"> & {
   ownerCount: number;

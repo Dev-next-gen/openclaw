@@ -167,34 +167,3 @@ export function prepareProjectedSessionPresentation(
     },
   };
 }
-
-export function presentProjectedSessionSnapshot(
-  projection: Projection,
-  query: Lookup,
-  options: PresentationOptions & {
-    client: GatewayClient | null;
-    context?: Partial<Pick<GatewayRequestContext, "chatAbortControllers">>;
-    now?: number;
-    sourceRow?: Record<string, unknown>;
-  },
-) {
-  const presentation = prepareProjectedSessionPresentation(
-    projection,
-    options.client,
-    options.now,
-    options.context,
-  );
-  if (!options.sourceRow) {
-    return presentation.snapshot(query, options);
-  }
-  const record = projection.describe(query);
-  if (
-    !record ||
-    options.sourceRow.sessionId !== record.entry.sessionId ||
-    (options.sourceRow.lifecycleRevision !== undefined &&
-      options.sourceRow.lifecycleRevision !== record.entry.lifecycleRevision)
-  ) {
-    return { row: null };
-  }
-  return presentation.snapshot(query, options);
-}

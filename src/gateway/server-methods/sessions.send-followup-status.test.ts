@@ -1,10 +1,10 @@
+import { expectDefined } from "@openclaw/normalization-core";
 /**
  * Tests follow-up session send status transitions and broadcasts.
  */
-
-import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
+import { bindSessionRowProjection } from "../session-row-projection-access.js";
 import { expectSubagentFollowupReactivation } from "./subagent-followup.test-helpers.js";
 import type { GatewayRequestContext, RespondFn } from "./types.js";
 
@@ -176,7 +176,7 @@ describe("sessions.send completed subagent follow-up status", () => {
     const context = createRequestContext({
       broadcastToConnIds,
       getSessionEventSubscriberConnIds: () => new Set(["conn-1"]),
-      getSessionRowProjection: () => projection,
+      ...bindSessionRowProjection({}, () => projection),
     });
 
     await expectDefined(

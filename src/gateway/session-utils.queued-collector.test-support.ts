@@ -30,6 +30,7 @@ import type {
   GatewayRequestContext,
   GatewayRequestHandlerOptions,
 } from "./server-methods/types.js";
+import { bindSessionRowProjection } from "./session-row-projection-access.js";
 import { createSessionRowProjection, type SessionRowProjection } from "./session-row-projection.js";
 import { loadGatewaySessionEntryReadOnly } from "./session-utils.js";
 import type { SessionsListResult } from "./session-utils.types.js";
@@ -131,7 +132,7 @@ export function useQueuedCollectorFixture() {
   function requestContext() {
     const context = createChatAbortContext({
       getRuntimeConfig,
-      getSessionRowProjection: () => projection,
+      ...bindSessionRowProjection({}, () => projection),
       loadGatewayModelCatalog: async () => [],
       addChatRun: vi.fn(),
       logGateway: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },

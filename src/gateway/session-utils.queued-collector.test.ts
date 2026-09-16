@@ -30,6 +30,7 @@ import { sessionAbortHandlers } from "./server-methods/sessions-abort.js";
 import { sessionMutationHandlers } from "./server-methods/sessions-mutations.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { createLifecycleEventBroadcastHandler } from "./server-session-events.js";
+import { getSessionRowProjection } from "./session-row-projection-access.js";
 import { loadGatewaySessionEntryReadOnly } from "./session-utils.js";
 import { useQueuedCollectorFixture } from "./session-utils.queued-collector.test-support.js";
 
@@ -88,7 +89,7 @@ describe("queued collector session projection", () => {
       broadcastToConnIds: broadcast,
       sessionEventSubscribers: { getAll: () => new Set(["observer"]) },
       chatAbortControllers: context.chatAbortControllers,
-      getSessionRowProjection: context.getSessionRowProjection,
+      getSessionRowProjection: () => getSessionRowProjection(context),
     });
     const unsubscribe = onSessionLifecycleEvent((event) => {
       publications.push(publishLifecycle(event));
@@ -317,10 +318,7 @@ describe("queued collector session projection", () => {
       { sessionId: "parent-session", updatedAt: Date.now() },
     );
     const afterStaleGrace = Date.now() + 3 * 60 * 60_000;
-    const projection = expectDefined(
-      requestContext().getSessionRowProjection?.(),
-      "queued row owner",
-    );
+    const projection = expectDefined(getSessionRowProjection(requestContext()), "queued row owner");
     const read = async (key: string) => {
       await projection.ensureMaterialized();
       return projection.snapshot({ key, agentId: "main" }, { now: afterStaleGrace }).row;

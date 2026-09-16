@@ -12,7 +12,7 @@ import { isSessionRunActive } from "../shared/session-run-state.js";
 import { sessionDeliveryChannel, sessionDeliveryOrigin } from "../utils/delivery-context.shared.js";
 import { resolveAssistantIdentity } from "./assistant-identity.js";
 import { readPreparedGatewayModelCatalogMetadata } from "./server-model-catalog-view.js";
-import type { SessionListFilterParams } from "./session-list-filters.js";
+import type { SessionListTargetLookup } from "./session-list-target.js";
 import type {
   SessionListActiveRunProjector,
   SessionListRowContext,
@@ -76,7 +76,7 @@ function shouldResolveDerivedSessionModelSearchFields(search: string): boolean {
 export function createSessionListSearchMatcher(params: {
   cfg: OpenClawConfig;
   search: string;
-  getTarget: SessionListFilterParams["getTarget"];
+  getTarget: SessionListTargetLookup;
   modelCatalog?: SessionListModelCatalog;
   now: number;
   getRowContext: SessionListRowContextProvider;

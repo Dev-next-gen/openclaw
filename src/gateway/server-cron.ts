@@ -141,6 +141,7 @@ import {
   registerSessionAutomationSource,
   unregisterSessionAutomationSource,
 } from "./session-automation-index.js";
+import { getSessionRowProjection } from "./session-row-projection-access.js";
 
 export type GatewaySystemJobReconciliationResult = "converged" | "retry-scheduled" | "superseded";
 
@@ -723,7 +724,7 @@ export function buildGatewayCronService(params: {
     });
     for (const sessionKey of boundKeys) {
       const context = scheduledGatewayContextResolver?.();
-      const projection = context?.getSessionRowProjection?.();
+      const projection = getSessionRowProjection(context);
       const publish = () =>
         params.broadcast(
           "sessions.changed",

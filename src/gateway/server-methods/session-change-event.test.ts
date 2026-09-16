@@ -15,6 +15,11 @@ import {
 } from "../../infra/agent-run-registry.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import { readGatewayAccessRevision } from "../gateway-access-revision.js";
+import {
+  bindSessionRowProjection,
+  getSessionRowProjection,
+} from "../session-row-projection-access.js";
+import type { SessionRowProjection } from "../session-row-projection.js";
 import { createSessionRowProjectionFixture } from "../session-row-projection.test-support.js";
 import { loadCachedSessionSharingSnapshot } from "../session-sharing-snapshot-cache.js";
 import { projectWorkerSessionPlacement } from "../worker-environments/placement-projector.js";
@@ -62,7 +67,7 @@ function createContext(
     broadcastToConnIds: vi.fn(),
     chatAbortControllers,
     getRuntimeConfig: () => config,
-    getSessionRowProjection: () => projection,
+    ...bindSessionRowProjection({}, () => projection as unknown as SessionRowProjection),
     getSessionEventSubscriberConnIds: () => receivers,
     mentionInbox: { invalidate: vi.fn() },
   } as unknown as GatewayRequestContext;
@@ -111,7 +116,7 @@ function preparePlacementProjection(
     agentId: "main",
     store: { [sessionKey]: { sessionId: `${sessionKey}-id`, updatedAt: 1 } },
   });
-  context.getSessionRowProjection = () => projection;
+  bindSessionRowProjection(context, () => projection);
   onTestFinished(() => projection.dispose());
   const snapshot = vi.spyOn(projection, "snapshot");
   const update = () => {
@@ -301,7 +306,7 @@ describe("sessions.changed coalescing", () => {
   it("joins the latest deferred row during shutdown while preparation is blocked", async () => {
     const context = createContext();
     const prepared = createDeferred();
-    vi.spyOn(context.getSessionRowProjection!()!, "ensureMaterialized").mockReturnValue(
+    vi.spyOn(getSessionRowProjection(context)!, "ensureMaterialized").mockReturnValue(
       prepared.promise,
     );
     emitSessionsChanged(context, { reason: "first", sessionKey: "agent:main:chat" });

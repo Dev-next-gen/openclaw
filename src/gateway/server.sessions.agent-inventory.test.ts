@@ -10,6 +10,7 @@ import * as sessionAccessor from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
+import { bindSessionRowProjection } from "./session-row-projection-access.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
 import { testState, writeSessionStore } from "./test-helpers.js";
 import {
@@ -79,7 +80,7 @@ test.each(inventorySizes)(
       }
       requests.push({ method: request.method, params: request.params });
       const response = await directSessionReq<T>(request.method, request.params, {
-        context: { getRuntimeConfig: () => cfg, getSessionRowProjection: () => projection },
+        context: { getRuntimeConfig: () => cfg, ...bindSessionRowProjection({}, () => projection) },
       });
       if (!response.ok) {
         throw new Error(response.error?.message ?? "Gateway inventory request failed");

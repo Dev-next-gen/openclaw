@@ -4,15 +4,21 @@ import {
   errorShape,
   validateChatStartupParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { getSessionRowProjection } from "../session-row-projection-access.js";
 import { resolveSessionKeyFromResolveParams } from "../sessions-resolve.js";
-import type * as history from "./chat-history-handler.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 export async function handleChatStartupRequest(
   opts: GatewayRequestHandlerOptions,
-  handleHistory: typeof history.handleChatHistoryRequest,
-  respondUnavailable: typeof history.respondChatHistoryUnavailable,
+  handleHistory: (
+    opts: GatewayRequestHandlerOptions & { method: "chat.history" | "chat.startup" },
+  ) => Promise<void>,
+  respondUnavailable: (
+    method: "chat.history" | "chat.startup",
+    respond: GatewayRequestHandlerOptions["respond"],
+    message: string,
+  ) => void,
 ) {
   if (!assertValidParams(opts.params, validateChatStartupParams, "chat.startup", opts.respond)) {
     return;
@@ -36,7 +42,7 @@ export async function handleChatStartupRequest(
     }
   }
   const { shortId, slugHint, agentId, limit, maxBytes } = opts.params;
-  const projection = opts.context.getSessionRowProjection?.();
+  const projection = getSessionRowProjection(opts.context);
   if (!projection) {
     respondUnavailable(
       "chat.startup",

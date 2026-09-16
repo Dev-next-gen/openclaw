@@ -1,8 +1,7 @@
+import { expectDefined } from "@openclaw/normalization-core";
 /**
  * Tests that session abort requests stay scoped to the targeted agent.
  */
-
-import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EmbeddedAgentQueueHandle } from "../../agents/embedded-agent-runner/run-state.js";
 import {
@@ -12,6 +11,7 @@ import {
   testing as subagentRegistryTesting,
 } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
 import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
+import { bindSessionRowProjection } from "../session-row-projection-access.js";
 import type { GatewayClient, GatewayRequestContext, RespondFn } from "./types.js";
 
 const chatAbortMock = vi.fn();
@@ -183,7 +183,7 @@ function projectSession(
     store: { [row.key]: { sessionId: row.sessionId, updatedAt: 1 } },
   });
   projections.add(projection);
-  context.getSessionRowProjection = () => projection;
+  bindSessionRowProjection(context, () => projection);
 }
 
 async function expectListedGlobalSessionActiveRun(params: {

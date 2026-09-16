@@ -17,10 +17,7 @@ import { WEBSOCKET_OPEN_READY_STATE } from "./server-constants.js";
 import { GatewayClientRegistry } from "./server/client-registry.js";
 import { buildGatewaySessionSnapshot } from "./session-event-payload.js";
 import { resolveSessionEventAgentScope } from "./session-request-agent.js";
-import {
-  prepareProjectedSessionPresentation,
-  presentProjectedSessionSnapshot,
-} from "./session-row-presentation.js";
+import { prepareProjectedSessionPresentation } from "./session-row-presentation.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
 import { canReceiveSessionEvent } from "./session-sharing.js";
 
@@ -119,7 +116,12 @@ export function createGatewayConnectionState(params: {
             ...source,
           };
       const sourceRow = base.session;
-      if (!isRecord(sourceRow)) {
+      if (
+        !isRecord(sourceRow) ||
+        sourceRow.sessionId !== record.entry.sessionId ||
+        (sourceRow.lifecycleRevision !== undefined &&
+          sourceRow.lifecycleRevision !== record.entry.lifecycleRevision)
+      ) {
         return () => undefined;
       }
       const now = Date.now();
@@ -127,14 +129,9 @@ export function createGatewayConnectionState(params: {
         if (!projection.isCurrent(record)) {
           return undefined;
         }
-        const { row } = presentProjectedSessionSnapshot(projection, query, {
-          client,
-          sourceRow,
-          now,
-          context: { chatAbortControllers },
-          includeDerivedTitles: true,
-          includeLastMessage: true,
-        });
+        const { row } = prepareProjectedSessionPresentation(projection, client, now, {
+          chatAbortControllers,
+        }).snapshot(query, { includeDerivedTitles: true, includeLastMessage: true });
         if (!row) {
           return undefined;
         }

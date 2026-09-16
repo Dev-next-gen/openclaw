@@ -5,10 +5,17 @@ import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { readUserProfileAliases } from "../state/user-profile-list.js";
+import { readSessionRowFacts } from "./server-methods/session-placement-read-projection.js";
 import type { GatewayClient } from "./server-methods/types.js";
+import type { SessionListDiagnostics } from "./session-list-diagnostics.types.js";
 import { createSessionRowProjectionFixture } from "./session-row-projection.test-support.js";
-import { listProjectedSessions, type SessionListProjectionTiming } from "./session-utils-list.js";
+import { listProjectedSessions } from "./session-utils-list.js";
 import { buildGatewaySessionRow } from "./session-utils-row.js";
+
+type SessionListProjectionTiming = Pick<
+  SessionListDiagnostics["projection"],
+  "prepareSyncMs" | "rowSyncMs" | "yieldWaitMs" | "yieldCount"
+>;
 
 function fixtureOwner(cfg: OpenClawConfig, key: string, agentId?: string): string {
   const configured = listAgentIds(cfg);
@@ -83,6 +90,11 @@ export async function listSessionFixture(
         agentId: params.opts.agentId ?? params.fixtureAgentId,
       }),
   });
+  if (params.opts.includeActivitySummary) {
+    for (const row of projection.select()) {
+      row.facts = readSessionRowFacts({ cfg: params.cfg, target: row, entry: row.entry });
+    }
+  }
   const profileId = params.ownerFirstActorId ?? params.involvingActorId;
   const client: GatewayClient | undefined =
     profileId || params.entryFilter

@@ -18,6 +18,7 @@ import {
   listSessions,
   requestContext,
 } from "./server-methods/sessions-read-cache.test-support.js";
+import { getSessionRowProjection } from "./session-row-projection-access.js";
 import * as titles from "./session-transcript-title-reader.js";
 
 afterEach(() => vi.restoreAllMocks());
@@ -75,7 +76,7 @@ it("heals resident titles after reconciliation without a transcript mutation or 
       await expect(
         reconcileSessionTranscriptIndexes({ agentId: scope.agentId, path: database.path }),
       ).resolves.toEqual({ reconciledSessions: 1 });
-      const projection = context.getSessionRowProjection!()!;
+      const projection = getSessionRowProjection(context)!;
       await projection.ensureMaterialized();
       expect(transcriptUpdates).not.toHaveBeenCalled();
       expect(events.all(scope.sessionId)).toEqual(originalEvents);
@@ -114,7 +115,7 @@ it("heals resident titles after reconciliation without a transcript mutation or 
       }
     } finally {
       stop();
-      context.getSessionRowProjection?.()?.dispose();
+      getSessionRowProjection(context)?.dispose();
       vi.restoreAllMocks();
     }
   });

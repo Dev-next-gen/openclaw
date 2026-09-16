@@ -35,6 +35,7 @@ import {
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { registerChatAbortController } from "../chat-abort.js";
+import { getSessionRowProjection } from "../session-row-projection-access.js";
 import * as rowInputs from "../session-utils-row.js";
 import {
   identifiedClient,
@@ -50,7 +51,7 @@ async function changeDuringReadiness(
   change: () => void | Promise<void>,
 ) {
   await initializeSessionReadContext(context);
-  const projection = context.getSessionRowProjection!()!;
+  const projection = getSessionRowProjection(context)!;
   const ensure = projection.ensureMaterialized;
   vi.spyOn(projection, "ensureMaterialized").mockImplementationOnce(async () => {
     await change();

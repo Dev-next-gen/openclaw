@@ -8,6 +8,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createSessionEventSubscriberRegistry } from "../server-chat-state.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { createTranscriptUpdateBroadcastHandler } from "../server-session-events.js";
+import { getSessionRowProjection } from "../session-row-projection-access.js";
 import {
   roleClient,
   rolePolicyConfig,
@@ -44,7 +45,7 @@ describe("chat.startup short references", () => {
         });
         await initializeSessionReadContext(context);
         const emit = createTranscriptUpdateBroadcastHandler({
-          getSessionRowProjection: context.getSessionRowProjection,
+          getSessionRowProjection: () => getSessionRowProjection(context),
           broadcastToConnIds,
           sessionEventSubscribers: subscribers,
           sessionMessageSubscribers: { get: () => new Set() },

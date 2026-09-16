@@ -33,6 +33,7 @@ import { createDirectChatContext } from "./server-chat.agent-events.test-helpers
 import { initializeSessionReadContext } from "./server-methods/sessions-read-cache.test-support.js";
 import type { GatewayRequestContext } from "./server-methods/shared-types.js";
 import { createTranscriptUpdateBroadcastHandler } from "./server-session-events.js";
+import { getSessionRowProjection } from "./session-row-projection-access.js";
 import { installGatewayTestHooks, testState, writeSessionStore } from "./test-helpers.js";
 
 const targetWarnings = vi.hoisted(() => vi.fn());
@@ -223,7 +224,7 @@ describe("chat.history cursor catch-up", () => {
     let projection = createSessionProjection({ sessionId, sessionKey }, cached.payload!.messages);
     const broadcast = vi.fn();
     const handler = createTranscriptUpdateBroadcastHandler({
-      getSessionRowProjection: context.getSessionRowProjection,
+      getSessionRowProjection: () => getSessionRowProjection(context),
       broadcastToConnIds: broadcast,
       chatAbortControllers: context.chatAbortControllers,
       sessionEventSubscribers: { getAll: () => new Set<string>() },

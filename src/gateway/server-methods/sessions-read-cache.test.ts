@@ -35,6 +35,7 @@ import { ensureProfileForEmail, setUserProfileRole } from "../../state/user-prof
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { invalidateOperatorRolePolicy } from "../operator-role-policy.js";
 import { persistGatewaySessionLifecycleEvent } from "../session-lifecycle-state.js";
+import { getSessionRowProjection } from "../session-row-projection-access.js";
 import type { WorkerSessionPlacementRecord } from "../worker-environments/placement-store.js";
 import {
   identifiedClient,
@@ -859,7 +860,7 @@ describe("resident sessions.list", () => {
         }
         const client = identifiedClient("viewer@example.com");
         await initializeSessionReadContext(context);
-        const projection = context.getSessionRowProjection!()!;
+        const projection = getSessionRowProjection(context)!;
         const ensure = projection.ensureMaterialized.bind(projection);
         let releaseRows!: () => void;
         const gate = new Promise<void>((resolve) => {
@@ -912,7 +913,7 @@ describe("resident sessions.list", () => {
       const client = identifiedClient("owner@example.com");
       const request = { archived: "all" as const, limit: 100 };
       await initializeSessionReadContext(context);
-      const projection = context.getSessionRowProjection!()!;
+      const projection = getSessionRowProjection(context)!;
       vi.spyOn(projection, "ensureMaterialized").mockRejectedValueOnce(
         new Error("synthetic materialization failure"),
       );

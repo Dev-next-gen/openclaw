@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.js";
 import * as sqlite from "../../infra/kysely-sync.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { getSessionRowProjection } from "../session-row-projection-access.js";
 import * as sessionUtils from "../session-utils.js";
 import { sessionByKeyReadHandlers } from "./sessions-read-by-key.js";
 import {
@@ -23,7 +24,7 @@ describe("resident session rows", () => {
         const context = requestContext(await seedSessions());
         const client = identifiedClient("owner@example.com");
         await listSessions({ context, client, request: { archived: "all" } });
-        const projection = context.getSessionRowProjection!()!;
+        const projection = getSessionRowProjection(context)!;
         const key = "agent:main:active";
         const entry = projection.describe({ agentId: "main", key })!.entry;
         const respond = vi.fn();
@@ -69,7 +70,7 @@ describe("resident session rows", () => {
         const result = await list(params);
         expect(respond).toHaveBeenCalledWith(true, result);
         // The reply must precede a later microtask's access revocation.
-        const row = context.getSessionRowProjection!()!.describe({
+        const row = getSessionRowProjection(context)!.describe({
           key: "agent:main:active",
           agentId: "main",
         })!;
@@ -96,7 +97,7 @@ describe("resident session rows", () => {
       const context = requestContext(await seedSessions());
       const client = identifiedClient("owner@example.com");
       await listSessions({ context, client, request: { archived: "all" } });
-      expect(context.getSessionRowProjection!()!.dirtyRowCount).toBe(0);
+      expect(getSessionRowProjection(context)!.dirtyRowCount).toBe(0);
       const prepares = vi.spyOn(DatabaseSync.prototype, "prepare");
       const reads = (["all", "get", "iterate"] as const).map((method) =>
         vi.spyOn(StatementSync.prototype, method),
@@ -168,7 +169,7 @@ describe("resident session rows", () => {
       const client = identifiedClient("owner@example.com");
       const request = { archived: "all" as const, limit: 100 };
       await listSessions({ context, client, request });
-      const projection = context.getSessionRowProjection!()!;
+      const projection = getSessionRowProjection(context)!;
       const key = "agent:main:active";
       const current = projection.describe({ agentId: "main", key })!;
       const untouched = projection.describe({ agentId: "work", key: "agent:work:active" })!;

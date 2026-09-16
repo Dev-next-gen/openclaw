@@ -61,6 +61,7 @@ runtime when they only need plugin-owned static descriptors.
 
 ## Session Row Projection
 
+- `session-row-projection-access.ts` binds request contexts to their runtime owner; context copies retain that binding, and the runtime owns projection disposal. Keep the generic request context independent of projection implementation types.
 - `session-row-projection.ts` owns resident materialized session rows. Owner publications through `sessionChanges` invalidate exact session identities; SQLite publications run after commit, and reads retain fresh sharing identity after yields.
 - Writers that create or rename keys publish the destination keys, including Doctor repairs. A broad store invalidation refreshes existing identities; it does not discover new keys by scanning.
 - Startup is per physical store: first admission, replacement, or reappearance after a hot `session.store` change hydrates that store once through the existing loader. Remove rows when their store leaves the topology. Incognito stores stay excluded across database generations.

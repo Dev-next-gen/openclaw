@@ -12,6 +12,7 @@ import * as sessionEntryStatus from "../config/sessions/session-accessor.sqlite-
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
+import { bindSessionRowProjection } from "./session-row-projection-access.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
 import type { SessionsListResult } from "./session-utils.types.js";
 import { testState, writeSessionStore } from "./test-helpers.js";
@@ -158,7 +159,12 @@ test("sessions.list retains transcript titles beyond the database handle cap", a
       const result = await directSessionReq<SessionsListResult>(
         "sessions.list",
         { includeDerivedTitles: true, includeLastMessage: true, limit },
-        { context: { getRuntimeConfig: () => cfg, getSessionRowProjection: () => projection } },
+        {
+          context: {
+            getRuntimeConfig: () => cfg,
+            ...bindSessionRowProjection({}, () => projection),
+          },
+        },
       );
 
       expect(result.ok).toBe(true);
@@ -239,7 +245,7 @@ test("projection startup retains every row beyond the former prewarm limit", asy
     },
   });
   try {
-    expect(projection.rows.size).toBe(2_001);
+    expect(projection.select().length).toBe(2_001);
     expect(projection.snapshot({ agentId: "main", key: "agent:main:large-2000" }).row).toEqual(
       expect.objectContaining({ key: "agent:main:large-2000", sessionId: "large-2000" }),
     );
@@ -311,7 +317,7 @@ test("sessions.list projects out prompt snapshots without changing full entry re
     decode.mockClear();
 
     const result = await directSessionReq<SessionsListResult>("sessions.list", LIST_PARAMS, {
-      context: { getRuntimeConfig: () => cfg, getSessionRowProjection: () => projection },
+      context: { getRuntimeConfig: () => cfg, ...bindSessionRowProjection({}, () => projection) },
     });
     expect(result.ok).toBe(true);
     expect(result.payload?.sessions.map((row) => row.sessionId)).toEqual(["sess-main"]);

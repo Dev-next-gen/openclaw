@@ -3,6 +3,7 @@ import { validateSessionsDescribeParams } from "../../../packages/gateway-protoc
 import { hasOperatorBoundary } from "../operator-role-policy.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { prepareProjectedSessionPresentation } from "../session-row-presentation.js";
+import { getSessionRowProjection } from "../session-row-projection-access.js";
 import { createSessionListEntryFilter } from "../session-sharing.js";
 import { readRecentSessionMessagesWithStatsAsync } from "../session-transcript-readers.js";
 import { loadSessionEntriesForTarget, requireSessionKey } from "./sessions-shared.js";
@@ -27,7 +28,7 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
     if (!key) {
       return;
     }
-    const projection = context.getSessionRowProjection?.();
+    const projection = getSessionRowProjection(context);
     if (!projection) {
       throw new Error("Session projection is unavailable before Gateway startup completes");
     }

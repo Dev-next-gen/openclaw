@@ -10,17 +10,17 @@ import {
   projectWorkerPlacementMove,
   projectWorkerSessionPlacement,
   readWorkerPlacementIdentity,
+  type WorkerSessionPlacementReader,
+  type WorkerPlacementDiskSpaceReader,
+  type WorkerPlacementRunnerAvailabilityReader,
 } from "../worker-environments/placement-projector.js";
 import type { WorkerSessionPlacementRecord } from "../worker-environments/placement-store.js";
 import { isFailedWorkerPlacementEnvironmentGone } from "../worker-environments/session-placement-lifecycle.js";
-import type { GatewayRequestContext } from "./types.js";
 
-type PlacementReadContext = Pick<
-  GatewayRequestContext,
-  | "workerSessionPlacementService"
-  | "workerPlacementDiskSpaceReader"
-  | "workerPlacementRunnerAvailabilityReader"
-> & {
+type PlacementReadContext = {
+  workerSessionPlacementService?: WorkerSessionPlacementReader;
+  workerPlacementDiskSpaceReader?: WorkerPlacementDiskSpaceReader;
+  workerPlacementRunnerAvailabilityReader?: WorkerPlacementRunnerAvailabilityReader;
   workerEnvironmentService?: Parameters<typeof readWorkerPlacementIdentity>[1];
 };
 

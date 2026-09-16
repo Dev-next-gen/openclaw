@@ -28,6 +28,7 @@ import {
 } from "../../routing/session-key.js";
 import { hasOperatorBoundary } from "../operator-role-policy.js";
 import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
+import { getSessionRowProjection } from "../session-row-projection-access.js";
 import {
   canAccessIncognitoSession,
   createSessionListEntryFilter,
@@ -194,7 +195,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
     if (!assertValidParams(params, validateSessionsListParams, "sessions.list", respond)) {
       return;
     }
-    const projection = context.getSessionRowProjection?.();
+    const projection = getSessionRowProjection(context);
     if (!projection) {
       throw new Error("Session projection is unavailable before Gateway startup completes");
     }
@@ -280,7 +281,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
     if (!assertValidParams(params, validateSessionsResolveParams, "sessions.resolve", respond)) {
       return;
     }
-    const projection = context.getSessionRowProjection?.();
+    const projection = getSessionRowProjection(context);
     if (!projection) {
       throw new Error("Session projection is unavailable before Gateway startup completes");
     }

@@ -8,11 +8,11 @@ import {
 import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import { createGatewayConnectionState } from "./server-connection-state.js";
 import type { GatewayClient } from "./server-methods/types.js";
-import {
-  prepareProjectedSessionPresentation,
-  presentProjectedSessionSnapshot,
-} from "./session-row-presentation.js";
+import type { GatewayWsClient } from "./server/ws-types.js";
+import { prepareProjectedSessionPresentation } from "./session-row-presentation.js";
+import { bindSessionRowProjection } from "./session-row-projection-access.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
 import { sharingPolicyClient } from "./session-sharing.test-utils.js";
 import type { SessionsListResult } from "./session-utils.types.js";
@@ -272,7 +272,7 @@ test.for(
           { configuredAgentsOnly: true, includeDerivedTitles: true },
           {
             client: sharingPolicyClient({ user: "viewer" }),
-            context: { getSessionRowProjection: () => projection },
+            context: bindSessionRowProjection({}, () => projection),
           },
         );
         expect(result.ok).toBe(true);
@@ -317,7 +317,7 @@ test("captured sentinel rows never substitute a later same-owner session after d
     const cfg = (await getGatewayConfigModule()).getRuntimeConfig();
     const projection = await createSessionRowProjection({ cfg });
     const client = sharingPolicyClient({ user: "viewer" });
-    const options = { client, context: { getSessionRowProjection: () => projection } };
+    const options = { client, context: bindSessionRowProjection({}, () => projection) };
     try {
       const selected = await directSessionReq<SessionsListResult>(
         "sessions.list",
@@ -341,16 +341,32 @@ test("captured sentinel rows never substitute a later same-owner session after d
       });
       await projection.ensureMaterialized();
       expect(prepareProjectedSessionPresentation(projection, client).present(captured)).toBeNull();
-      expect(
-        presentProjectedSessionSnapshot(
-          projection,
-          { key: "unknown", agentId: "main" },
-          {
-            client,
-            sourceRow: { ...selected.payload!.sessions[0]! },
-          },
-        ).row,
-      ).toBeNull();
+      const connection = createGatewayConnectionState({ bootId: "retired-sentinel", cfg });
+      const send = vi.fn();
+      const recipient = {
+        ...client,
+        connId: "sentinel-reader",
+        connect: { ...client.connect, scopes: ["operator.admin"] },
+        socket: {
+          readyState: 1,
+          bufferedAmount: 0,
+          send,
+          close: vi.fn(),
+        } as unknown as GatewayWsClient["socket"],
+      } as GatewayWsClient;
+      connection.clients.add(recipient);
+      const detach = connection.attachSessionRowProjection(projection);
+      try {
+        connection.broadcast("sessions.changed", {
+          sessionKey: "unknown",
+          agentId: "main",
+          session: selected.payload!.sessions[0],
+        });
+        expect(send).not.toHaveBeenCalled();
+      } finally {
+        detach();
+        connection.mentionInbox.dispose();
+      }
       // A new selection may use the remaining physical row; the captured identity may not.
       const current = await directSessionReq<SessionsListResult>(
         "sessions.list",

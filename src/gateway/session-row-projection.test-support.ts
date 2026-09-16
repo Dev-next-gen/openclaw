@@ -113,7 +113,6 @@ export function createSessionRowProjectionFixture(params: {
     setEntry(key, entry);
   }
   const projection: SessionRowProjection = {
-    rows,
     capture: describe,
     findBySessionId: (query) =>
       [...rows.values()].filter(

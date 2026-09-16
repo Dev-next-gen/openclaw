@@ -18,6 +18,7 @@ import {
 } from "../../infra/diagnostic-trace-context.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { getSessionRowProjection } from "../session-row-projection-access.js";
 import * as sessionRows from "../session-utils-row.js";
 import {
   identifiedClient,
@@ -67,7 +68,7 @@ test.each(["channel-only", "slow-warning"])("attributes %s operations", async (m
     const client = { ...identifiedClient("owner@example.com"), connId: "private-connection" };
     const request = { agentId: "main", limit: 1, includeDerivedTitles: true };
     await initializeSessionReadContext(context);
-    const owner = context.getSessionRowProjection!()!;
+    const owner = getSessionRowProjection(context)!;
     const ensure = owner.ensureMaterialized.bind(owner);
     const warn = mode === "slow-warning";
     const waitMs = warn ? 1_100 : 0;
@@ -150,7 +151,7 @@ test("reports materialized and reused selected rows after a keyed commit", async
     const context = requestContext(await seedSessions());
     const client = identifiedClient("owner@example.com");
     await initializeSessionReadContext(context);
-    const projection = context.getSessionRowProjection!()!;
+    const projection = getSessionRowProjection(context)!;
     const initial = await listSessions({ client, context, request: { agentId: "main", limit: 1 } });
     const query = { agentId: "main", key: initial.sessions[0]!.key };
     const entry = projection.describe(query)!.entry;
@@ -190,7 +191,7 @@ test("captures a fast failed readiness wait while preserving the original error"
     setDiagnosticsEnabledForProcess(false);
     vi.spyOn(performance, "now").mockImplementation(() => clock);
     const failure = new Error("synthetic-private-projection-error");
-    vi.spyOn(context.getSessionRowProjection!()!, "ensureMaterialized").mockImplementationOnce(
+    vi.spyOn(getSessionRowProjection(context)!, "ensureMaterialized").mockImplementationOnce(
       async () => {
         clock += 25;
         throw failure;
@@ -225,7 +226,7 @@ test("attributes concurrent presentation and readiness waits to each request tra
     const client = identifiedClient("owner@example.com");
     const request = { agentId: "main", limit: 1 };
     await initializeSessionReadContext(context);
-    const projection = context.getSessionRowProjection!()!;
+    const projection = getSessionRowProjection(context)!;
     const ensure = projection.ensureMaterialized.bind(projection);
     const release = createDeferredCore();
     const readiness = vi.spyOn(projection, "ensureMaterialized").mockImplementation(async () => {
@@ -288,7 +289,7 @@ test("reports fresh visibility after a readiness yield without charging the wait
     const context = requestContext(config);
     await initializeSessionReadContext(context);
     controlProjectionClock();
-    const projection = context.getSessionRowProjection!()!;
+    const projection = getSessionRowProjection(context)!;
     const ensure = projection.ensureMaterialized.bind(projection);
     vi.spyOn(projection, "ensureMaterialized").mockImplementationOnce(async () => {
       for (const name of ["first", "second", "third"]) {
@@ -335,7 +336,7 @@ test.each(["disabled", "sink-disabled", "sink-throws", "disabled-during-request"
         });
       }
       vi.spyOn(performance, "now").mockImplementation(() => clock);
-      const projection = context.getSessionRowProjection!()!;
+      const projection = getSessionRowProjection(context)!;
       const ensure = projection.ensureMaterialized.bind(projection);
       vi.spyOn(projection, "ensureMaterialized").mockImplementationOnce(async () => {
         await ensure();
@@ -366,7 +367,7 @@ test("preserves the original readiness error even when its slow diagnostic sink 
     await initializeSessionReadContext(context);
     vi.spyOn(performance, "now").mockImplementation(() => clock);
     const failure = new Error("synthetic projection failure");
-    vi.spyOn(context.getSessionRowProjection!()!, "ensureMaterialized").mockImplementationOnce(
+    vi.spyOn(getSessionRowProjection(context)!, "ensureMaterialized").mockImplementationOnce(
       async () => {
         clock += 1_500;
         throw failure;

@@ -95,7 +95,7 @@ it("retains current rows across agent scopes without SQLite and refreshes only t
     }
     const projection = await createSessionRowProjection({ cfg });
     try {
-      expect(projection.rows.size).toBe(4);
+      expect(projection.select().length).toBe(4);
       const untouched = projection.describe({ agentId: "work", key: "agent:work:child" });
       const prepares = vi.spyOn(DatabaseSync.prototype, "prepare");
       const exec = vi.spyOn(DatabaseSync.prototype, "exec");
@@ -486,7 +486,7 @@ it("retains physical sentinels and stable store precedence after a primary updat
     }
     const projection = await createSessionRowProjection({ cfg });
     try {
-      expect(projection.rows.size).toBe(2);
+      expect(projection.select().length).toBe(2);
       expect(
         projection.snapshot({ agentId: "main", key: "global", storePath: secondary }).row
           ?.sessionId,

@@ -14,6 +14,10 @@ import {
   resolveUserProfileId,
 } from "../../state/user-profiles.js";
 import {
+  bindSessionRowProjection,
+  getSessionRowProjection,
+} from "../session-row-projection-access.js";
+import {
   createSessionRowProjection,
   type SessionRowProjection,
 } from "../session-row-projection.js";
@@ -37,7 +41,7 @@ afterEach(() => {
   profileSubscriptions.clear();
 });
 export function initializeSessionReadContext(context: GatewayRequestContext) {
-  if (context.getSessionRowProjection?.()) {
+  if (getSessionRowProjection(context)) {
     return Promise.resolve();
   }
   let pending = initializing.get(context);
@@ -50,7 +54,7 @@ export function initializeSessionReadContext(context: GatewayRequestContext) {
       context,
     }).then((projection) => {
       projections.add(projection);
-      context.getSessionRowProjection = () => projection;
+      bindSessionRowProjection(context, () => projection);
     });
     initializing.set(context, pending);
   }

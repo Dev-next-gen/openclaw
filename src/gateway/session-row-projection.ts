@@ -32,7 +32,6 @@ import { readOpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-id
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import { retainUserProfileCatalog } from "../state/user-profile-list.js";
 import { readSessionRowFacts } from "./server-methods/session-placement-read-projection.js";
-import type { GatewayRequestContext } from "./server-methods/types.js";
 import { compareSessionEntryPairs } from "./session-list-order.js";
 import { yieldSessionListWork } from "./session-projection-work.js";
 import { prepareSessionRowScopes } from "./session-row-scope.js";
@@ -103,7 +102,7 @@ export async function createSessionRowProjection(params: {
   getConfig?: () => OpenClawConfig;
   modelCatalog?: RowInputsOptions["modelCatalog"];
   getModelCatalog?: () => Promise<RowInputsOptions["modelCatalog"]>;
-  context?: GatewayRequestContext;
+  context?: Parameters<typeof readSessionRowFacts>[0]["context"];
 }) {
   let cfg = params.cfg;
   let modelCatalog = params.modelCatalog;
@@ -628,8 +627,12 @@ export async function createSessionRowProjection(params: {
     throw error;
   });
   return {
-    rows,
-    capture: lookup,
+    capture(query: RowLookup) {
+      if (topologyDirty) {
+        topology();
+      }
+      return lookup(query);
+    },
     findBySessionId(query: { sessionId: string; agentId?: string; storePath?: string }) {
       return matching({ ...query, key: query.sessionId }, "id");
     },

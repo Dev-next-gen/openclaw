@@ -30,6 +30,8 @@ import {
   isSessionProfileDependentMethod,
 } from "./session-method-policy.js";
 import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
+import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
+import { getSessionRowProjection } from "./session-row-projection-access.js";
 import {
   authorizeIncognitoSessionTarget,
   authorizeSessionAgentRun,
@@ -133,8 +135,35 @@ export function resolveSessionMutationAuthorization(params: {
   ) {
     return { error: authenticatedProfileUnavailableError() };
   }
-  // These read handlers authorize current projection facts after their materialization await.
-  if (params.method === "sessions.list" || params.method === "sessions.describe") {
+  // The router waits for describe readiness; its role cap precedes handler visibility filtering.
+  if (params.method === "sessions.describe") {
+    const projection = getSessionRowProjection(params.context);
+    if (projection) {
+      const { cfg } = projection.state;
+      for (const target of resolveDirectSessionTargets(params.method, params.requestParams)) {
+        const agent = resolveRequestedSessionAgentId(cfg, target.sessionKey, target.agentId);
+        if (!agent.ok) {
+          return { error: agent.error };
+        }
+        const row = projection.describe({ key: target.sessionKey, agentId: agent.agentId });
+        const sharing = prepareProjectedSessionSharing({
+          cfg,
+          client: params.client,
+          isMember: (_target, identityId) => row?.membership.has(identityId) ?? false,
+        });
+        if (
+          row &&
+          gatewayClientSessionCreator(params.client) &&
+          sharing.sessionCap === "none" &&
+          !sharing.isCreator(row.entry.createdActor)
+        ) {
+          return { error: hiddenSessionNotFound(target.sessionKey) };
+        }
+      }
+    }
+    return { error: null };
+  }
+  if (params.method === "sessions.list") {
     return { error: null };
   }
   // Resolve runtime config at most once per request and only when a path needs it. The context

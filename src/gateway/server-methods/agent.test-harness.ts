@@ -26,6 +26,8 @@ import {
 import { captureEnv, setTestEnvValue } from "../../test-utils/env.js";
 import { installInMemoryTaskRegistryRuntime } from "../../test-utils/task-registry-runtime.js";
 import { createChatRunState } from "../server-chat-state.js";
+import { bindSessionRowProjection } from "../session-row-projection-access.js";
+import type { SessionRowProjection } from "../session-row-projection.js";
 import type { GatewaySessionRow } from "../session-utils.types.js";
 import {
   flushScheduledDispatchStep,
@@ -430,16 +432,20 @@ export const makeContext = (session?: {
     broadcastToConnIds: vi.fn(),
     getSessionEventSubscriberConnIds: () => new Set(),
     getRuntimeConfig: () => resolveAgentTestConfig(),
-    getSessionRowProjection: () => ({
-      get state() {
-        return { rowContext: { projectedAgentRuns: buildProjectedAgentRunIndex() } };
-      },
-      capture: () => undefined,
-      ensureMaterialized: async () => {},
-      snapshot: ({ key, agentId }: { key: string; agentId: string }) => ({
-        row: session?.agentId === agentId && session.row.key === key ? session.row : null,
-      }),
-    }),
+    ...bindSessionRowProjection(
+      {},
+      () =>
+        ({
+          get state() {
+            return { rowContext: { projectedAgentRuns: buildProjectedAgentRunIndex() } };
+          },
+          capture: () => undefined,
+          ensureMaterialized: async () => {},
+          snapshot: ({ key, agentId }: { key: string; agentId: string }) => ({
+            row: session?.agentId === agentId && session.row.key === key ? session.row : null,
+          }),
+        }) as unknown as SessionRowProjection,
+    ),
   }) as unknown as GatewayRequestContext;
 
 type AgentHandler = NonNullable<typeof agentHandlers.agent>;

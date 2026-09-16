@@ -1324,13 +1324,17 @@ describe("EmbeddedTuiBackend", () => {
     });
 
     const backend = new EmbeddedTuiBackend();
-
-    await expect(backend.loadHistory({ sessionKey: "agent:work:main" })).resolves.toMatchObject({
-      sessionKey: "agent:work:main",
-      messages: [],
-      thinkingLevel: "low",
-      sessionInfo: { thinkingLevel: "low" },
-    });
+    backend.start();
+    try {
+      await expect(backend.loadHistory({ sessionKey: "agent:work:main" })).resolves.toMatchObject({
+        sessionKey: "agent:work:main",
+        messages: [],
+        thinkingLevel: "low",
+        sessionInfo: { thinkingLevel: "low" },
+      });
+    } finally {
+      await backend.stop();
+    }
     expect(loadPreparedModelCatalogMock).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "work", readOnly: true }),
     );

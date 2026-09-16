@@ -10,11 +10,9 @@ import {
   prepareGatewayRecipientProfile,
   resolvePreparedSessionProfileId,
 } from "./expected-profile.js";
+import { createGatewayConnectionState } from "./server-connection-state.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
-import {
-  prepareProjectedSessionPresentation,
-  presentProjectedSessionSnapshot,
-} from "./session-row-presentation.js";
+import { prepareProjectedSessionPresentation } from "./session-row-presentation.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
 import { canReceiveSessionEvent } from "./session-sharing.js";
 import { rolePolicyConfig, sharingPolicyClient } from "./session-sharing.test-utils.js";
@@ -28,7 +26,15 @@ it("presents current recipient roles without SQLite while rejecting source overr
     const viewer = ensureProfileForEmail("viewer@presentation.test");
     setUserProfileRole(viewer.id, "none");
     const clients = [owner, member, viewer].map((profile) => {
-      const client = sharingPolicyClient({ user: profile.id }) as GatewayWsClient;
+      const client = Object.assign(sharingPolicyClient({ user: profile.id }), {
+        connId: profile.id,
+        socket: {
+          readyState: 1,
+          bufferedAmount: 0,
+          send: vi.fn(),
+          close: vi.fn(),
+        } as unknown as GatewayWsClient["socket"],
+      }) as GatewayWsClient;
       prepareGatewayRecipientProfile(client);
       return client;
     });
@@ -52,6 +58,11 @@ it("presents current recipient roles without SQLite while rejecting source overr
     );
     addSessionMember(scope, { identityId: member.id, addedBy: owner.id });
     const projection = await createSessionRowProjection({ cfg });
+    const connection = createGatewayConnectionState({ bootId: "presentation", cfg });
+    const detach = connection.attachSessionRowProjection(projection);
+    for (const client of clients) {
+      connection.clients.add(client);
+    }
     try {
       const captured = projection.describe(query)!;
       const prepares = vi.spyOn(DatabaseSync.prototype, "prepare");
@@ -86,19 +97,40 @@ it("presents current recipient roles without SQLite while rejecting source overr
           }),
         ).toBe(visible);
         expect(presentation.authorizeDescription(query)).toBeNull();
-        const snapshot = presentProjectedSessionSnapshot(projection, query, {
-          client,
-          sourceRow: {
-            key: query.key,
-            sessionId: entry.sessionId,
-            label: null,
-            endedAt: null,
-            status: "completed",
-            activitySummary: { state: "stale", text: "Retained event summary" },
+        connection.broadcastToConnIds(
+          "sessions.changed",
+          {
+            sessionKey: query.key,
+            agentId: query.agentId,
+            session: {
+              key: query.key,
+              sessionId: entry.sessionId,
+              label: null,
+              endedAt: null,
+              status: "completed",
+              activitySummary: { state: "stale", text: "Retained event summary" },
+            },
           },
-        });
-        expect(snapshot.row).toEqual(presentation.present(captured));
-        expect(snapshot.row).not.toMatchObject({ status: "completed", label: null });
+          new Set([client.connId]),
+        );
+        const socket = vi.mocked(client.socket);
+        if (visible) {
+          expect(socket.send.mock.calls).toHaveLength(1);
+          const frame = JSON.parse(String(socket.send.mock.calls[0]?.[0]));
+          const expectedWire = JSON.stringify(
+            prepareProjectedSessionPresentation(projection, client, Date.now(), connection).present(
+              captured,
+              {
+                includeDerivedTitles: true,
+                includeLastMessage: true,
+              },
+            ),
+          );
+          expect(frame.payload.session).toEqual(JSON.parse(expectedWire));
+          expect(frame.payload.session).not.toMatchObject({ status: "completed", label: null });
+        } else {
+          expect(socket.send.mock.calls).toHaveLength(0);
+        }
       }
       expect(
         prepareProjectedSessionPresentation(projection, clients[0]!).authorizeDescription({
@@ -121,13 +153,23 @@ it("presents current recipient roles without SQLite while rejecting source overr
       expect(
         prepareProjectedSessionPresentation(projection, clients[0]!).present(captured),
       ).toBeNull();
-      expect(
-        presentProjectedSessionSnapshot(projection, query, {
-          client: clients[0]!,
-          sourceRow: { sessionId: entry.sessionId },
-        }).row,
-      ).toBeNull();
+      const socket = vi.mocked(clients[0]!.socket);
+      socket.send.mockClear();
+      for (const payload of [
+        { sessionId: entry.sessionId, session: { sessionId: "replacement-session" } },
+        { session: { sessionId: entry.sessionId } },
+        { session: { sessionId: "replacement-session", lifecycleRevision: "retired" } },
+      ]) {
+        connection.broadcastToConnIds(
+          "sessions.changed",
+          { sessionKey: query.key, agentId: query.agentId, ...payload },
+          new Set([clients[0]!.connId]),
+        );
+      }
+      expect(socket.send.mock.calls).toHaveLength(0);
     } finally {
+      detach();
+      connection.mentionInbox.dispose();
       projection.dispose();
     }
   });

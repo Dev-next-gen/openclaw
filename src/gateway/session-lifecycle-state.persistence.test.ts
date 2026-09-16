@@ -36,6 +36,10 @@ import { resolveVisibleActiveSessionRunState } from "./server-methods/session-ac
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { startGatewayEventSubscriptions } from "./server-runtime-subscriptions.js";
 import * as lifecycleState from "./session-lifecycle-state.js";
+import {
+  bindSessionRowProjection,
+  getSessionRowProjection,
+} from "./session-row-projection-access.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
 
 const routing = vi.hoisted(() => ({ loadSessionEntry: vi.fn() }));
@@ -280,11 +284,11 @@ it.each(["success", "failed-write"])(
         updatedAt: 1_000,
       });
       const rowProjection = await createSessionRowProjection({ cfg, context });
-      context.getSessionRowProjection = () => rowProjection;
+      bindSessionRowProjection(context, () => rowProjection);
       const sessionEventSubscribers = createSessionEventSubscriberRegistry();
       sessionEventSubscribers.subscribe("session-observer");
       subscriptions = startGatewayEventSubscriptions({
-        getSessionRowProjection: context.getSessionRowProjection,
+        getSessionRowProjection: () => getSessionRowProjection(context),
         signal: new AbortController().signal,
         log: silentLog,
         broadcast,
@@ -418,7 +422,7 @@ it.each(["success", "failed-write"])(
       subscriptions?.transcriptUnsub();
       subscriptions?.lifecycleUnsub();
       await subscriptions?.taskUnsub();
-      context.getSessionRowProjection?.()?.dispose();
+      getSessionRowProjection(context)?.dispose();
       registration.cleanup();
       persistenceSpy?.mockRestore();
       routing.loadSessionEntry.mockReset();

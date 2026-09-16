@@ -10,6 +10,7 @@ import {
   resolveSessionEventAgentScope,
   type SessionEventAgentScope,
 } from "../session-request-agent.js";
+import { getSessionRowProjection } from "../session-row-projection-access.js";
 import { invalidateSessionSharingSnapshot } from "../session-sharing.js";
 import { resolveVisibleActiveSessionRunState } from "./session-active-runs.js";
 import type { GatewayRequestContext } from "./types.js";
@@ -27,7 +28,7 @@ type SessionChangeContext = Pick<
   | "broadcastToConnIds"
   | "chatAbortControllers"
   | "getRuntimeConfig"
-  | "getSessionRowProjection"
+  | "sessionRowProjectionOwner"
   | "getSessionEventSubscriberConnIds"
   | "workerSessionPlacementService"
   | "mentionInbox"
@@ -94,7 +95,7 @@ function broadcastSessionsChanged(
     context.broadcastToConnIds("sessions.changed", eventPayload, connIds, broadcastOptions);
     return;
   }
-  const projection = context.getSessionRowProjection?.();
+  const projection = getSessionRowProjection(context);
   const currentRow = projection?.snapshot(query).row;
   const sessionRow =
     payload.sessionId && payload.sessionId !== currentRow?.sessionId ? null : currentRow;
@@ -146,7 +147,7 @@ function publish(pending: PendingSessionChange): Promise<void> {
   pending.dirty = false;
   pending.firstDeferredAt = undefined;
   const { context, payload, scope } = pending;
-  const projection = context.getSessionRowProjection?.();
+  const projection = getSessionRowProjection(context);
   const query = snapshotTarget(payload, scope);
   const captured = query ? projection?.capture(query) : undefined;
   return (pending.publication = Promise.resolve().then(async () => {

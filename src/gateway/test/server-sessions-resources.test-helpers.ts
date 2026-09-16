@@ -1,11 +1,15 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { afterEach } from "vitest";
 import { runQaGatewayFixture } from "../../../test/helpers/qa-gateway-cleanup.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { isPathInside } from "../../infra/path-guards.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
+import { unregisterOpenClawAgentDatabase } from "../../state/openclaw-agent-db-registry.js";
 import {
   closeOpenClawAgentDatabasesAsync,
+  listOpenClawRegisteredAgentDatabases,
   closeOpenClawAgentDatabasesForTest,
 } from "../../state/openclaw-agent-db.js";
 import { gatewayFixtureLifetime } from "../gateway-fixture-lifetime.test-support.js";
@@ -56,6 +60,19 @@ export function installGatewaySessionsTestResources(
           harness = undefined;
         },
       ),
+  });
+
+  afterEach(async () => {
+    if (!sharedSessionStoreDir) {
+      return;
+    }
+    await closeOpenClawAgentDatabasesAsync(sharedSessionStoreDir);
+    for (const database of listOpenClawRegisteredAgentDatabases()) {
+      if (isPathInside(sharedSessionStoreDir, database.path)) {
+        unregisterOpenClawAgentDatabase(database);
+      }
+    }
+    await fs.rm(sharedSessionStoreDir, { recursive: true, force: true });
   });
 
   const requireHarness = () => {

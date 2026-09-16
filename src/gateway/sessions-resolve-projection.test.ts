@@ -20,6 +20,7 @@ import {
   resetResolvedSessionKeyForRunCacheForTest,
   resolveSessionKeyForRun,
 } from "./server-session-key.js";
+import { bindSessionRowProjection } from "./session-row-projection-access.js";
 import { createSessionRowProjection, type SessionRowProjection } from "./session-row-projection.js";
 import { roleClient, rolePolicyConfig } from "./session-sharing.test-utils.js";
 import { resolveGatewaySessionStoreTargetWithStore } from "./session-utils-store-lookup.js";
@@ -120,7 +121,7 @@ describe("session resolution metadata", () => {
               params: { [selector]: value, spawnedBy: parent, agentId: "main" },
               context: createDirectChatContext({
                 getRuntimeConfig: () => cfg,
-                getSessionRowProjection: () => projection,
+                ...bindSessionRowProjection({}, () => projection),
               }),
               req: { type: "req", id: "registry-resolve", method: "sessions.resolve" },
               client: null,

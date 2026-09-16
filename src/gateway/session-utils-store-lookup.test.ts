@@ -33,6 +33,7 @@ import type {
   GatewayRequestHandler,
   RespondFn,
 } from "./server-methods/types.js";
+import { getSessionRowProjection } from "./session-row-projection-access.js";
 import {
   createGatewaySessionEntryReader,
   prepareGatewaySessionStoreTargetsReadOnly,
@@ -479,9 +480,7 @@ describe("exact session model projections", () => {
         });
         expect(listed.sessions.find((row) => row.key === childKey)).toMatchObject(expected);
         expect
-          .soft(
-            context.getSessionRowProjection?.()?.snapshot({ key: childKey, agentId: "main" }).row,
-          )
+          .soft(getSessionRowProjection(context)?.snapshot({ key: childKey, agentId: "main" }).row)
           .toMatchObject(expected);
 
         const described = vi.fn();
@@ -502,7 +501,7 @@ describe("exact session model projections", () => {
           req: { type: "req", id: "model-history", method: "chat.history" },
           client: null,
           context: createDirectChatContext({
-            getSessionRowProjection: context.getSessionRowProjection,
+            sessionRowProjectionOwner: context.sessionRowProjectionOwner,
           }),
           isWebchatConnect: () => false,
           respond: history,
@@ -682,9 +681,7 @@ it.each([
         expect.soft(searched.sessions.some((row) => row.key === created.key)).toBe(true);
       }
       expect
-        .soft(
-          context.getSessionRowProjection?.()?.snapshot({ key: created.key, agentId: "work" }).row,
-        )
+        .soft(getSessionRowProjection(context)?.snapshot({ key: created.key, agentId: "work" }).row)
         .toMatchObject(expected);
       await expect
         .soft(

@@ -44,7 +44,6 @@ import { rotateAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import { onDiagnosticEvent, type DiagnosticPayloadLargeEvent } from "../infra/diagnostic-events.js";
 import { flushDiagnosticsTimeline } from "../infra/diagnostics-timeline.js";
 import { ExecApprovalsMigrationRequiredError } from "../infra/exec-approvals-migration-gate.js";
-import { isPathInside } from "../infra/path-guards.js";
 import { readPersistedMediaFacts } from "../media/media-facts.js";
 import { resolveMediaReferenceLocalPath } from "../media/media-reference.js";
 import { getMediaDir } from "../media/store.js";
@@ -59,12 +58,7 @@ import {
 import { onSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { buildPersistedUserTurnMessage } from "../sessions/user-turn-transcript.js";
 import { recordAgentProvenance } from "../state/agent-provenance.js";
-import { unregisterOpenClawAgentDatabase } from "../state/openclaw-agent-db-registry.js";
-import {
-  closeOpenClawAgentDatabasesAsync,
-  listOpenClawRegisteredAgentDatabases,
-  openOpenClawAgentDatabase,
-} from "../state/openclaw-agent-db.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
@@ -75,12 +69,14 @@ import {
 } from "./server-chat.agent-events.test-helpers.js";
 import { getMaxChatHistoryMessagesBytes } from "./server-constants.js";
 import { createGatewayChatMetadataRuntime } from "./server-methods/chat-metadata-runtime.js";
+import { initializeSessionReadContext } from "./server-methods/sessions-read-cache.test-support.js";
 import type {
   GatewayRequestContext,
   GatewayRequestHandlerOptions,
   RespondFn,
 } from "./server-methods/shared-types.js";
 import { pendingChatSendDedupeKey } from "./server-shared.js";
+import { releaseSessionTestDirectories } from "./session-test-directories.test-support.js";
 import type { GatewaySessionsDefaults } from "./session-utils.types.js";
 import {
   connectOk,
@@ -276,16 +272,7 @@ function createGatewayPluginMetadataSnapshot(config: OpenClawConfig): PluginMeta
 const autoCleanupTempDirs = createTempDirTracker();
 
 afterEach(async () => {
-  const roots = [...autoCleanupTempDirs.dirs];
-  for (const root of roots) {
-    await closeOpenClawAgentDatabasesAsync(root);
-  }
-  // The shared Gateway must not retain registrations for deleted fixture stores.
-  for (const database of listOpenClawRegisteredAgentDatabases()) {
-    if (roots.some((root) => isPathInside(root, database.path))) {
-      unregisterOpenClawAgentDatabase(database);
-    }
-  }
+  await releaseSessionTestDirectories([...autoCleanupTempDirs.dirs]);
   autoCleanupTempDirs.cleanup();
 });
 
@@ -435,6 +422,9 @@ async function callDirectChatHandler(
   options: GatewayRequestHandlerOptions,
 ) {
   const { coreGatewayHandlers } = await import("./server-methods.js");
+  if (method === "chat.history" || method === "chat.startup") {
+    await initializeSessionReadContext(options.context);
+  }
   await expectDefined(coreGatewayHandlers[method], `${method} test invariant`)(options);
 }
 

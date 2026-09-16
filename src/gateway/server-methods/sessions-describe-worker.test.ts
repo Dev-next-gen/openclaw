@@ -30,6 +30,7 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { ensureProfileForEmail, linkEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { getSessionRowProjection } from "../session-row-projection-access.js";
 import { sharingPolicyClient } from "../session-sharing.test-utils.js";
 import { createWorkerSessionPlacementStore } from "../worker-environments/placement-store.js";
 import {
@@ -143,7 +144,7 @@ async function withFixture(
       try {
         await run({ cfg, context, ownerId, viewer });
       } finally {
-        context.getSessionRowProjection?.()?.dispose();
+        getSessionRowProjection(context)?.dispose();
         clearSubagentRunsReadCacheForTest();
       }
     },
@@ -156,7 +157,7 @@ async function whilePaused(
   change: () => Promise<void> | void,
 ) {
   await initializeSessionReadContext(context);
-  const projection = context.getSessionRowProjection!()!;
+  const projection = getSessionRowProjection(context)!;
   const ensure = projection.ensureMaterialized.bind(projection);
   const paused = createDeferredCore();
   const released = createDeferredCore();
@@ -621,7 +622,7 @@ it("returns no row for missing or hidden targets without provisioning missing st
       });
       expect(fs.existsSync(state.admission.databasePath)).toBe(false);
     } finally {
-      context.getSessionRowProjection?.()?.dispose();
+      getSessionRowProjection(context)?.dispose();
     }
   });
   await withFixture(async ({ context, viewer }) => {

@@ -30,6 +30,7 @@ import { abortQueuedChatTurns, listQueuedChatTurnsForSession } from "../chat-que
 import { resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
 import { errorShapeFromError } from "../error-shape.js";
 import { PENDING_CHAT_SEND_DEDUPE_PREFIX } from "../server-shared.js";
+import { getSessionRowProjection } from "../session-row-projection-access.js";
 import { resolveSessionStoreKey } from "../session-utils.js";
 import { asWorkerInferenceControl } from "../worker-environments/inference-control.js";
 import {
@@ -180,7 +181,7 @@ export function abortQueuedCollectorSession(
     };
     try {
       assertCurrent();
-      const projection = params.context.getSessionRowProjection?.();
+      const projection = getSessionRowProjection(params.context);
       if (projection) {
         do {
           await projection.ensureMaterialized();

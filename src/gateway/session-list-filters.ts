@@ -28,7 +28,7 @@ import {
   resolveSessionListProfileReference,
 } from "./session-identity-projection.js";
 import type { SessionEntryPair } from "./session-list-order.js";
-import type { SessionRowProjection } from "./session-row-projection.js";
+import type { SessionListTargetLookup } from "./session-list-target.js";
 import type {
   SessionActorProfileIdentity,
   SessionListActiveRunProjector,
@@ -52,11 +52,7 @@ export type SessionListFilteredEntries = {
 export type SessionListFilterParams = {
   cfg: OpenClawConfig;
   entries: Iterable<SessionEntryPair>;
-  getTarget: (
-    key: string,
-  ) =>
-    | (NonNullable<ReturnType<SessionRowProjection["describe"]>> & { storeKey?: string })
-    | undefined;
+  getTarget: SessionListTargetLookup;
   modelCatalog?: SessionListModelCatalog | ModelCatalogEntry[];
   opts: SessionsListParams;
   now: number;

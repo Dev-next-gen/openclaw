@@ -58,6 +58,7 @@ function makeContextParams(overrides: Partial<RequestRuntime> = {}): GatewayRequ
   const config = {} as never;
   return {
     runtime: {
+      getSessionRowProjection: () => undefined,
       connectionWork: { track: trackAsyncWork },
       deps: {} as never,
       runtimeState: {

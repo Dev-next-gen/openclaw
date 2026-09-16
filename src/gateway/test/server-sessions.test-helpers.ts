@@ -9,6 +9,7 @@ import type { InternalHookEvent } from "../../hooks/internal-hooks.js";
 import { resetSystemEventsForTest } from "../../infra/system-events.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
+import { flushPendingSessionsChangedEvents } from "../server-methods/session-change-event.js";
 import { initializeSessionReadContext } from "../server-methods/sessions-read-cache.test-support.js";
 import type { GatewayRequestContext } from "../server-methods/types.js";
 import { embeddedRunMock, agentDiscoveryMock, testState } from "../test-helpers.runtime-state.js";
@@ -635,7 +636,16 @@ export async function directSessionReq<TPayload = unknown>(
   const context = directContexts.get(contextKey) ?? createDirectChatContext();
   Object.assign(context, contextFields);
   directContexts.set(contextKey, context);
-  if (["sessions.list", "sessions.describe", "sessions.resolve"].includes(method)) {
+  if (
+    [
+      "sessions.list",
+      "sessions.describe",
+      "sessions.resolve",
+      "sessions.patch",
+      "sessions.patchMany",
+      "sessions.compact",
+    ].includes(method)
+  ) {
     await initializeSessionReadContext(context);
   }
   await handler({
@@ -658,6 +668,7 @@ export async function directSessionReq<TPayload = unknown>(
     isWebchatConnect: opts?.isWebchatConnect ?? (() => false),
     sessionMutationAuthorization: opts?.sessionMutationAuthorization,
   });
+  await flushPendingSessionsChangedEvents(context);
   if (!result) {
     throw new Error(`${method} did not respond`);
   }

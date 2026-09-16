@@ -123,6 +123,7 @@ function seedTranscriptState(storePath: string): void {
       0,
       JSON.stringify({
         type: "message",
+        id: `${UNRELATED_SESSION_ID}-message-0`,
         message: { content: "unrelated transcript message", role: "assistant" },
       }),
       now,

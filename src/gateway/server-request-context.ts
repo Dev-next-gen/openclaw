@@ -26,6 +26,7 @@ import {
 } from "./server/health-state.js";
 import { broadcastPresenceSnapshot } from "./server/presence-events.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
+import { bindSessionRowProjection } from "./session-row-projection-access.js";
 
 type GatewayRequestContextClient = GatewayClient & {
   socket: { close: (code: number, reason: string) => void };
@@ -53,7 +54,6 @@ type GatewayRequestContextRuntime = Pick<
   | "readPreparedGatewayModelCatalog"
   | "readPreparedGatewayModelCatalogBatch"
   | "getRuntimeSnapshot"
-  | "getSessionRowProjection"
   | "broadcast"
   | "broadcastToConnIds"
   | "nodeSendToSession"
@@ -92,6 +92,7 @@ type GatewayRequestContextRuntime = Pick<
 > &
   Pick<
     GatewayCoreRuntime,
+    | "getSessionRowProjection"
     | "refreshGatewayHealthSnapshotWithRuntime"
     | "hasTalkNodeConnected"
     | "sharedGatewaySessionGenerationState"
@@ -238,7 +239,6 @@ export function createGatewayRequestContext(
   const scopeUpgradeCoordinator = new ScopeUpgradeCoordinator();
   const context: GatewayRequestContext = {
     trackExecution: (run) => connectionWork.track(run),
-    getSessionRowProjection: runtime.getSessionRowProjection,
     deps: runtime.deps,
     configRevisionProjector: params.configRevisionProjector,
     // Keep cron reads live so config hot reload can swap cron/store state without rebuilding
@@ -561,5 +561,5 @@ export function createGatewayRequestContext(
     broadcastVoiceWakeRoutingChanged: runtime.broadcastVoiceWakeRoutingChanged,
     unavailableGatewayMethods: runtime.unavailableGatewayMethods,
   };
-  return context;
+  return bindSessionRowProjection(context, runtime.getSessionRowProjection);
 }

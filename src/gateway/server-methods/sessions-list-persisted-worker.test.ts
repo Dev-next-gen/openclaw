@@ -13,6 +13,7 @@ import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-wo
 import { runOpenClawStateWorkerOperation } from "../../state/openclaw-state-worker-store.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { getSessionRowProjection } from "../session-row-projection-access.js";
 import { sessionByKeyReadHandlers } from "./sessions-read-by-key.js";
 import {
   identifiedClient,
@@ -141,7 +142,7 @@ it.each(["replaced", "made private"])(
           vi.restoreAllMocks();
           catalog.resolve();
           await Promise.allSettled([request]);
-          context.getSessionRowProjection?.()?.dispose();
+          getSessionRowProjection(context)?.dispose();
           clearSubagentRunsReadCacheForTest();
         }
       },
@@ -248,7 +249,7 @@ it("lists off-page controller links and deleted-collector totals while a sibling
           ),
         ).toEqual({ ok: true, value: true });
       } finally {
-        context.getSessionRowProjection?.()?.dispose();
+        getSessionRowProjection(context)?.dispose();
         clearSubagentRunsReadCacheForTest();
       }
     },

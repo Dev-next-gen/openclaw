@@ -14,6 +14,7 @@ import {
 } from "./server-methods/sessions-read-cache.test-support.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
 import { buildGatewaySessionSnapshot } from "./session-event-payload.js";
+import { getSessionRowProjection } from "./session-row-projection-access.js";
 import { rolePolicyConfig, sharingPolicyClient } from "./session-sharing.test-utils.js";
 
 afterEach(() => vi.restoreAllMocks());
@@ -117,7 +118,7 @@ it("delivers nested event rows identical to the full list for each viewer and cl
       collectorCompletion: { status: "done" },
     });
     await initializeSessionReadContext(context);
-    const projection = context.getSessionRowProjection!()!;
+    const projection = getSessionRowProjection(context)!;
     const detach = connection.attachSessionRowProjection(projection);
     try {
       const prepares = vi.spyOn(DatabaseSync.prototype, "prepare");

@@ -34,6 +34,7 @@ import {
   tryResolveSessionCompatibilityOwnerAgentId,
 } from "../session-request-agent.js";
 import { prepareProjectedSessionPresentation } from "../session-row-presentation.js";
+import { getSessionRowProjection } from "../session-row-projection-access.js";
 import { hiddenSessionNotFound } from "../session-sharing-policy.js";
 import {
   isGatewayAdmin,
@@ -77,7 +78,7 @@ import { assertValidParams } from "./validation.js";
 
 type ChatHistoryMethod = "chat.history" | "chat.startup";
 
-export function respondChatHistoryUnavailable(
+function respondChatHistoryUnavailable(
   method: ChatHistoryMethod,
   respond: GatewayRequestHandlerOptions["respond"],
   message: string,
@@ -442,7 +443,7 @@ export async function handleChatHistoryRequest({
   const startupMetadata = method === "chat.startup" ? startupProjection?.metadata : undefined;
   const sessionModelCatalog = startupProjection?.sessionModelCatalog;
   const defaultModelCatalog = startupProjection?.defaultModelCatalog;
-  const rowProjection = context.getSessionRowProjection?.();
+  const rowProjection = getSessionRowProjection(context);
   if (!rowProjection) {
     respondChatHistoryUnavailable(
       method,
