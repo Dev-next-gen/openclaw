@@ -8,7 +8,7 @@ import { resolveManifestModelCatalogProviderAliasMetadata } from "./embedded-age
 import { modelCatalogRowToEntry } from "./model-catalog-entry.js";
 import { modelKey } from "./model-ref-shared.js";
 import { resolveDefaultModelForAgent } from "./model-selection-config.js";
-import { buildAllowedModelSet, buildModelAliasIndex } from "./model-selection-shared.js";
+import { createModelVisibilityPolicyWithFallbacks } from "./model-selection-shared.js";
 import type { PreparedModelRuntimeAgentFacts } from "./prepared-model-runtime.catalog-contract.js";
 import type {
   PreparedConfiguredRuntimeModel,
@@ -24,36 +24,30 @@ export function completeConfiguredRuntimeModels(
   const prepareAliases = (models: readonly PreparedConfiguredRuntimeModel[]) => {
     const { config, agentId } = agentFacts.input;
     const defaults = resolveDefaultModelForAgent({ cfg: config, agentId });
-    const selection = {
+    const policy = createModelVisibilityPolicyWithFallbacks({
       cfg: config,
       agentId,
       defaultProvider: defaults.provider,
       defaultModel: defaults.model,
       manifestPlugins: pluginGeneration.pluginMetadataSnapshot.plugins,
-    };
-    const aliases = buildModelAliasIndex(selection);
+      catalog: [
+        ...modelRegistry.getAll().map(modelCatalogRowToEntry),
+        ...models.map(({ model }) => modelCatalogRowToEntry(model)),
+      ],
+      fallbackModels: [],
+    });
     const selectedAliases = new Map(
-      [...aliases.byAlias.values()].map(({ alias, ref }) => [
+      [...policy.selectionAliasIndex.byAlias.values()].map(({ alias, ref }) => [
         modelKey(ref.provider, ref.model),
         alias,
       ]),
     );
-    const policy =
-      selectedAliases.size > 0
-        ? buildAllowedModelSet({
-            ...selection,
-            catalog: [
-              ...modelRegistry.getAll().map(modelCatalogRowToEntry),
-              ...models.map(({ model }) => modelCatalogRowToEntry(model)),
-            ],
-          })
-        : undefined;
     return models.map((entry) => {
       const alias = selectedAliases.get(modelKey(entry.provider, entry.modelId));
       // Keep the catalog donor for later account materialization; only its admitted
       // configured transport can advertise an alias in this generation.
       const supported =
-        alias && policy?.allows({ provider: entry.provider, model: entry.modelId })
+        alias && policy.allows({ provider: entry.provider, model: entry.modelId })
           ? resolveExplicitModelWithRegistry({
               provider: entry.provider,
               modelId: entry.modelId,

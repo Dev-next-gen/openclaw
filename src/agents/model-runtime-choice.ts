@@ -29,13 +29,11 @@ export async function prepareModelChoice(params: {
     resolveModelRefFromString,
   } = await import("./model-selection.js");
   const { splitTrailingAuthProfile } = await import("./model-ref-profile.js");
-  const { resolveAgentHarnessPolicy } = await import("./harness/policy.js");
   const { createModelCatalogDecisions, resolveCatalogDecisionRuntime } =
     await import("./model-catalog-decisions.js");
   const { getPreparedModelRuntimeAuthStore } = await import("./prepared-model-runtime-auth.js");
   const { projectProviderModelRouteConfig } = await import("./provider-model-route.js");
-  const { buildAgentRuntimeAuthPlan } = await import("./runtime-plan/auth.js");
-  const { materializePreparedRuntimeModel } = await import("./runtime-plan/materialize-model.js");
+  const { validatePreparedRuntimeModel } = await import("./runtime-plan/materialize-model.js");
   const { resolveModelCandidateChain } = await import("./model-fallback-candidates.js");
   const { resolveProviderIdForAuth } = await import("./provider-auth-aliases.js");
   const { withPluginRuntimeGenerationScope } =
@@ -86,12 +84,6 @@ export async function prepareModelChoice(params: {
           });
         const requestedAuthOwner = authOwner(requested.provider);
         const prepare = async (ref: ModelRef): Promise<PreparedModelChoice> => {
-          const runtime = resolveAgentHarnessPolicy({
-            config: owner.config,
-            agentId: params.agentId,
-            provider: ref.provider,
-            modelId: ref.model,
-          }).runtime;
           const authStore = getPreparedModelRuntimeAuthStore(owner);
           if (!authStore) {
             return {
@@ -121,19 +113,18 @@ export async function prepareModelChoice(params: {
             profileProvider: ref.provider,
           });
           const key = modelKey(ref.provider, ref.model);
-          const entry = owner.modelCatalog.entries.find(
+          const entry = decisions.snapshot.entries.find(
             (row) => modelKey(row.provider, row.id) === key,
           ) ?? {
             provider: ref.provider,
             id: ref.model,
             name: ref.model,
           };
-          const variants = owner.modelCatalog.routeVariants.filter(
+          const variants = decisions.snapshot.routeVariants.filter(
             (row) => modelKey(row.provider, row.id) === key,
           );
-          const runtimeId = runtime === "auto" ? undefined : runtime;
-          const host = await decisions.evaluateEntry(entry, variants, runtimeId);
-          const auth = decisions.evaluateNative(entry, host, runtimeId);
+          const host = await decisions.evaluateEntry(entry, variants);
+          const auth = decisions.evaluateNative(entry, host);
           if (auth.routeResolution?.kind === "incompatible") {
             return { kind: "unavailable", error: auth.routeResolution.message };
           }
@@ -143,14 +134,13 @@ export async function prepareModelChoice(params: {
               error: `The selected account or native runtime is unavailable for ${key}. Restore that account before spawning this model.`,
             };
           }
-          const selectedRuntime =
-            resolveCatalogDecisionRuntime({
-              cfg: owner.config,
-              agentId: params.agentId,
-              entry,
-              evaluation: auth,
-              pluginRegistry: owner.pluginRegistry,
-            })?.id ?? runtimeId;
+          const selectedRuntime = resolveCatalogDecisionRuntime({
+            cfg: owner.config,
+            agentId: params.agentId,
+            entry,
+            evaluation: auth,
+            pluginRegistry: owner.pluginRegistry,
+          })?.id;
           const config = auth.selectedRoute
             ? projectProviderModelRouteConfig({
                 provider: ref.provider,
@@ -182,49 +172,18 @@ export async function prepareModelChoice(params: {
             };
           }
           if (resolution.model) {
-            const plan = buildAgentRuntimeAuthPlan({
+            const model = validatePreparedRuntimeModel({
               provider: ref.provider,
               modelId: ref.model,
-              config: owner.config,
+              config,
               workspaceDir: owner.workspaceDir,
               metadataSnapshot: owner.metadataSnapshot,
-              harnessId: selectedRuntime,
-              sessionAuthProfileId: auth.selectedProfileId,
-              sessionAuthProfileSource: profileId ? "user" : "auto",
-              authProfileProvider: auth.selectedProfileId
-                ? decisions.authStore.profiles[auth.selectedProfileId]?.provider
+              route: auth.selectedRoute
+                ? { ...auth.selectedRoute, provider: ref.provider, modelId: ref.model }
                 : undefined,
-              authProfileMode: auth.selectedAuthMode,
-              ...(auth.selectedRoute
-                ? {
-                    modelRoute: {
-                      ...auth.selectedRoute,
-                      provider: ref.provider,
-                      modelId: ref.model,
-                    },
-                  }
-                : {}),
-            });
-            const model = await materializePreparedRuntimeModel({
-              plan,
-              provider: ref.provider,
-              modelId: ref.model,
-              config: owner.config,
-              workspaceDir: owner.workspaceDir,
-              metadataSnapshot: owner.metadataSnapshot,
               model: resolution.model,
-              rejectMismatchedModel: true,
-              resolveModel: async () => resolution,
             });
-            if (!decisions.isCurrent()) {
-              return {
-                kind: "unavailable",
-                error: "Model configuration changed during selection. Retry the request.",
-              };
-            }
-            return model
-              ? { kind: "resolved", ref: resolution.logicalRef, model }
-              : { kind: "unavailable", error: `Unable to materialize ${key}.` };
+            return { kind: "resolved", ref: resolution.logicalRef, model };
           }
           // Automatic choices must not turn an unobserved dynamic catalog into a network probe.
           return resolution.deferred === "provider-dynamic-model"

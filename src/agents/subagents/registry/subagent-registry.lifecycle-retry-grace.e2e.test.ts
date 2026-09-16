@@ -12,7 +12,6 @@ import { testing as subagentAnnounceDeliveryTesting } from "../announce/subagent
 import { testing as subagentAnnounceOutputTesting } from "../announce/subagent-announce-output.test-support.js";
 import { testing as subagentAnnounceTesting } from "../announce/subagent-announce.js";
 import { maybeWakeRequesterAfterAllChildrenSettled } from "../announce/subagent-announce.requester-settle-wake.js";
-import { createLifecycleWaits } from "./subagent-registry.lifecycle-waits.test-support.js";
 import * as mod from "./subagent-registry.test-helpers.js";
 
 const noop = () => {};
@@ -54,7 +53,6 @@ let agentCallPlan: Array<"ok" | "throw"> = [];
 let agentCallGates = new Map<string, Promise<void>>();
 let releaseAgentCallGate: (() => void) | undefined;
 let chatHistoryBySessionKey = new Map<string, Array<Record<string, unknown>>>();
-let transcriptEventsBySessionKey = new Map<string, unknown[]>();
 let sessionStore: Record<string, SessionStoreEntry> = {};
 
 const callGatewayMock = vi.fn(async (request: GatewayRequest) => {
@@ -146,7 +144,6 @@ describe("subagent registry lifecycle error grace", () => {
     agentCallPlan = [];
     agentCallGates = new Map();
     chatHistoryBySessionKey = new Map();
-    transcriptEventsBySessionKey = new Map();
     sessionStore = new Proxy<Record<string, SessionStoreEntry>>(
       {
         "agent:main:main": {
@@ -203,12 +200,6 @@ describe("subagent registry lifecycle error grace", () => {
       },
     });
     subagentAnnounceOutputTesting.setDepsForTest({
-      findTranscriptEvent: async ({ sessionKey }, match) => {
-        const events = sessionKey ? transcriptEventsBySessionKey.get(sessionKey) : undefined;
-        const event = events?.findLast(match);
-        return event === undefined ? undefined : { event };
-      },
-      findSessionTranscriptArchiveEventReadOnly: async () => undefined,
       callGateway: callGatewayMock as typeof import("../../../gateway/call.js").callGateway,
       getRuntimeConfig:
         loadConfigMock as typeof import("../../../config/config.js").getRuntimeConfig,
@@ -242,9 +233,54 @@ describe("subagent registry lifecycle error grace", () => {
     await Promise.resolve();
   };
 
-  const { waitForCleanupHandledFalse, waitForDeliveredCleanup } = createLifecycleWaits(
-    MAIN_REQUESTER_SESSION_KEY,
-  );
+  const waitForCleanupHandledFalse = async (runId: string) => {
+    // Cleanup can be released asynchronously after announce failure; poll fake
+    // time until the retry-grace state is observable.
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const run = mod
+        .listSubagentRunsForRequester(MAIN_REQUESTER_SESSION_KEY)
+        .find((candidate) => candidate.runId === runId);
+      if (
+        run?.cleanupHandled === false &&
+        run.delivery?.status === "pending" &&
+        run.delivery.payload
+      ) {
+        return;
+      }
+      await vi.advanceTimersByTimeAsync(1);
+      await flushAsync();
+    }
+    throw new Error(`run ${runId} did not reach cleanupHandled=false in time`);
+  };
+
+  const waitForDeliveredCleanup = async (
+    runId: string,
+    options?: { allowPendingRequesterSettleWake?: boolean },
+  ) => {
+    let lastRun: ReturnType<typeof mod.listSubagentRunsForRequester>[number] | undefined;
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const run = mod
+        .listSubagentRunsForRequester(MAIN_REQUESTER_SESSION_KEY)
+        .find((candidate) => candidate.runId === runId);
+      lastRun = run;
+      if (
+        run?.delivery?.status === "delivered" &&
+        typeof run.cleanupCompletedAt === "number" &&
+        (options?.allowPendingRequesterSettleWake === true || run.requesterSettleWake === undefined)
+      ) {
+        return;
+      }
+      await vi.advanceTimersByTimeAsync(1);
+      await flushAsync();
+    }
+    throw new Error(
+      `run ${runId} did not finish delivered cleanup in time: ${JSON.stringify({
+        cleanupCompletedAt: lastRun?.cleanupCompletedAt,
+        delivery: lastRun?.delivery,
+        requesterSettleWake: lastRun?.requesterSettleWake,
+      })}`,
+    );
+  };
 
   const waitForAgentCallCount = async (expectedCount: number) => {
     for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -340,17 +376,13 @@ describe("subagent registry lifecycle error grace", () => {
     return getAgentCalls()[0]?.params?.internalEvents?.[0];
   }
 
-  function setAssistantOutput(sessionKey: string, text: string, runId: string) {
-    const message = {
-      role: "assistant",
-      content: text,
-      stopReason: "stop",
-      __openclaw: { runId },
-    };
-    chatHistoryBySessionKey.set(sessionKey, [message]);
-    const events = transcriptEventsBySessionKey.get(sessionKey) ?? [];
-    events.push({ type: "message", message });
-    transcriptEventsBySessionKey.set(sessionKey, events);
+  function setAssistantOutput(sessionKey: string, text: string) {
+    chatHistoryBySessionKey.set(sessionKey, [
+      {
+        role: "assistant",
+        content: text,
+      },
+    ]);
   }
 
   function getAgentCalls() {
@@ -422,7 +454,7 @@ describe("subagent registry lifecycle error grace", () => {
       },
     });
     expect(spawnResult).toMatchObject({ status: "accepted", runId, childSessionKey });
-    setAssistantOutput(childSessionKey, "visible dashboard child complete", runId);
+    setAssistantOutput(childSessionKey, "visible dashboard child complete");
 
     const onYield = vi.fn();
     const yieldTool = createSessionsYieldTool({
@@ -493,7 +525,7 @@ describe("subagent registry lifecycle error grace", () => {
     const runId = "run-completed-before-yield";
     const childSessionKey = "agent:main:subagent:completed-before-yield";
     registerCompletionRun(runId, "completed-before-yield", "finish once", requesterTurnRunId);
-    setAssistantOutput(childSessionKey, "child complete", runId);
+    setAssistantOutput(childSessionKey, "child complete");
 
     emitLifecycleEvent(runId, {
       phase: "end",
@@ -535,8 +567,8 @@ describe("subagent registry lifecycle error grace", () => {
     const betaSessionKey = "agent:main:subagent:yield-beta";
     registerCompletionRun("run-yield-alpha", "yield-alpha", "yield alpha", requesterTurnRunId);
     registerCompletionRun("run-yield-beta", "yield-beta", "yield beta", requesterTurnRunId);
-    setAssistantOutput(alphaSessionKey, "alpha complete", "run-yield-alpha");
-    setAssistantOutput(betaSessionKey, "beta complete", "run-yield-beta");
+    setAssistantOutput(alphaSessionKey, "alpha complete");
+    setAssistantOutput(betaSessionKey, "beta complete");
 
     agentCallGates.set(
       betaSessionKey,
@@ -651,7 +683,7 @@ describe("subagent registry lifecycle error grace", () => {
       "live child",
       requesterTurnRunId,
     );
-    setAssistantOutput(liveChildSessionKey, "live child complete", "run-frozen-live-child");
+    setAssistantOutput(liveChildSessionKey, "live child complete");
 
     expect(
       mod.markRequesterTurnYielded({
@@ -706,11 +738,10 @@ describe("subagent registry lifecycle error grace", () => {
   });
 
   it("ignores transient lifecycle errors when run retries and then ends successfully", async () => {
-    const runId = "run-transient-error";
-    registerCompletionRun(runId, "transient-error", "transient error test");
-    setAssistantOutput("agent:main:subagent:transient-error", "Final answer transient", runId);
+    registerCompletionRun("run-transient-error", "transient-error", "transient error test");
+    setAssistantOutput("agent:main:subagent:transient-error", "Final answer transient");
 
-    emitLifecycleEvent(runId, {
+    emitLifecycleEvent("run-transient-error", {
       phase: "error",
       error: "rate limit",
       endedAt: Date.now(),
@@ -721,13 +752,13 @@ describe("subagent registry lifecycle error grace", () => {
     await vi.advanceTimersByTimeAsync(14_999);
     expect(getAgentCalls()).toHaveLength(0);
 
-    emitLifecycleEvent(runId, { phase: "start", startedAt: Date.now() });
+    emitLifecycleEvent("run-transient-error", { phase: "start", startedAt: Date.now() });
     await flushAsync();
 
     await vi.advanceTimersByTimeAsync(20_000);
     expect(getAgentCalls()).toHaveLength(0);
 
-    emitLifecycleEvent(runId, {
+    emitLifecycleEvent("run-transient-error", {
       phase: "end",
       endedAt: Date.now(),
       terminalReply: { disposition: "visible", text: "Final answer transient" },
@@ -740,7 +771,7 @@ describe("subagent registry lifecycle error grace", () => {
 
   it("announces error when lifecycle error remains terminal after grace window", async () => {
     registerCompletionRun("run-terminal-error", "terminal-error", "terminal error test");
-    setAssistantOutput("agent:main:subagent:terminal-error", "fatal summary", "run-terminal-error");
+    setAssistantOutput("agent:main:subagent:terminal-error", "fatal summary");
 
     emitLifecycleEvent("run-terminal-error", {
       phase: "error",
@@ -761,7 +792,7 @@ describe("subagent registry lifecycle error grace", () => {
   it("freezes completion result at run termination across deferred announce retries", async () => {
     // Regression guard: late lifecycle noise must never overwrite the frozen completion reply.
     registerCompletionRun("run-freeze", "freeze", "freeze test");
-    setAssistantOutput("agent:main:subagent:freeze", "Final answer X", "run-freeze");
+    setAssistantOutput("agent:main:subagent:freeze", "Final answer X");
     agentCallPlan = ["throw", "ok"];
 
     const endedAt = Date.now();
@@ -779,7 +810,7 @@ describe("subagent registry lifecycle error grace", () => {
 
     await waitForCleanupHandledFalse("run-freeze");
 
-    setAssistantOutput("agent:main:subagent:freeze", "Late reply Y", "run-freeze-late-traffic");
+    setAssistantOutput("agent:main:subagent:freeze", "Late reply Y");
     emitLifecycleEvent("run-freeze", {
       phase: "end",
       endedAt: endedAt + 100,
@@ -799,7 +830,6 @@ describe("subagent registry lifecycle error grace", () => {
     setAssistantOutput(
       "agent:main:subagent:refresh",
       "Both spawned. Waiting for completion events...",
-      "run-refresh",
     );
     agentCallPlan = ["throw", "ok"];
 
@@ -829,7 +859,6 @@ describe("subagent registry lifecycle error grace", () => {
     setAssistantOutput(
       "agent:main:subagent:refresh",
       "All 3 subagents complete. Here's the final summary.",
-      "run-refresh-followup-turn",
     );
     emitLifecycleEvent(
       "run-refresh-followup-turn",
@@ -864,11 +893,7 @@ describe("subagent registry lifecycle error grace", () => {
 
   it("ignores silent follow-up turns when refreshing frozen completion output", async () => {
     registerCompletionRun("run-refresh-silent", "refresh-silent", "refresh silent test");
-    setAssistantOutput(
-      "agent:main:subagent:refresh-silent",
-      "All work complete, final summary",
-      "run-refresh-silent",
-    );
+    setAssistantOutput("agent:main:subagent:refresh-silent", "All work complete, final summary");
     agentCallPlan = ["throw", "ok"];
 
     const endedAt = Date.now();
@@ -884,11 +909,7 @@ describe("subagent registry lifecycle error grace", () => {
     await waitForCleanupHandledFalse("run-refresh-silent");
     await waitForFrozenResultText("run-refresh-silent", "All work complete, final summary");
 
-    setAssistantOutput(
-      "agent:main:subagent:refresh-silent",
-      "NO_REPLY",
-      "run-refresh-silent-followup-turn",
-    );
+    setAssistantOutput("agent:main:subagent:refresh-silent", "NO_REPLY");
     emitLifecycleEvent(
       "run-refresh-silent-followup-turn",
       { phase: "end", endedAt: endedAt + 200 },
@@ -920,7 +941,7 @@ describe("subagent registry lifecycle error grace", () => {
 
   it("regression, captures frozen completion output with 100KB cap and retains it for keep-mode cleanup", async () => {
     registerCompletionRun("run-capped", "capped", "capped result test", undefined, false);
-    setAssistantOutput("agent:main:subagent:capped", "x".repeat(120 * 1024), "run-capped");
+    setAssistantOutput("agent:main:subagent:capped", "x".repeat(120 * 1024));
 
     emitLifecycleEvent("run-capped", { phase: "end", endedAt: Date.now() });
     await flushAsync();
@@ -942,11 +963,7 @@ describe("subagent registry lifecycle error grace", () => {
 
   it("records a bare aborted end event as cancellation after retry grace", async () => {
     registerCompletionRun("run-aborted", "aborted", "aborted test");
-    setAssistantOutput(
-      "agent:main:subagent:aborted",
-      "Partial output before cancellation",
-      "run-aborted",
-    );
+    setAssistantOutput("agent:main:subagent:aborted", "Partial output before cancellation");
 
     emitLifecycleEvent("run-aborted", {
       phase: "end",
@@ -980,7 +997,6 @@ describe("subagent registry lifecycle error grace", () => {
     setAssistantOutput(
       "agent:main:subagent:provider-timeout",
       "Partial output before provider timeout",
-      "run-provider-timeout",
     );
 
     emitLifecycleEvent("run-provider-timeout", {
@@ -1009,11 +1025,7 @@ describe("subagent registry lifecycle error grace", () => {
 
   it("cancels timeout grace when a successful end event arrives before the grace window expires", async () => {
     registerCompletionRun("run-timeout-cancel", "timeout-cancel", "timeout cancel test");
-    setAssistantOutput(
-      "agent:main:subagent:timeout-cancel",
-      "Final answer after recovery",
-      "run-timeout-cancel",
-    );
+    setAssistantOutput("agent:main:subagent:timeout-cancel", "Final answer after recovery");
 
     // Emit a structured timeout terminal (starts timeout grace).
     emitLifecycleEvent("run-timeout-cancel", {
@@ -1061,8 +1073,8 @@ describe("subagent registry lifecycle error grace", () => {
     // Regression guard: fan-out retries must preserve each child's first frozen result text.
     registerCompletionRun("run-parallel-a", "parallel-a", "parallel a");
     registerCompletionRun("run-parallel-b", "parallel-b", "parallel b");
-    setAssistantOutput("agent:main:subagent:parallel-a", "Final answer A", "run-parallel-a");
-    setAssistantOutput("agent:main:subagent:parallel-b", "Final answer B", "run-parallel-b");
+    setAssistantOutput("agent:main:subagent:parallel-a", "Final answer A");
+    setAssistantOutput("agent:main:subagent:parallel-b", "Final answer B");
     agentCallPlan = ["throw", "throw", "ok", "ok"];
 
     const parallelEndedAt = Date.now();
@@ -1082,16 +1094,8 @@ describe("subagent registry lifecycle error grace", () => {
     await waitForCleanupHandledFalse("run-parallel-a");
     await waitForCleanupHandledFalse("run-parallel-b");
 
-    setAssistantOutput(
-      "agent:main:subagent:parallel-a",
-      "Late overwrite",
-      "run-parallel-a-late-traffic",
-    );
-    setAssistantOutput(
-      "agent:main:subagent:parallel-b",
-      "Late overwrite",
-      "run-parallel-b-late-traffic",
-    );
+    setAssistantOutput("agent:main:subagent:parallel-a", "Late overwrite");
+    setAssistantOutput("agent:main:subagent:parallel-b", "Late overwrite");
 
     emitLifecycleEvent("run-parallel-a", {
       phase: "end",
