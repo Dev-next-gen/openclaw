@@ -27,6 +27,7 @@ import {
 import { kickSessionEntryMaintenanceAfterWrite } from "./session-accessor.sqlite-maintenance-kick.js";
 import * as maintenance from "./session-accessor.sqlite-maintenance.js";
 import { applySessionStoreProjection } from "./session-accessor.sqlite-projection.js";
+import * as reclamation from "./session-accessor.sqlite-reclamation.js";
 import { applySessionEntryCanonicalReplacements } from "./session-accessor.sqlite-replacement-projection.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
 import { enforceSqliteSessionHistoryDiskBudget } from "./session-history-eviction.js";
@@ -335,7 +336,7 @@ it.each([false, true])(
   },
 );
 
-it("coalesces automatic maintenance under its own planning and finalization labels", async () => {
+it("coalesces automatic maintenance through the shared reclamation writer", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const storePath = path.join(state.sessionsDir(), "sessions.json");
     const staleKey = "agent:main:subagent:writer-stale";
@@ -350,6 +351,15 @@ it("coalesces automatic maintenance under its own planning and finalization labe
     );
     const finalize = maintenance.finalizeSessionEntryMaintenancePlansAfterWriterReleaseBestEffort;
     const finalized = createDeferredCore<Awaited<ReturnType<typeof finalize>>>();
+    const scheduled = createDeferredCore();
+    const reclaim = reclamation.runSqliteSessionReclamation;
+    vi.spyOn(reclamation, "runSqliteSessionReclamation").mockImplementation(async (params) => {
+      const result = await reclaim(params);
+      if (result.kind === "maintenance-schedule") {
+        scheduled.resolve();
+      }
+      return result;
+    });
     // Row deletion precedes archive publication; join the unchanged finalizer, including both.
     vi.spyOn(
       maintenance,
@@ -359,7 +369,12 @@ it("coalesces automatic maintenance under its own planning and finalization labe
       finalized.resolve(result);
       return result;
     });
-    const operations = observeSlowWriters();
+    const reclamationKinds: unknown[] = [];
+    const operations = observeSlowWriters((_operation, fields) => {
+      if ("reclamationKind" in fields && fields.reclamationKind) {
+        reclamationKinds.push(fields.reclamationKind);
+      }
+    });
     const request = {
       activeSessionKey: activeKey,
       archiveDirectory: state.sessionsDir(),
@@ -375,11 +390,27 @@ it("coalesces automatic maintenance under its own planning and finalization labe
       kickSessionEntryMaintenanceAfterWrite(request);
       kickSessionEntryMaintenanceAfterWrite(request);
       await finalized.promise;
+      await scheduled.promise;
       await yieldToEventLoop();
       expect(operations).toEqual([
         "session.maintenance.plan",
-        "session.maintenance.finalize",
+        "session.reclamation.retain",
+        "session.reclamation.worker-commit",
+        "session.maintenance.plan",
+        "session.reclamation.retain",
+        "session.reclamation.worker-commit",
+        "session.reclamation.retain",
+        "session.reclamation.worker-commit",
         "session.archive.publish-prepare",
+        "session.maintenance.plan",
+        "session.reclamation.retain",
+        "session.reclamation.worker-commit",
+      ]);
+      expect(reclamationKinds).toEqual([
+        "maintenance-plan",
+        "maintenance-plan",
+        "maintenance-finalize",
+        "maintenance-schedule",
       ]);
       expect(loadSessionEntry({ sessionKey: staleKey, storePath })).toBeUndefined();
       expect(loadSessionEntry({ sessionKey: activeKey, storePath })?.sessionId).toBe("active");

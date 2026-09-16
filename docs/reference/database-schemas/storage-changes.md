@@ -442,12 +442,25 @@ commits, and connection replacement invalidate reuse. Key-inherent protection
 does not keep an old primary or external conversation permanently due. Already-aged
 entries with dynamic protection still require fresh planning on writes.
 
+Foreground commits on another connection invalidate worker age facts. Refreshes
+use prepared ordered timestamp probes and dashboard key ranges across every agent
+namespace in a shared store. Activity probes reuse the canonical maximum of the
+recorded activity fields and stop when later timestamps cannot improve the next
+deadline. Uncertified rows retain the key decoder's alias handling; older
+maintenance readers without the pending projection keep the full row path.
+Fresh ordinary stores avoid a full timestamp projection; dashboard and
+recent-activity-heavy stores can still require scans. Archived or protected index
+prefixes can also add work. Existing count and invalid-row queries remain separate
+costs; this is not a constant-work guarantee for every maintenance pass.
+
 The coalesced maintenance kick also wakes at the next age boundary, with a
 30-minute periodic recheck for released work protection and external changes.
 Its timer retires with the exact database connection. Planning still reads its
-protection-key inventory at most once when age or cap candidates exist, inside
-the write transaction; archives and final deletion retain their existing
-post-writer lifecycle checks. Retention rules, cap buffering, forced cleanup,
+protection-key inventory only when age or cap candidates exist. The worker reads
+its own connection's revision and age facts after finalization to calculate the
+next boundary; the parent rechecks the scheduling owner and generation after
+that wait. Archives and final deletion retain their existing post-writer
+lifecycle checks. Retention rules, cap buffering, forced cleanup,
 and active-work, ancestor, and lifecycle protection remain unchanged. No schema
 or migration change is required.
 
@@ -463,6 +476,24 @@ existing writer position. Warm update callbacks remain direct. Result-only
 no-op commits do not reopen a disposed handle. Native deletion and archive
 preparation still run outside the writer; the subsequent commit rechecks its
 native owner's authority after any awaited admission.
+
+Automatic entry maintenance captures its policy at writer admission, then plans
+on the existing reclamation worker. Only a pass with retention candidates requests
+protected session identities, after rolling back candidate discovery and before
+a fresh planning transaction. The parent captures those identities under the
+writer. Protection includes runtime providers, active work, and active lifecycle
+mutations; the parent rechecks these owners and the write generation before planning commits.
+Changed inputs roll back that planning pass before a fresh pass begins. Bounded
+finalization preserves changed entries and publishes removals only for committed
+entries. Transcript sizing and empty-transcript validation run on archive workers;
+planner statistics retain the existing deletion threshold and bounded analysis.
+After worker analysis commits, an existing parent connection reloads its planner
+statistics locally without rescanning tables; this remains necessary until its
+query owners move to workers.
+Compound projection and replacement transactions keep their synchronous kernels.
+Candidate-only preservation providers, incognito databases, prepared native
+deletion hooks, commit-authorization joins, archive publication bookkeeping, and
+repository/worktree cleanup retain their existing parent-side owners.
 
 Session reclamation keeps its deletion transaction on a worker connection.
 The worker opens its database under the session writer, then releases that writer

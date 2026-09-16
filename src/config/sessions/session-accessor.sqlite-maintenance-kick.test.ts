@@ -11,7 +11,7 @@ import {
 import { loadSessionEntry } from "./session-accessor.js";
 import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
 import { kickSessionEntryMaintenanceAfterWrite } from "./session-accessor.sqlite-maintenance-kick.js";
-import * as maintenance from "./session-accessor.sqlite-maintenance.js";
+import * as reclamation from "./session-accessor.sqlite-reclamation.js";
 import { registerSessionMaintenancePreserveKeysProvider } from "./store-maintenance-preserve.js";
 import {
   resolveMaintenanceConfigFromInput,
@@ -28,6 +28,14 @@ afterEach(() => {
 });
 
 function createStore(pruneAfterMs = 1_000, key = sessionKey) {
+  // This suite owns timer policy; real worker flows are covered by maintenance-worker.test.ts.
+  vi.spyOn(reclamation, "runSqliteSessionReclamation").mockImplementation(async (params) => {
+    params.assertCommitAllowed?.();
+    return reclamation.reclaimSqliteSessionInTransaction(params.plan, {
+      beforeMutation: params.assertCommitAllowed,
+      onCommit: params.assertCommitAllowed,
+    });
+  });
   const storePath = path.join(tempDirs.make("session-maintenance-kick-"), "agent.sqlite");
   const scope = { agentId: "main", path: storePath };
   const database = openOpenClawAgentDatabase(scope);
@@ -150,9 +158,9 @@ it("rechecks released work protection without another write or future age crossi
 
 it("retries a transient maintenance failure on its next periodic pass", async () => {
   const { request, storePath } = createStore();
-  vi.spyOn(maintenance, "applySessionEntryMaintenance").mockImplementationOnce(() => {
-    throw new Error("temporary maintenance failure");
-  });
+  vi.mocked(reclamation.runSqliteSessionReclamation).mockRejectedValueOnce(
+    new Error("temporary maintenance failure"),
+  );
   kickSessionEntryMaintenanceAfterWrite(request);
   await yieldToEventLoop();
   expect(loadSessionEntry({ sessionKey, storePath })?.archivedAt).toBeUndefined();

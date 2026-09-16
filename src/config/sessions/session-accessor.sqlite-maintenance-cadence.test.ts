@@ -11,9 +11,13 @@ import {
 import { applySessionEntryReplacements, loadSessionEntry } from "./session-accessor.js";
 import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
 import * as candidates from "./session-accessor.sqlite-maintenance-candidates.js";
+import { readNextSessionEntryMaintenanceAtInDatabase } from "./session-accessor.sqlite-maintenance-store.js";
 import { applySessionEntryMaintenance } from "./session-accessor.sqlite-maintenance.js";
 import * as maintenanceRuntime from "./store-maintenance-runtime.js";
-import { resolveMaintenanceConfigFromInput } from "./store-maintenance.js";
+import {
+  resolveMaintenanceConfigFromInput,
+  type ResolvedSessionMaintenanceConfig,
+} from "./store-maintenance.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -261,4 +265,100 @@ it("reconsiders a session unarchived without changing its timestamp", async () =
     archivedAt: expect.any(Number),
     archiveReason: "age-retention",
   });
+});
+
+it.each([
+  "shared dashboards",
+  "pending dashboard alias",
+  "pending namespace prefixes",
+  "recent activity",
+  "expired recent activity",
+  "disabled ages",
+] as const)("keeps exact next maintenance deadlines for %s", (scenario) => {
+  const { options } = createStore(0);
+  const now = Date.now();
+  const maintenance: ResolvedSessionMaintenanceConfig = {
+    ...resolveMaintenanceConfigFromInput(),
+    pruneAfterMs: 30 * DAY_MS,
+    archiveDashboardAfterMs: null,
+    preserveRecentMs: null,
+  };
+  const result = runOpenClawAgentWriteTransaction((database) => {
+    writeSessionEntry(database, "agent:main:main", {
+      sessionId: "protected-primary",
+      updatedAt: now - 100 * DAY_MS,
+    });
+    if (scenario === "shared dashboards") {
+      maintenance.archiveDashboardAfterMs = 7 * DAY_MS;
+      writeSessionEntry(database, "agent:main:dashboard:first", {
+        sessionId: "first-dashboard",
+        updatedAt: now - 8 * DAY_MS,
+        lastActivityAt: now,
+      });
+      writeSessionEntry(database, "agent:zeta:dashboard:second", {
+        sessionId: "second-dashboard",
+        updatedAt: now - 8 * DAY_MS,
+        lastInteractionAt: now - DAY_MS,
+      });
+    } else if (scenario === "pending dashboard alias") {
+      maintenance.archiveDashboardAfterMs = 7 * DAY_MS;
+      writeSessionEntry(
+        database,
+        "AGENT:MAIN:DASHBOARD:ALIAS",
+        { sessionId: "pending-dashboard", updatedAt: now - 8 * DAY_MS, lastActivityAt: now },
+        { allowStoredAliases: true, canonicalPreviousEntry: null },
+      );
+    } else if (scenario === "pending namespace prefixes") {
+      maintenance.archiveDashboardAfterMs = 7 * DAY_MS;
+      writeSessionEntry(database, "agent:main:dashboard:certified", {
+        sessionId: "certified-dashboard",
+        updatedAt: now - 8 * DAY_MS,
+        lastActivityAt: now,
+      });
+      for (const [index, storedKey] of ["agent:", "agent:foo"].entries()) {
+        writeSessionEntry(
+          database,
+          storedKey,
+          {
+            sessionId: `pending-prefix-${index}`,
+            updatedAt: now,
+          },
+          { allowStoredAliases: true, canonicalPreviousEntry: null },
+        );
+      }
+    } else if (scenario === "recent activity") {
+      maintenance.pruneAfterMs = 60 * DAY_MS;
+      maintenance.preserveRecentMs = 7 * DAY_MS;
+      const fields = [
+        "updatedAt",
+        "lastActivityAt",
+        "lastInteractionAt",
+        "sessionStartedAt",
+      ] as const;
+      for (const [index, field] of fields.entries()) {
+        writeSessionEntry(database, key(index), {
+          sessionId: `activity-${index}`,
+          updatedAt: now - 31 * DAY_MS,
+          [field]: now - index * DAY_MS,
+        });
+      }
+    } else {
+      maintenance.preserveRecentMs = scenario === "expired recent activity" ? 7 * DAY_MS : null;
+      maintenance.pruneAfterMs = scenario === "disabled ages" ? 0 : 30 * DAY_MS;
+      writeSessionEntry(database, key(0), {
+        sessionId: "ordinary",
+        updatedAt: now - 8 * DAY_MS,
+      });
+    }
+    return readNextSessionEntryMaintenanceAtInDatabase(database, maintenance);
+  }, options);
+  const expected = {
+    "shared dashboards": now + 6 * DAY_MS + 1,
+    "pending dashboard alias": now + 7 * DAY_MS + 1,
+    "pending namespace prefixes": now + 7 * DAY_MS + 1,
+    "recent activity": now + 4 * DAY_MS + 1,
+    "expired recent activity": now + 22 * DAY_MS + 1,
+    "disabled ages": Infinity,
+  };
+  expect(result).toBe(expected[scenario]);
 });

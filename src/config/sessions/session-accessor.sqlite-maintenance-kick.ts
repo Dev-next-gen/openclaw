@@ -1,22 +1,29 @@
+import { isDeepStrictEqual } from "node:util";
 import { registerNodeSqliteDisposeCallback } from "../../infra/kysely-sync-cache-state.js";
 import { getChildLogger } from "../../logging/logger.js";
 import {
   getOpenClawAgentDatabaseIfOpen,
   resolveOpenClawAgentSqlitePath,
-  runOpenClawAgentWriteTransaction,
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
+import { emptySessionEntryMaintenancePlan } from "./session-accessor.sqlite-maintenance-store.js";
+import { finalizeSessionEntryMaintenancePlansAfterWriterReleaseBestEffort } from "./session-accessor.sqlite-maintenance.js";
 import {
-  applySessionEntryMaintenance,
-  finalizeSessionEntryMaintenancePlansAfterWriterReleaseBestEffort,
-  readNextSessionEntryMaintenanceAt,
-} from "./session-accessor.sqlite-maintenance.js";
+  createSessionMaintenancePlanningOperation,
+  createSessionMaintenanceScheduleOperation,
+  runSqliteSessionReclamation,
+} from "./session-accessor.sqlite-reclamation.js";
 import {
   runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
   type ResolvedSqliteReadScope,
 } from "./session-accessor.sqlite-scope.js";
-import type { ResolvedSessionMaintenanceConfigInput } from "./store-maintenance.js";
+import { captureSessionMaintenancePreservation } from "./store-maintenance-preserve.js";
+import { resolveMaintenanceConfig } from "./store-maintenance-runtime.js";
+import {
+  normalizeResolvedMaintenanceConfigInput,
+  type ResolvedSessionMaintenanceConfigInput,
+} from "./store-maintenance.js";
 
 type SessionEntryMaintenanceRequest = {
   activeSessionKey: string;
@@ -113,8 +120,10 @@ async function runPendingMaintenance(
     const activeSessionKeys = [...owner.activeSessionKeys];
     owner.activeSessionKeys.clear();
     let nextMaintenanceAt: number | undefined = Infinity;
+    let planningChanged = false;
+    let scheduleChanged = false;
     try {
-      const plan = await runExclusiveSqliteSessionWrite(
+      const operation = await runExclusiveSqliteSessionWrite(
         owner.scope,
         async () => {
           // The writer queue can outlive the handle that admitted this owner.
@@ -122,36 +131,121 @@ async function runPendingMaintenance(
           if (!isCurrent()) {
             return undefined;
           }
-          return runOpenClawAgentWriteTransaction(
-            (database) =>
-              applySessionEntryMaintenance(database, {
-                activeSessionKeys,
-                archiveDirectory: owner.archiveDirectory,
-                maintenanceConfig: owner.maintenanceConfig,
-                storePath: owner.storePath,
-              }),
-            toDatabaseOptions(owner.scope),
-          );
+          const maintenance = owner.maintenanceConfig
+            ? normalizeResolvedMaintenanceConfigInput(owner.maintenanceConfig)
+            : resolveMaintenanceConfig();
+          return createSessionMaintenancePlanningOperation({
+            databaseOptions: toDatabaseOptions(owner.scope),
+            input: {
+              activeSessionKeys,
+              archiveDirectory: owner.archiveDirectory,
+              maintenance,
+              preservation: null,
+              storePath: owner.storePath,
+            },
+          });
         },
         "session.maintenance.plan",
       );
-      if (!plan) {
+      if (!operation) {
         break;
       }
+      const assertCurrent = () => {
+        if (!isCurrent()) {
+          throw new Error("SQLite automatic maintenance owner retired");
+        }
+        if (
+          owner.generation !== generation ||
+          (operation.input.preservation !== null &&
+            !isDeepStrictEqual(
+              operation.input.preservation,
+              captureSessionMaintenancePreservation(operation.input.storePath),
+            ))
+        ) {
+          planningChanged = true;
+          throw new Error("SQLite automatic maintenance inputs changed before commit");
+        }
+      };
+      const runPlanning = () =>
+        runSqliteSessionReclamation({
+          diagnostics: { kind: "maintenance-plan" },
+          assertCommitAllowed: assertCurrent,
+          forceInProcess: false,
+          plan: operation,
+        });
+      let result =
+        operation.input.maintenance.mode === "warn"
+          ? { kind: "maintenance-plan" as const, value: emptySessionEntryMaintenancePlan() }
+          : await runPlanning();
+      if (result.kind === "maintenance-preservation-required") {
+        await runExclusiveSqliteSessionWrite(
+          owner.scope,
+          async () => {
+            assertCurrent();
+            operation.input.preservation = captureSessionMaintenancePreservation(
+              operation.input.storePath,
+            );
+          },
+          "session.maintenance.plan",
+        );
+        result = await runPlanning();
+      }
+      if (result.kind !== "maintenance-plan") {
+        throw new Error("SQLite automatic maintenance returned another operation's result");
+      }
+      const plan = result.value;
       await finalizeSessionEntryMaintenancePlansAfterWriterReleaseBestEffort(owner.scope, [plan], {
         isCurrent,
       });
-      if (isCurrent()) {
-        nextMaintenanceAt = readNextSessionEntryMaintenanceAt(
-          owner.database,
-          owner.maintenanceConfig,
+      if (isCurrent() && owner.generation === generation) {
+        const assertScheduleCurrent = () => {
+          if (!isCurrent()) {
+            throw new Error("SQLite automatic maintenance schedule owner retired");
+          }
+          if (owner.generation !== generation) {
+            scheduleChanged = true;
+            throw new Error("SQLite automatic maintenance schedule owner changed");
+          }
+        };
+        const schedule = await runExclusiveSqliteSessionWrite(
+          owner.scope,
+          async () => {
+            assertScheduleCurrent();
+            return createSessionMaintenanceScheduleOperation({
+              databaseOptions: toDatabaseOptions(owner.scope),
+              maintenance: owner.maintenanceConfig
+                ? normalizeResolvedMaintenanceConfigInput(owner.maintenanceConfig)
+                : resolveMaintenanceConfig(),
+            });
+          },
+          "session.maintenance.plan",
         );
+        if (schedule.maintenance.mode === "warn") {
+          nextMaintenanceAt = undefined;
+        } else {
+          const scheduled = await runSqliteSessionReclamation({
+            diagnostics: { kind: "maintenance-schedule" },
+            assertCommitAllowed: assertScheduleCurrent,
+            forceInProcess: false,
+            plan: schedule,
+          });
+          assertScheduleCurrent();
+          if (scheduled.kind !== "maintenance-schedule") {
+            throw new Error("SQLite automatic maintenance returned another operation's schedule");
+          }
+          nextMaintenanceAt = scheduled.value;
+        }
       }
     } catch (error) {
-      getChildLogger({ subsystem: "session-sqlite" }).warn(
-        "SQLite automatic session maintenance failed",
-        { error, path: databasePath },
-      );
+      if (planningChanged && isCurrent()) {
+        owner.generation += 1;
+        activeSessionKeys.forEach((key) => owner.activeSessionKeys.add(key));
+      } else if (!scheduleChanged) {
+        getChildLogger({ subsystem: "session-sqlite" }).warn(
+          "SQLite automatic session maintenance failed",
+          { error, path: databasePath },
+        );
+      }
     }
     // Any write during awaited planning/finalization increments the generation.
     // Keep this owner alive so that write gets a fresh maintenance snapshot.

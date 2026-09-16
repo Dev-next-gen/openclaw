@@ -1,4 +1,7 @@
-import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db.js";
+import type {
+  OpenClawAgentDatabase,
+  OpenClawAgentDatabaseOptions,
+} from "../../state/openclaw-agent-db.js";
 import type { ConversationRouteContext } from "./conversation-route-context.js";
 import type {
   SessionLifecycleArchivedTranscript,
@@ -14,6 +17,8 @@ import type {
   SessionEntryLifecycleRemoval,
 } from "./session-accessor.sqlite-contract.js";
 import type { SqliteLifecycleTargetSnapshot } from "./session-accessor.sqlite-entry-equality.js";
+import type { SessionMaintenancePreservationSnapshot } from "./store-maintenance-preserve-snapshot.js";
+import type { ResolvedSessionMaintenanceConfig } from "./store-maintenance.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 // Shared plan shapes only. Runtime ownership stays in maintenance and lifecycle-state.
@@ -23,12 +28,26 @@ export type ReclamationDatabaseOptions = OpenClawAgentDatabaseOptions & {
   path: string;
 };
 
+export type SqliteSessionReclamationCallbacks = {
+  beforeMutation?: () => void;
+  onCommit?: (database: OpenClawAgentDatabase, result?: SqliteSessionReclamationResult) => void;
+};
+
 export type ReclamationDeleteParams = Omit<DeleteSessionEntryLifecycleParams, "commitGuard">;
 
 /** Internal scope: a historical request cannot authorize whole-entry reclamation. */
 export type SqliteSessionDeletionScope =
   | { kind: "entry"; phase: "plan" | "commit" }
   | { kind: "historical-generation"; phase: "plan" | "commit"; sessionId: string };
+export type SessionEntryMaintenanceInput = {
+  activeSessionKey?: string;
+  activeSessionKeys?: readonly string[];
+  archiveDirectory: string;
+  forceMaintenance?: boolean;
+  maintenance: ResolvedSessionMaintenanceConfig;
+  preservation: SessionMaintenancePreservationSnapshot | null;
+  storePath: string;
+};
 
 type SessionReclamationPlanBase = {
   databaseOptions: ReclamationDatabaseOptions;
@@ -36,6 +55,20 @@ type SessionReclamationPlanBase = {
 };
 
 export type SqliteSessionReclamationPlan =
+  | (SessionReclamationPlanBase & { kind: "maintenance-statistics" })
+  | (SessionReclamationPlanBase & {
+      kind: "maintenance-schedule";
+      maintenance: ResolvedSessionMaintenanceConfig;
+    })
+  | (SessionReclamationPlanBase & {
+      kind: "maintenance-plan";
+      input: SessionEntryMaintenanceInput;
+    })
+  | (SessionReclamationPlanBase & {
+      agentId: string;
+      entries: SessionEntryRemovalPlan[];
+      kind: "maintenance-finalize";
+    })
   | (SessionReclamationPlanBase & {
       deleteParams: ReclamationDeleteParams;
       kind: "entry";
@@ -61,6 +94,18 @@ export type SqliteSessionReclamationPlan =
     });
 
 export type SqliteSessionReclamationResult =
+  | { kind: "maintenance-statistics"; value: true }
+  | { kind: "maintenance-schedule"; value: number | undefined }
+  | { kind: "maintenance-preservation-required" }
+  | { kind: "maintenance-plan"; value: SessionEntryMaintenancePlan }
+  | {
+      kind: "maintenance-finalize";
+      value: {
+        archivedTranscripts: SessionLifecycleArchivedTranscript[];
+        changedEntries: SessionEntryRemovalPlan[];
+        committedEntries: SessionEntryRemovalPlan[];
+      };
+    }
   | { kind: "entry"; value: DeleteSessionEntryLifecycleResult }
   | {
       kind: "lifecycle-artifacts";
