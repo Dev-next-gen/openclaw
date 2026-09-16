@@ -1173,9 +1173,7 @@ export class AcpxRuntime implements CompleteAcpRuntime {
   async ensureSession(input: OpenClawRuntimeEnsureInput): Promise<OpenClawRuntimeHandle> {
     const resource = assertAcpxSessionOwnerLocator(input, this.legacyBareSessionKeys);
     return await this.sessionEnsureQueue.enqueue(resource.trim() || resource, () =>
-      this.sessionScope.run(input, () =>
-        this.ensureSessionUnlocked(input),
-      ),
+      this.sessionScope.run(input, () => this.ensureSessionUnlocked(input)),
     );
   }
 
