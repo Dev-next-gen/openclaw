@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { join } from "node:path";
-import { isRecord } from "./record-shared.mjs";
+import { isRecord } from "../../packages/normalization-core/src/record-coerce.ts";
 
 export const RUNTIME_DEPENDENCY_OWNERSHIP_RELATIVE_PATH = "dist/runtime-dependency-ownership.json";
 export const RUNTIME_DEPENDENCY_OWNERSHIP_ASSET_NAME = "runtime-dependency-ownership.json";
@@ -26,6 +26,7 @@ function parseRuntimeDependencyOwnership(value: unknown): RuntimeDependencyOwner
       return null;
     }
   }
+  // SAFETY: Every ownership row and its hash and extension fields were validated above.
   return value as RuntimeDependencyOwnership;
 }
 

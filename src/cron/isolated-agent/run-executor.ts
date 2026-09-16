@@ -724,6 +724,7 @@ function createCronPromptExecutor(
                   prompt: promptText,
                   finalizePromptForResolvedTools,
                   modelProvider: providerOverride,
+                  requesterModel: { provider: providerOverride, model: modelOverride },
                   modelHasVision: modelSupportsInput(
                     findModelInCatalog(thinkingCatalog ?? [], providerOverride, modelOverride),
                     "image",
