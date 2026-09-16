@@ -10,6 +10,17 @@ minimumReleaseAgeStrict: true
 
 # Trusted Codex runtimes are outside the dependency cooldown.
 minimumReleaseAgeExclude:
+  # Reviewed ACPX Git dependency; remove after 2026-09-20T08:36Z.
+  - "@openclaw/fs-safe@0.10.0"
+  - "@openclaw/fs-safe-darwin-arm64@0.10.0"
+  - "@openclaw/fs-safe-darwin-x64@0.10.0"
+  - "@openclaw/fs-safe-linux-arm64-gnu@0.10.0"
+  - "@openclaw/fs-safe-linux-arm64-musl@0.10.0"
+  - "@openclaw/fs-safe-linux-x64-gnu@0.10.0"
+  - "@openclaw/fs-safe-linux-x64-musl@0.10.0"
+  - "@openclaw/fs-safe-win32-x64-msvc@0.10.0"
+  # ACPX Git dependency; remove after 2026-09-17T21:44:31Z when this version matures.
+  - zod@4.6.2
   # Smartquotes denial-of-service fix; remove after 2026-09-18 04:04 UTC.
   - "markdown-it@15.0.2"
   # Reviewed Discord local-provider contract; remove after 2026-09-21.
@@ -85,6 +96,8 @@ overrides:
   uuid: 14.0.2
 
 allowBuilds:
+  # Required only while ACPX uses this reviewed Git commit.
+  "acpx@https://codeload.github.com/openclaw/acpx/tar.gz/d5f617c37209ba4b7d004898d5f06674c60669dc": true
   "@google/genai": true
   "@lydell/node-pty": true
   "@matrix-org/matrix-sdk-crypto-nodejs": true
