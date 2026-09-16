@@ -457,7 +457,6 @@ function createCronPromptExecutor(
       toolsAllow: params.agentPayload?.toolsAllow,
       scheduledToolPolicy,
       executionIdentity: params.executionIdentity,
-      timeoutMs: params.timeoutMs,
     });
     const onExecutionStarted = (info?: CronRunnerStartedInfo) => {
       params.onExecutionStarted?.(info);

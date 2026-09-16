@@ -319,7 +319,6 @@ it("retains scheduled invocation config through bound Gateway dispatch after pre
         jobId,
         toolsAllow: ["message"],
         scheduledToolPolicy: policy,
-        timeoutMs: 30_000,
         executionIdentity: {
           ingress: { kind: "schedule", boundary: "cron.isolated-agent", state: "present" },
           onPostAdmission: (admitted) => bindCronJobAdmittedRun(marker, admitted, source.signal),

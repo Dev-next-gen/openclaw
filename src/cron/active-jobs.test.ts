@@ -1,10 +1,12 @@
 // Unit coverage for the active-job accounting the heartbeat busy guard depends on.
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createOperationalRunInstanceRef,
   prepareAgentRunAdmission,
   resolveAdmittedRunActiveAssertion,
 } from "../agents/admitted-run-context.js";
+import { resolveMessageActionTurnAuthorization } from "../gateway/message-action-turn-capability.js";
 import { importFreshModule } from "../plugin-sdk/test-helpers/import-fresh.js";
 import {
   advanceCronActiveJobGeneration,
@@ -22,6 +24,7 @@ import {
   onCronJobInactive,
   resetCronActiveJobs,
 } from "./active-jobs.js";
+import { prepareCronPromptRunAdmission } from "./isolated-agent/run-admission.js";
 
 afterEach(() => {
   resetCronActiveJobs();
@@ -69,6 +72,56 @@ describe("hasActiveCronJobsExceptMarkers", () => {
 });
 
 describe("cron message action authority", () => {
+  it.each(["closure", "cancellation"] as const)(
+    "keeps a long-running prompt's grant until %s",
+    async (end) => {
+      const now = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+      const jobId = "long-message-read";
+      const marker = markCronJobActive(jobId, { isMessageActionAuthorityCurrent: () => true });
+      const controller = new AbortController();
+      const owner = prepareCronPromptRunAdmission({
+        cfg: { agents: { defaults: { timeoutSeconds: 40 } } },
+        agentId: "main",
+        runId: "long-message-run",
+        sessionKey: "cron:long-message-read",
+        jobId,
+        toolsAllow: ["message"],
+        scheduledToolPolicy: { version: 1, mode: "trusted" },
+      });
+      try {
+        bindCronJobAdmittedRun(
+          marker,
+          await owner.preparedRunAdmission.admit("embedded"),
+          controller.signal,
+        );
+        clock.mockReturnValue(now + 120_000);
+        const lookup = {
+          token: owner.messageActionTurnCapability,
+          agentId: "main",
+          runId: "long-message-run",
+          sessionKey: "cron:long-message-read",
+          sessionId: "long-message-run",
+        };
+        const grant = expectDefined(
+          resolveMessageActionTurnAuthorization(lookup)?.scheduled,
+          "live scheduled grant",
+        );
+        expect(grant.assertCurrent).not.toThrow();
+        if (end === "closure") {
+          owner.close();
+          expect(resolveMessageActionTurnAuthorization(lookup)).toBeUndefined();
+        } else {
+          controller.abort();
+        }
+        expect(grant.assertCurrent).toThrow();
+      } finally {
+        owner.close();
+        clock.mockRestore();
+      }
+    },
+  );
+
   it("keeps pending authority bound to its exact operational admission", async () => {
     const jobId = "pending-message-read";
     const marker = markCronJobActive(jobId, { isMessageActionAuthorityCurrent: () => true });

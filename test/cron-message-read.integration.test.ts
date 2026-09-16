@@ -104,6 +104,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     void (async () => {
       const sessionId = message.session_id || argument("--session-id");
       send({ type: "system", subtype: "init", session_id: sessionId, tools: [] });
+      const gap = await fetch(process.env.OPENCLAW_SCHEDULED_READ_CLOCK_URL, { method: "POST" });
+      if (!gap.ok) throw new Error("Could not advance the scheduled-read fixture clock.");
       const listed = await rpc("tools/list");
       const reply = await rpc("tools/call", {
         name: "message", arguments: JSON.parse(process.env.OPENCLAW_SCHEDULED_READ_ARGUMENTS),
@@ -243,6 +245,15 @@ describe("operator-created scheduled message reads", () => {
         const provider = createServer((req, res) => {
           void (async () => {
             const url = new URL(req.url ?? "/", "http://fixture.invalid");
+            if (req.method === "POST" && url.pathname === "/scheduled-clock-gap") {
+              expect(runtime).toBe("claude-cli");
+              expect(metadataControl).toBe("passed");
+              const realNow = Date.now.bind(Date);
+              // The real CLI has its grant; model a pause beyond its former timeout-plus-grace TTL.
+              vi.spyOn(Date, "now").mockImplementation(() => realNow() + 120_000);
+              res.writeHead(200).end();
+              return;
+            }
             if (req.method === "POST" && url.pathname === "/v1/responses") {
               expect(runtime, "embedded model request uses the selected runtime").toBe("openclaw");
               await embeddedModel.respond(req, res);
@@ -292,6 +303,7 @@ describe("operator-created scheduled message reads", () => {
           throw new Error("Expected provider TCP address");
         }
         const providerOrigin = `http://127.0.0.1:${address.port}`;
+        vi.stubEnv("OPENCLAW_SCHEDULED_READ_CLOCK_URL", `${providerOrigin}/scheduled-clock-gap`);
         const embedded = buildMockOpenAiResponsesProvider(`${providerOrigin}/v1`, embeddedModelId);
         const selectedModelRef = runtime === "openclaw" ? embedded.modelRef : modelRef;
         const cfg: OpenClawConfig = {
@@ -307,6 +319,7 @@ describe("operator-created scheduled message reads", () => {
             defaults: {
               workspace: workspaceDir,
               skipBootstrap: true,
+              timeoutSeconds: 40,
               model: { primary: selectedModelRef, fallbacks: [] },
               models: {
                 [modelRef]: { agentRuntime: { id: "claude-cli" } },
@@ -477,7 +490,6 @@ describe("operator-created scheduled message reads", () => {
             kind: "agentTurn",
             message: `Use message action ${action} for Discord channel ${channelId} with account default.`,
             toolsAllow: ["message"],
-            timeoutSeconds: 30,
           },
           delivery: { mode: "none" },
         } satisfies CronJobCreate;

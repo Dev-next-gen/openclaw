@@ -8,7 +8,6 @@ import { withPostAdmissionExecutionOwnerBinding } from "../../audit/execution-ow
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   mintMessageActionTurnCapability,
-  resolveMessageActionTurnCapabilityLifetime,
   revokeMessageActionTurnCapability,
 } from "../../gateway/message-action-turn-capability.js";
 import {
@@ -28,7 +27,6 @@ export function prepareCronPromptRunAdmission(params: {
   toolsAllow?: string[];
   scheduledToolPolicy?: ScheduledToolPolicyContext;
   executionIdentity?: CronExecutionIdentityAdmission;
-  timeoutMs: number;
 }) {
   const { runId, scheduledToolPolicy } = params;
   const operationalRunInstance = createOperationalRunInstanceRef(runId);
@@ -71,7 +69,7 @@ export function prepareCronPromptRunAdmission(params: {
             policy: scheduledToolPolicy,
             assertCurrent: scheduledMessageAuthority,
           },
-          ...resolveMessageActionTurnCapabilityLifetime(params.timeoutMs),
+          expiresWithRun: true,
         })
       : undefined;
   return {
