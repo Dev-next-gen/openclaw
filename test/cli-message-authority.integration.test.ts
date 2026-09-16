@@ -439,13 +439,15 @@ describe("CLI message authority integration", () => {
     const scheduledPolicy = options.scheduledPolicy;
     const runId = `cli-message-${channel}-${++sequence}`;
     const direct = !scheduledPolicy && channel === "discord" && options.discordDm === true;
+    const senderId = channels[channel].sender;
+    const currentChannelId = direct ? `user:${channels.discord.sender}` : channels[channel].current;
     const policySessionKey = scheduledPolicy
       ? `agent:main:cron:${runId}:run:fixture`
       : direct
         ? `agent:main:discord:default:direct:${channels.discord.sender}`
         : `agent:main:${channel}:channel:${channels[channel].current}`;
     const splitSession = !scheduledPolicy && (options.splitSession || direct);
-    const run: RunCliAgentParams = {
+    const run = {
       sessionId: `session-${runId}`,
       sessionKey: splitSession ? "agent:main:main" : policySessionKey,
       sessionFile: path.join(workspaceDir, `${runId}.jsonl`),
@@ -462,16 +464,14 @@ describe("CLI message authority integration", () => {
             messageProvider: channel,
             messageChannel: channel,
             // Discord CLI ingress receives the user target; the capability keeps the native DM id.
-            currentChannelId: direct
-              ? `user:${channels.discord.sender}`
-              : channels[channel].current,
+            currentChannelId,
             ...(direct ? { chatType: "direct" as const, currentMessageId: discordMessage } : {}),
             agentAccountId: "default",
-            senderId: channels[channel].sender,
+            senderId,
           }),
       senderIsOwner: false,
       cliToolAvailability: { native: [], openClaw: ["message"] },
-    };
+    } satisfies RunCliAgentParams;
     const admission = prepareAgentRunAdmission({
       cfg,
       facts: {
@@ -493,8 +493,8 @@ describe("CLI message authority integration", () => {
             accountId: "default",
             context: {
               Channel: "discord",
-              From: `discord:${run.senderId}`,
-              To: run.currentChannelId,
+              From: `discord:${senderId}`,
+              To: currentChannelId,
               ChatType: "direct",
               NativeChannelId: discordDm,
               CurrentMessageId: discordMessage,
@@ -520,11 +520,11 @@ describe("CLI message authority integration", () => {
           }
         : {
             requesterAccountId: "default",
-            requesterSenderId: run.senderId,
+            requesterSenderId: senderId,
             toolContext: {
               currentChannelProvider: channel,
               ...(directToolContext ?? {
-                currentChannelId: run.currentChannelId,
+                currentChannelId,
                 currentChatType: "channel" as const,
               }),
             },
@@ -736,21 +736,6 @@ describe("CLI message authority integration", () => {
   });
 
   describe("scheduled channel-edit consumer", () => {
-    it("edits through a trusted scheduled grant without channel ingress or a run-wide owner flag", async () => {
-      const turn = await createTurn("discord", { scheduledPolicy: trustedScheduledPolicy });
-      expect(turn.runParams.senderIsOwner).toBe(false);
-      expect(turn.runParams.senderId).toBeUndefined();
-      expect(turn.runParams.currentChannelId).toBeUndefined();
-
-      expectSuccess(await turn.call(channelEdit));
-
-      const edits = requests.filter((request) => request.method === "PATCH");
-      expect(edits).toHaveLength(1);
-      expect(edits[0]?.path).toBe(discordChannelPath);
-      expect(JSON.parse(edits[0]?.body ?? "null")).toEqual({ topic: channelEdit.topic });
-      expect(acceptedChannelEdits).toBe(1);
-    });
-
     it("resolves a channel name through the Discord directory before the scheduled edit", async () => {
       const turn = await createTurn("discord", { scheduledPolicy: trustedScheduledPolicy });
 
@@ -824,7 +809,7 @@ describe("CLI message authority integration", () => {
           ...identity,
           target: namedTarget ? `#${directoryChannelName}` : channelEdit.target,
         }),
-        /operator-authorized job|cannot inherit operator administration/,
+        /requires an operator-created job/,
       );
       if (namedTarget) {
         expect(requests).toEqual([]);

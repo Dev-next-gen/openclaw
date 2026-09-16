@@ -11,11 +11,11 @@ import type {
   OutboundGatewayRequestContext,
 } from "../../infra/outbound/message-gateway-options.js";
 import {
+  readGatewayCallOptions,
   resolveGatewayOptions,
   resolveMessageActionAgentRuntimeIdentity,
   resolveMessageActionAgentRuntimeIdentityToken,
   shouldUseInProcessGatewayTool,
-  type GatewayCallOptions,
 } from "./gateway.js";
 import {
   bindAgentToolGatewayRequest,
@@ -24,7 +24,7 @@ import {
 
 /** Capture message routing before preparation can await or the Gateway can retire. */
 export function createMessageToolGateway(
-  gatewayOpts: GatewayCallOptions,
+  params: Record<string, unknown>,
   options?: {
     conversationReadOrigin?: ConversationReadInvocationOrigin;
     messageActionTurnCapability?: string;
@@ -33,16 +33,23 @@ export function createMessageToolGateway(
     sessionId?: string;
   },
   signal?: AbortSignal,
-  resolveInvocationConfig?: () => OpenClawConfig,
+  invocation?: {
+    resolveConfig: () => OpenClawConfig;
+    preserveWriteOutcome: boolean;
+  },
 ): MessageActionGateway | undefined {
+  const gatewayOpts = readGatewayCallOptions(params);
   if (options?.conversationReadOrigin === "direct-operator") {
     return undefined;
   }
   const boundRequest = shouldUseInProcessGatewayTool(gatewayOpts)
     ? withMessageActionInvocationConfig(
         options?.messageActionTurnCapability,
-        resolveInvocationConfig,
-        () => bindAgentToolGatewayRequest(),
+        invocation?.resolveConfig,
+        () =>
+          bindAgentToolGatewayRequest({
+            revalidateOnCompletion: !invocation?.preserveWriteOutcome,
+          }),
       )
     : undefined;
   const { target, ...connection } = resolveGatewayOptions(gatewayOpts);

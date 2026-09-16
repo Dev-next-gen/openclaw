@@ -1,4 +1,3 @@
-import { resolveChannelDefaultAccountId } from "../../channels/plugins/helpers.js";
 import type {
   ChannelMessageActionContext,
   ChannelPlugin,
@@ -8,13 +7,13 @@ import { enforceMessageActionAllowlist } from "./outbound-policy.js";
 
 /** Admit preparation and execution against the same invocation configuration. */
 export function prepareMessageActionWriteAuthority(params: {
-  context: ChannelMessageActionContext;
+  context: ChannelMessageActionContext & { accountId: string };
   plugin: ChannelPlugin;
   hasRegistrationAuthority: boolean;
   assertCurrent: () => void;
 }): ChannelMessageActionContext {
   const { context, plugin } = params;
-  const { action, channel } = context;
+  const { action, channel, accountId } = context;
   if (
     !params.hasRegistrationAuthority ||
     !plugin.actions?.writeAuthorityActions?.includes(action)
@@ -23,8 +22,6 @@ export function prepareMessageActionWriteAuthority(params: {
       `Scheduled ${channel}:${action} requires an active bundled or verified official plugin with write authorization support. Update and reload a supported plugin, then retry.`,
     );
   }
-  const accountId =
-    context.accountId ?? resolveChannelDefaultAccountId({ plugin, cfg: context.cfg });
   const assertCurrent = () => {
     params.assertCurrent();
     context.assertDirectAdapterHandoff?.();

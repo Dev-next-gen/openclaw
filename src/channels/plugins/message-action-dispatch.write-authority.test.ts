@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../config/config.js";
 import { revokePluginRecord } from "../../plugins/registry-lifecycle.js";
 import { createPluginRegistry } from "../../plugins/registry.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
@@ -18,7 +17,6 @@ const receipt = { content: [{ type: "text" as const, text: "edited" }], details:
 
 afterEach(() => {
   resetPluginRuntimeStateForTest();
-  clearRuntimeConfigSnapshot();
   vi.restoreAllMocks();
 });
 
@@ -30,7 +28,6 @@ function registerWriter(
   } = {},
 ) {
   const cfg = {};
-  setRuntimeConfigSnapshot(cfg, cfg);
   const owner = createPluginRegistry({
     logger: { info() {}, warn() {}, error() {}, debug() {} },
     runtime: {} as PluginRuntime,
@@ -45,7 +42,7 @@ function registerWriter(
   const plugin: ChannelPlugin = {
     ...createChannelTestPluginBase({ id: "declared-writer" }),
     actions: {
-      describeMessageTool: () => ({ actions: ["channel-edit", "role-add"] }),
+      describeMessageTool: () => ({ actions: ["channel-edit"] }),
       writeAuthorityActions: options.writes ?? ["channel-edit"],
       handleAction,
     },
@@ -83,9 +80,6 @@ describe("scheduled message write declaration", () => {
       expect(received?.requesterSenderId).toBeUndefined();
       expect(received).not.toHaveProperty("messageActionAuthorization");
       expect(fixture.context.senderIsOwner).toBe(false);
-
-      await dispatchChannelMessageAction({ ...fixture.context, action: "role-add" });
-      expect(fixture.handleAction.mock.calls[1]?.[0].senderIsOwner).toBe(false);
     },
   );
 
@@ -138,36 +132,29 @@ describe("scheduled message write declaration", () => {
     },
   );
 
-  it.each(["job", "plugin"] as const)(
-    "stops a pending request after its %s authority ends",
-    async (kind) => {
-      const fixture = registerWriter();
-      const entered = createDeferred();
-      const release = createDeferred();
-      const write = vi.fn();
-      fixture.handleAction.mockImplementation(async (context) => {
-        entered.resolve();
-        await release.promise;
-        context.assertDirectAdapterHandoff?.();
-        write();
-        return receipt;
-      });
-      const request = dispatchChannelMessageAction(fixture.context);
-      const rejected = expect(request).rejects.toThrow(/authority|retired/);
-      try {
-        await entered.promise;
-        if (kind === "job") {
-          fixture.source.abort(new Error("job authority retired"));
-        } else {
-          revokePluginRecord(fixture.owner.registry, fixture.record);
-        }
-        release.resolve();
-        await rejected;
-        expect(write).not.toHaveBeenCalled();
-      } finally {
-        release.resolve();
-        await Promise.allSettled([request]);
-      }
-    },
-  );
+  it("stops a pending request after its plugin authority ends", async () => {
+    const fixture = registerWriter();
+    const entered = createDeferred();
+    const release = createDeferred();
+    const write = vi.fn();
+    fixture.handleAction.mockImplementation(async (context) => {
+      entered.resolve();
+      await release.promise;
+      context.assertDirectAdapterHandoff?.();
+      write();
+      return receipt;
+    });
+    const request = dispatchChannelMessageAction(fixture.context);
+    const rejected = expect(request).rejects.toThrow(/authority|retired/);
+    try {
+      await entered.promise;
+      revokePluginRecord(fixture.owner.registry, fixture.record);
+      release.resolve();
+      await rejected;
+      expect(write).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await Promise.allSettled([request]);
+    }
+  });
 });

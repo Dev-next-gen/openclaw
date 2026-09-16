@@ -1,6 +1,7 @@
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import path from "node:path";
+import { json as readJson } from "node:stream/consumers";
 import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,8 +16,13 @@ import {
   setRuntimeConfigSnapshot,
 } from "../src/config/config.js";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
+import {
+  getSuspensionVisibleCronTaskRunCount,
+  waitForActiveCronTaskRuns,
+} from "../src/cron/service/active-run-cancellation.js";
 import { loadCronStore, resolveCronJobsStorePathFromConfig } from "../src/cron/store.js";
 import type { CronJobCreate } from "../src/cron/types.js";
+import * as mcpHttpHandlers from "../src/gateway/mcp-http.handlers.js";
 import { closeMcpLoopbackServer, ensureMcpLoopbackServer } from "../src/gateway/mcp-http.js";
 import { getActiveMcpLoopbackRuntime } from "../src/gateway/mcp-http.loopback-runtime.js";
 import {
@@ -49,15 +55,41 @@ const channelId = "100000000000000003";
 const guildId = "100000000000000001";
 const messageId = "100000000000000020";
 const providerMessage = "A synthetic message read by the scheduled turn.";
+const providerTopic = "Topic set by the scheduled operator job.";
 const modelId = "claude-sonnet-4-6";
 const modelRef = `anthropic/${modelId}`;
 const providerToken = "synthetic-scheduled-discord-token";
 const embeddedModelId = "scheduled-message-read-fixture";
 const modelToken = "synthetic-scheduled-model-token";
-const scenarios = [
-  { runtime: "claude-cli", action: "read" },
-  { runtime: "openclaw", action: "channel-info" },
-] as const;
+type ScheduledMessageScenario = {
+  title: string;
+  runtime: "claude-cli" | "openclaw";
+  action: "read" | "channel-info" | "channel-edit";
+  disableBeforeResponse?: 200 | 429;
+};
+
+const scenarios: ScheduledMessageScenario[] = [
+  { title: "claude-cli/read", runtime: "claude-cli", action: "read" },
+  { title: "openclaw/channel-info", runtime: "openclaw", action: "channel-info" },
+  {
+    title: "edits Discord through a trusted operator-created cron job and its generated MCP grant",
+    runtime: "claude-cli",
+    action: "channel-edit",
+  },
+  {
+    title: "blocks a Discord 429 retry after cron.update disables the executing job",
+    runtime: "claude-cli",
+    action: "channel-edit",
+    disableBeforeResponse: 429,
+  },
+  {
+    title: "preserves an accepted Discord edit after cron.update disables the executing job",
+    runtime: "claude-cli",
+    action: "channel-edit",
+    disableBeforeResponse: 200,
+  },
+  { title: "openclaw/channel-edit", runtime: "openclaw", action: "channel-edit" },
+];
 
 // Uses the maintained control/JSONL child protocol from anthropic/cli-process.test.ts.
 // Only the model's decisions and Discord responses are synthetic. This child reads
@@ -150,16 +182,20 @@ async function closeServer(server: Server): Promise<void> {
   }
 }
 
-describe("operator-created scheduled message reads", () => {
+describe("operator-created scheduled message actions", () => {
   const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-  it.each(scenarios)("$runtime/$action", { timeout: 60_000 }, async (scenario) => {
-    const { runtime, action } = scenario;
+  it.each(scenarios)("$title", { timeout: 60_000 }, async (scenario) => {
+    const { runtime, action, disableBeforeResponse } = scenario;
     const actionParams = {
       action,
       channel: "discord",
       accountId: "default",
-      ...(action === "read" ? { target: `channel:${channelId}`, limit: 1 } : { channelId }),
+      ...(action === "read"
+        ? { target: `channel:${channelId}`, limit: 1 }
+        : action === "channel-edit"
+          ? { target: `channel:${channelId}`, topic: providerTopic }
+          : { channelId }),
     };
     const expectedResult =
       action === "read"
@@ -170,7 +206,13 @@ describe("operator-created scheduled message reads", () => {
           }
         : {
             ok: true,
-            channel: { id: channelId, guild_id: guildId, type: 0, name: "scheduled-read" },
+            channel: {
+              id: channelId,
+              guild_id: guildId,
+              type: 0,
+              name: "scheduled-read",
+              ...(action === "channel-edit" ? { topic: providerTopic } : {}),
+            },
           };
     const assertToolResult = (text: string) => {
       expect(JSON.parse(text)).toMatchObject(expectedResult);
@@ -189,6 +231,14 @@ describe("operator-created scheduled message reads", () => {
     const childPath = path.join(root, "claude.mjs");
     const cleanup: Array<() => void | Promise<void>> = [];
     const requests: Array<{ method: string; path: string; authorizationMatches: boolean }> = [];
+    const edits: unknown[] = [];
+    const heldPatch = disableBeforeResponse
+      ? { entered: createDeferred(), release: createDeferred() }
+      : undefined;
+    // Job cancellation may terminate the child before it can persist the MCP reply.
+    const mcpHandlerSpy = disableBeforeResponse
+      ? vi.spyOn(mcpHttpHandlers, "handleMcpJsonRpc")
+      : undefined;
     const providerErrors: string[] = [];
     let metadataControl: "pending" | "passed" = "pending";
     const diagnostics = (result: unknown) =>
@@ -201,6 +251,24 @@ describe("operator-created scheduled message reads", () => {
           model: embeddedModel.observation,
         }),
       );
+    const readObservedMcpResponse = async (method: "tools/list" | "tools/call") => {
+      const spy = expectDefined(mcpHandlerSpy, "MCP handler observer for a disabled job");
+      const index = spy.mock.calls.findIndex(
+        ([request]) =>
+          request.message.method === method &&
+          request.hookContext?.workspaceDir === workspaceDir &&
+          (method === "tools/list" || request.message.params?.name === "message"),
+      );
+      const returned = expectDefined(spy.mock.results[index], `Scheduled MCP ${method} result`);
+      if (returned.type !== "return") {
+        throw new Error(`Scheduled MCP ${method} did not return a response promise.`);
+      }
+      return (await withTestTimeout(
+        returned.value,
+        45_000,
+        `Expected scheduled MCP ${method} response after job disable`,
+      )) as McpResponse;
+    };
     await runQaGatewayFixture(
       async () => {
         await mkdir(workspaceDir, { recursive: true });
@@ -251,6 +319,34 @@ describe("operator-created scheduled message reads", () => {
             const authorizationMatches = req.headers.authorization === `Bot ${providerToken}`;
             requests.push({ method: req.method ?? "", path: url.pathname, authorizationMatches });
             expect(authorizationMatches, "Discord fixture authorization matches").toBe(true);
+            if (req.method === "PATCH" && url.pathname === `/api/v10/channels/${channelId}`) {
+              const edit: unknown = await readJson(req);
+              edits.push(edit);
+              expect(edit).toEqual({ topic: providerTopic });
+              if (heldPatch && edits.length === 1) {
+                heldPatch.entered.resolve();
+                await heldPatch.release.promise;
+                if (disableBeforeResponse === 429) {
+                  res
+                    .writeHead(429, {
+                      "content-type": "application/json",
+                      "retry-after": "0.001",
+                    })
+                    .end(JSON.stringify({ message: "Rate limited", retry_after: 0.001 }));
+                  return;
+                }
+              }
+              res.writeHead(200, { "content-type": "application/json" }).end(
+                JSON.stringify({
+                  id: channelId,
+                  type: 0,
+                  guild_id: guildId,
+                  name: "scheduled-read",
+                  topic: providerTopic,
+                }),
+              );
+              return;
+            }
             expect(req.method).toBe("GET");
             const body =
               url.pathname === `/api/v10/channels/${channelId}`
@@ -489,28 +585,90 @@ describe("operator-created scheduled message reads", () => {
           "persisted scheduled job",
         );
         expect(job.scheduledToolPolicy).toEqual({ version: 1, mode: "trusted" });
+        expect(job).toMatchObject({ payload: { toolsAllow: ["message"] } });
         expect(
           await gateway.client.request("cron.run", { id: job.id, mode: "force" }),
         ).toMatchObject({ ok: true, enqueued: true });
+        if (heldPatch) {
+          try {
+            await withTestTimeout(
+              Promise.race([
+                heldPatch.entered.promise,
+                finished.promise.then((completion) => {
+                  throw new Error(diagnostics({ completedBeforePatch: completion }));
+                }),
+              ]),
+              45_000,
+              "Expected authenticated scheduled PATCH before disabling the job",
+            );
+            expect(edits).toEqual([{ topic: providerTopic }]);
+            await gateway.client.request("cron.update", {
+              id: job.id,
+              patch: { enabled: false },
+            });
+            const disabledJob = expectDefined(
+              (await loadCronStore(storePath)).jobs.find((entry) => entry.id === job.id),
+              "persisted disabled scheduled job",
+            );
+            expect(disabledJob).toMatchObject({
+              id: job.id,
+              enabled: false,
+              scheduledToolPolicy: { version: 1, mode: "trusted" },
+              payload: { toolsAllow: ["message"] },
+            });
+            if (disableBeforeResponse === 200) {
+              const requestSignal = expectDefined(
+                mcpHandlerSpy?.mock.calls.find(
+                  ([request]) =>
+                    request.message.method === "tools/call" &&
+                    request.hookContext?.workspaceDir === workspaceDir,
+                )?.[0].signal,
+                "original scheduled MCP request signal",
+              );
+              await withTestTimeout(
+                requestSignal.aborted
+                  ? Promise.resolve()
+                  : new Promise<void>((resolve) => {
+                      requestSignal.addEventListener("abort", () => resolve(), { once: true });
+                    }),
+                10_000,
+                "Expected the disabled job to close its original MCP request",
+              );
+            }
+          } finally {
+            heldPatch.release.resolve();
+          }
+        }
         const completion = await withTestTimeout(
           finished.promise,
           45_000,
           "Expected scheduled agent completion",
         );
-        expect(completion, diagnostics(completion)).toMatchObject({ status: "ok" });
+        if (!disableBeforeResponse) {
+          expect(completion, diagnostics(completion)).toMatchObject({ status: "ok" });
+        }
         let text: string | undefined;
         if (runtime === "claude-cli") {
-          const observation = JSON.parse(
-            await readFile(path.join(root, "mcp-result.json"), "utf8"),
-          ) as {
-            listed: McpResponse;
-            reply: McpResponse;
-          };
+          const observation = mcpHandlerSpy
+            ? {
+                listed: await readObservedMcpResponse("tools/list"),
+                reply: await readObservedMcpResponse("tools/call"),
+              }
+            : (JSON.parse(await readFile(path.join(root, "mcp-result.json"), "utf8")) as {
+                listed: McpResponse;
+                reply: McpResponse;
+              });
+          if (disableBeforeResponse) {
+            expect(await waitForActiveCronTaskRuns(10_000)).toEqual({ drained: true, active: 0 });
+            expect(getSuspensionVisibleCronTaskRunCount({ agentId: "main" })).toBe(0);
+          }
           expect(observation.listed.result?.tools).toContainEqual(
             expect.objectContaining({ name: "message" }),
           );
           expect(observation.reply.error, diagnostics(observation.reply)).toBeUndefined();
-          expect(observation.reply.result?.isError, diagnostics(observation.reply)).toBe(false);
+          expect(observation.reply.result?.isError, diagnostics(observation.reply)).toBe(
+            disableBeforeResponse === 429,
+          );
           text = observation.reply.result?.content?.find((item) => item.type === "text")?.text;
         } else {
           expect(embeddedModel.observation, diagnostics(completion)).toMatchObject({
@@ -519,21 +677,39 @@ describe("operator-created scheduled message reads", () => {
           });
           text = embeddedModel.observation.toolOutput;
         }
-        assertToolResult(expectDefined(text, "scheduled provider tool result"));
-        expect(requests).toContainEqual({
-          method: "GET",
-          path: `/api/v10/channels/${channelId}`,
-          authorizationMatches: true,
-        });
-        if (action === "read") {
+        if (disableBeforeResponse === 429) {
+          expect(text).toMatch(/authority is no longer active|disabled by operator|abort|cancel/i);
+        } else {
+          assertToolResult(expectDefined(text, "scheduled provider tool result"));
+        }
+        if (action === "channel-edit") {
+          expect(requests.filter((request) => request.method === "PATCH")).toEqual([
+            {
+              method: "PATCH",
+              path: `/api/v10/channels/${channelId}`,
+              authorizationMatches: true,
+            },
+          ]);
+          expect(edits).toEqual([{ topic: providerTopic }]);
+        } else {
           expect(requests).toContainEqual({
             method: "GET",
-            path: `/api/v10/channels/${channelId}/messages`,
+            path: `/api/v10/channels/${channelId}`,
             authorizationMatches: true,
           });
+          if (action === "read") {
+            expect(requests).toContainEqual({
+              method: "GET",
+              path: `/api/v10/channels/${channelId}/messages`,
+              authorizationMatches: true,
+            });
+          }
+          expect(edits).toEqual([]);
         }
         expect(providerErrors).toEqual([]);
       },
+      // Release provider responses before Gateway shutdown waits for pending writes.
+      () => heldPatch?.release.resolve(),
       () => runQaGatewayFixture(async () => {}, ...cleanup.toReversed()),
       () => vi.restoreAllMocks(),
       () => vi.unstubAllGlobals(),

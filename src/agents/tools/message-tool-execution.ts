@@ -45,7 +45,6 @@ import { createSandboxBridgeReadFile } from "../sandbox-media-paths.js";
 import type { SandboxFsBridge } from "../sandbox/fs-bridge.js";
 import { type AnyAgentTool, jsonResult, readToolStringParam } from "./common.js";
 import { captureGatewayToolCallerAssertion } from "./gateway-caller-context.js";
-import { readGatewayCallOptions } from "./gateway.js";
 import {
   createMessageToolDecisionRecorder,
   resolveTrustedDecisionChannel,
@@ -400,8 +399,10 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
         decisions.runBoundary(() => explicitTargetGuard.require(params, action));
       }
 
-      const gatewayOpts = readGatewayCallOptions(params);
-      const gateway = createMessageToolGateway(gatewayOpts, options, signal, () => cfg);
+      const gateway = createMessageToolGateway(params, options, signal, {
+        resolveConfig: () => cfg,
+        preserveWriteOutcome: Boolean(scheduledWrite),
+      });
       decisions.runBoundary(() =>
         validateExplicitMessageAccountSelection({
           cfg: rawConfig,
