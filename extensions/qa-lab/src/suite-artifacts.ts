@@ -3,7 +3,6 @@ import path from "node:path";
 import type { QaRunnerTransportArtifacts } from "openclaw/plugin-sdk/qa-runner-runtime";
 import { replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
 import { assertQaSuiteArtifactWritten } from "./artifact-assertion.js";
-import type { QaSuiteChannelDriverSelection } from "./crabline-artifacts.js";
 import {
   buildQaSuiteEvidenceSummary,
   QA_EVIDENCE_FILENAME,
