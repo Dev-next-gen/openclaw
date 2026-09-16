@@ -67,10 +67,8 @@ import {
   shouldSuppressAssistantEventForLiveChat,
 } from "../gateway/live-chat-projector.js";
 import { getMaxChatHistoryMessagesBytes } from "../gateway/server-constants.js";
-import {
-  enrichChatHistoryCompactionMarkers,
-  readChatHistoryPage,
-} from "../gateway/server-methods/chat-history-pages.js";
+import { enrichChatHistoryCompactionMarkers } from "../gateway/server-methods/chat-history-page-kernel.js";
+import { readChatHistoryPage } from "../gateway/server-methods/chat-history-pages.js";
 import {
   CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES,
   replaceOversizedChatHistoryMessages,
@@ -681,8 +679,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
       messages: normalized,
       maxSingleMessageBytes: perMessageHardCap,
     });
-    const capped = capArrayByJsonBytes(replaced.messages, maxHistoryBytes).items;
-    const messages = capped;
+    const messages = capArrayByJsonBytes(replaced.messages, maxHistoryBytes).items;
     const newestInFlightRun = [...this.runs.entries()].findLast(
       ([, run]) =>
         !run.isBtw &&
@@ -711,6 +708,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
       });
       thinkingLevel = resolveThinkingDefault({
         cfg,
+        agentId: sessionAgentId,
         provider: resolvedSessionModel.provider,
         model: resolvedSessionModel.model,
         catalog,

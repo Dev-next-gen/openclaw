@@ -38,6 +38,7 @@ import { resolvePreferredOpenClawTmpDir } from "../tmp-openclaw-dir.js";
 import * as channelResolution from "./channel-resolution.js";
 import { prepareOutboundPayloadBatch } from "./deliver-prepare.js";
 import { countPhysicalOutboundSends, PlatformMessageNotDispatchedError } from "./deliver-types.js";
+import { matrixOutboundForTest, type MatrixSendFn } from "./deliver.matrix.test-support.js";
 import { createOutboundPayloadPlan, projectOutboundPayloadPlanForOutbound } from "./payloads.js";
 import { createUnmodifiedPreparedOutboundBatch } from "./prepared-batch.js";
 
@@ -269,20 +270,6 @@ const expectedPreferredTmpRoot = resolvePreferredOpenClawTmpDir();
 
 type DeliverOutboundArgs = Parameters<DeliverModule["deliverOutboundPayloads"]>[0];
 type DeliverOutboundPayload = DeliverOutboundArgs["payloads"][number];
-type MatrixSendFn = (
-  to: string,
-  text: string,
-  options?: Record<string, unknown>,
-) => Promise<{ messageId: string } & Record<string, unknown>>;
-
-function resolveMatrixSender(deps: DeliverOutboundArgs["deps"]): MatrixSendFn {
-  const sender = deps?.matrix;
-  if (typeof sender !== "function") {
-    throw new Error("missing matrix sender");
-  }
-  return sender as MatrixSendFn;
-}
-
 function requireMockCallArg<TArgs extends unknown[]>(
   mockFn: { mock: { calls: TArgs[] } },
   label: string,
@@ -309,13 +296,6 @@ function requireMockCall<T extends unknown[] = unknown[]>(
 
 function requireMatrixSendCall(sendMatrix: ReturnType<typeof vi.fn>, index = 0): unknown[] {
   return requireMockCall(sendMatrix as { mock: { calls: unknown[][] } }, "matrix send", index);
-}
-
-function withMatrixChannel(result: Awaited<ReturnType<MatrixSendFn>>) {
-  return {
-    channel: "matrix" as const,
-    ...result,
-  };
 }
 
 function createNetworkError(message: string, code: string, syscall?: string) {
@@ -449,43 +429,6 @@ function installMatrixTextMessageAdapter(params: {
   );
   return messageSendText;
 }
-
-const matrixOutboundForTest: ChannelOutboundAdapter = {
-  deliveryMode: "direct",
-  chunker: chunkText,
-  chunkerMode: "text",
-  textChunkLimit: 4000,
-  sanitizeText: ({ text }) => (text === "<br>" || text === "<br><br>" ? "" : text),
-  sendText: async ({ cfg, to, text, accountId, deps, gifPlayback }) =>
-    withMatrixChannel(
-      await resolveMatrixSender(deps)(to, text, {
-        cfg,
-        accountId: accountId ?? undefined,
-        gifPlayback,
-      }),
-    ),
-  sendMedia: async ({
-    cfg,
-    to,
-    text,
-    mediaUrl,
-    mediaLocalRoots,
-    mediaReadFile,
-    accountId,
-    deps,
-    gifPlayback,
-  }) =>
-    withMatrixChannel(
-      await resolveMatrixSender(deps)(to, text, {
-        cfg,
-        mediaUrl,
-        mediaLocalRoots,
-        mediaReadFile,
-        accountId: accountId ?? undefined,
-        gifPlayback,
-      }),
-    ),
-};
 
 type MatrixDeliveryArgs = Omit<DeliverOutboundArgs, "cfg" | "channel" | "to" | "payloads"> &
   Partial<Pick<DeliverOutboundArgs, "cfg" | "to" | "payloads">>;

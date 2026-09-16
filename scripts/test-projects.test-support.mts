@@ -240,10 +240,6 @@ const EXTENSION_ACTIVE_MEMORY_VITEST_CONFIG =
 const EXTENSION_ACPX_VITEST_CONFIG = "test/vitest/vitest.extension-acpx.config.ts";
 const EXTENSION_BROWSER_VITEST_CONFIG = "test/vitest/vitest.extension-browser.config.ts";
 const EXTENSION_CODEX_VITEST_CONFIG = "test/vitest/vitest.extension-codex.config.ts";
-const EXTENSION_CODEX_APP_SERVER_ATTEMPT_VITEST_CONFIG =
-  "test/vitest/vitest.extension-codex-app-server-attempt.config.ts";
-const EXTENSION_CODEX_APP_SERVER_ATTEMPT_EXTRA_VITEST_CONFIG =
-  "test/vitest/vitest.extension-codex-app-server-attempt-extra.config.ts";
 const EXTENSION_CODEX_APP_SERVER_ATTEMPT_LIGHT_VITEST_CONFIG =
   "test/vitest/vitest.extension-codex-app-server-attempt-light.config.ts";
 const EXTENSION_CODEX_APP_SERVER_ATTEMPT_SUPPORT_VITEST_CONFIG =
@@ -330,8 +326,6 @@ const FULL_SUITE_CONFIG_WEIGHT = new Map([
   [AGENTS_SUPPORT_VITEST_CONFIG, 168],
   [AGENTS_TOOLS_VITEST_CONFIG, 167],
   [EXTENSION_CODEX_VITEST_CONFIG, 168],
-  [EXTENSION_CODEX_APP_SERVER_ATTEMPT_VITEST_CONFIG, 168],
-  [EXTENSION_CODEX_APP_SERVER_ATTEMPT_EXTRA_VITEST_CONFIG, 118],
   [EXTENSION_CODEX_APP_SERVER_ATTEMPT_LIGHT_VITEST_CONFIG, 82],
   [EXTENSION_CODEX_APP_SERVER_ATTEMPT_SUPPORT_VITEST_CONFIG, 80],
   [EXTENSION_CODEX_APP_SERVER_RUNTIME_VITEST_CONFIG, 88],
@@ -2436,6 +2430,7 @@ const EXACT_TOOLING_TARGETS = new Map<string, string[]>([
   ["scripts/openclaw-npm-prepublish-verify.ts", ["test/openclaw-npm-prepublish-verify.test.ts"]],
   ["scripts/lib/docker-e2e-scenarios.mts", [dockerE2e, pluginPrerelease]],
   ["scripts/lib/upgrade-survivor-policy.mjs", [dockerE2e]],
+  ["scripts/lib/upgrade-survivor-scenarios.json", [dockerE2e]],
   ["scripts/e2e/kitchen-sink-rpc-walk.mts", ["kitchen-sink-rpc-walk", pluginPrerelease]],
   [
     "scripts/e2e/agents-delete-shared-workspace-docker.sh",

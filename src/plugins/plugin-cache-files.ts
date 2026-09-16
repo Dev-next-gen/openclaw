@@ -206,15 +206,16 @@ export function readPluginCacheFile(params: {
   const limitKey = JSON.stringify([key, maxBytes]);
   // A successful strict check also satisfies the bundled/raw-reader policy;
   // its failures never stand in for a more permissive read.
-  const strictKey = entryKey(params.relativePath, true);
-  const strict = params.rejectHardlinks ? undefined : root.files.get(strictKey);
+  const strict = params.rejectHardlinks
+    ? undefined
+    : root.files.get(entryKey(params.relativePath, true));
   const cached =
     root.files.get(key) ?? root.files.get(limitKey) ?? (strict?.ok ? strict : undefined);
   if (cached) {
     return enforceFileSize(cached, maxBytes);
   }
   const requestedPath = path.resolve(lexicalRoot, params.relativePath);
-  const checked = root.checkedEntries.get(entryKey(params.relativePath, params.rejectHardlinks));
+  const checked = root.checkedEntries.get(key);
   if (pathFacts(requestedPath).exists === false || (checked && (!checked.ok || !checked.exists))) {
     const entry: PluginFileCacheEntry = {
       ok: false,
@@ -271,7 +272,7 @@ export function readPluginCacheFile(params: {
         },
       };
       Object.assign(pathFacts(absolutePath), { exists: true, stat: opened.stat });
-      root.checkedEntries.set(entryKey(params.relativePath, params.rejectHardlinks), {
+      root.checkedEntries.set(key, {
         ok: true,
         path: opened.path,
         rootRealPath: opened.rootRealPath,

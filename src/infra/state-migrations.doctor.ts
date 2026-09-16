@@ -2148,10 +2148,10 @@ function buildLegacyStateMigrationSteps(
               const result = await migrateLegacyMainSessionKeys({
                 cfg: params.sessionConfig ?? params.config,
                 env,
-                mode: "automatic",
+                mode: "detect",
                 now,
               });
-              return { changes: result.changes, warnings: [], notices: result.warnings };
+              return { changes: [], warnings: [], notices: result.warnings };
             },
         true,
         legacySessionStoreRefusal,
@@ -3037,6 +3037,21 @@ function completedPluginMigrationFields(
     ...(requiredPluginIds.length > 0 ? { requiredPluginIds } : {}),
     ...(statelessPluginIds.length > 0 ? { statelessPluginIds } : {}),
   };
+}
+
+/** Admit preflight's shared-state writers through the same schema step as later migrations. */
+export async function prepareLegacyStateDatabaseSchema(
+  env: NodeJS.ProcessEnv,
+): Promise<LegacyStateMigrationStepReceipt> {
+  const { receipts } = await runLegacyStateMigrationSteps([
+    createStateSchemaMigrationStep({
+      stateDir: resolveStateDir(env),
+      env,
+      mode: "automatic",
+      requiredness: "conditional",
+    }),
+  ]);
+  return receipts[0]!;
 }
 
 export async function runLegacyStateMigrations(params: {

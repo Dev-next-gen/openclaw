@@ -30,10 +30,8 @@ import { withEnvAsync } from "../../test-utils/env.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { loadCombinedSessionStoreForGatewayCore } from "./combined-store-gateway.js";
 import { replaceSessionEntry } from "./session-accessor.js";
-import {
-  isCanonicalSqliteSessionMainKeyCurrent,
-  setCanonicalSqliteSessionMainKey,
-} from "./session-canonical-key.js";
+import { isCanonicalSqliteSessionMainKeyCurrent } from "./session-canonical-key-read.js";
+import { setCanonicalSqliteSessionMainKey } from "./session-canonical-key.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 import { reconcileSessionTranscriptIndexes } from "./session-transcript-reconcile.js";
 import { runSessionStartupMigration } from "./startup-migration.js";
@@ -92,7 +90,7 @@ it("does not create a missing configured agent database during startup maintenan
     agentId: "idle",
     env,
   }).path;
-  const migrateManagedWorktreeCanonicalWorkspaces = vi.fn(async () => 0);
+  const migrateManagedWorktreeCanonicalWorkspaces = vi.fn(async () => ({ found: 0, repaired: 0 }));
 
   await runSessionStartupMigration({
     cfg,
@@ -226,7 +224,10 @@ it("re-registers durable lineage children before configured-only runtime reads",
       ),
     ).toBe(false);
 
-    const migrateManagedWorktreeCanonicalWorkspaces = vi.fn(async () => 0);
+    const migrateManagedWorktreeCanonicalWorkspaces = vi.fn(async () => ({
+      found: 0,
+      repaired: 0,
+    }));
     await runSessionStartupMigration({
       cfg,
       env,
@@ -349,7 +350,7 @@ it.each(["registry", "main-key"] as const)(
           migrateManagedWorktreeCanonicalWorkspaces: async () => {
             maintenanceSawProgress = yielded;
             maintenanceSawSelectedKey = isCanonicalSqliteSessionMainKeyCurrent(options, undefined);
-            return 0;
+            return { found: 0, repaired: 0 };
           },
         },
       });

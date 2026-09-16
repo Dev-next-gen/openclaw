@@ -64,6 +64,20 @@ unrestricted `*` policy; `automations edit --clear-tools` restores that explicit
 policy. Existing jobs that predate an explicit tool policy retain their current behavior
 until their tool policy is explicitly edited or the job is recreated.
 
+Changing an account-bound job to a payload that does not run tools and later back
+to an agent turn preserves its account restriction. A payload conversion does not
+reauthorize that job as an operator-created job.
+
+Management edits cannot restore missing policy metadata as operator authority.
+For a legacy job that has lost its policy, an authenticated operator can explicitly
+reauthorize it, or an authenticated creator can recreate it with a fresh tool cap.
+
+When the creator's `exec` capability is fixed to the Gateway, the automation also
+retains that target. With `tools.exec.host: "auto"`, the saved target determines
+placement. A conflicting current explicit host setting or required sandbox
+isolation blocks the command instead of moving it to another host. Current tool
+and approval policies still apply.
+
 `--model` sets the job's primary model; it does not replace a session `/model` override, so configured fallback chains still apply on top of it. An unresolved or disallowed model fails the run with an explicit validation error rather than silently falling back to the default. If a job has `--model` but no explicit or configured fallback list, OpenClaw passes an empty fallback override instead of silently appending the agent primary as a hidden retry target.
 
 Pick the model for the job's difficulty, not the agent's default. Routine
@@ -110,6 +124,8 @@ openclaw automations create "*/15 * * * *" \
 `--command <shell>` stores `argv: ["sh", "-lc", <shell>]`. Use `--command-argv '["node","scripts/report.mjs"]'` for exact argv execution without shell parsing. Optional `--command-env KEY=VALUE` (repeatable), `--command-input`, `--timeout-seconds` (default 10 minutes), `--no-output-timeout-seconds`, and `--output-max-bytes` control the process environment, stdin, and output bounds.
 
 Delivered text is derived from process output: non-empty stdout wins; if stdout is empty and stderr is non-empty, stderr is delivered; if both are present, the scheduler sends a small `stdout:` / `stderr:` block. Exit code `0` records the run `ok`; non-zero exit, signal, timeout, or no-output timeout records `error` and can trigger failure alerts. A command that prints only `NO_REPLY` uses the normal automation silent-token suppression and posts nothing back to chat.
+
+When the run deadline stops a command, run history retains its captured output and command timeout reason after bounded process cleanup. Completion delivery does not start after that deadline.
 
 ### Script payloads
 

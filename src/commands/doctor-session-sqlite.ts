@@ -29,9 +29,13 @@ import {
   type DeferredPluginMigration,
 } from "../infra/deferred-plugin-migrations.js";
 import {
+  captureDeferredPluginSessionSources,
+  resolveTrajectoryPath,
+  resolveTrajectoryPointerPath,
   deferredPluginSessionStoreIds,
   readDeferredPluginSessionImport,
   recordDeferredPluginSessionImport,
+  resolveVerifiedSessionSource,
   type DeferredPluginSessionImport,
 } from "../infra/deferred-plugin-session-sources.js";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -440,7 +444,7 @@ export async function settleRetainedDoctorSessionSources(
     verifyImports();
     const transcriptIssue = owners
       .flatMap((owner) => owner.report.issues)
-      .find((candidate) => !isMissingTranscriptIssue(candidate));
+      .find((candidate) => !isRetainedSourceIssue(candidate));
     if (transcriptIssue) {
       throw new Error(transcriptIssue.message);
     }
@@ -454,7 +458,7 @@ export async function settleRetainedDoctorSessionSources(
     verifyImports();
     const issue = owners
       .flatMap((owner) => owner.report.issues)
-      .find((candidate) => !isMissingTranscriptIssue(candidate));
+      .find((candidate) => !isRetainedSourceIssue(candidate));
     if (issue || owners.some((owner) => fs.existsSync(owner.target.storePath))) {
       throw new Error(issue?.message ?? "Retained session sources could not be archived.");
     }
@@ -802,17 +806,35 @@ async function inspectOrMigrateTarget(params: {
     return report;
   }
   if (retainedImport) {
-    const verifiedPaths = new Set(retainedImport.sources.map((source) => source.path));
+    const verifiedSources = new Map(retainedImport.sources.map((source) => [source.path, source]));
     for (const record of records) {
-      if (record.transcriptPath && !verifiedPaths.has(path.resolve(record.transcriptPath))) {
+      const source =
+        record.transcriptPath && verifiedSources.get(path.resolve(record.transcriptPath));
+      if (record.transcriptPath && !source) {
         report.issues.push({
           code: "transcript_missing",
           message: `Transcript file is missing: ${record.transcriptPath}`,
           sessionKey: record.sessionKey,
         });
-      } else if (record.transcriptPath && fs.existsSync(record.transcriptPath)) {
-        record.sourceFingerprint = readTranscriptFingerprint(record.transcriptPath);
-        record.recovery = { complete: true, repaired: false, events: 0 };
+      } else if (record.transcriptPath && source) {
+        if (fs.existsSync(record.transcriptPath)) {
+          record.sourceFingerprint = readTranscriptFingerprint(record.transcriptPath);
+        }
+        const transcriptPath = resolveVerifiedSessionSource(
+          source,
+          createMigrationTargetInput(params.target),
+          params.env,
+        );
+        if (!transcriptPath) {
+          throw new Error(`Retained session migration source changed: ${record.transcriptPath}`);
+        }
+        // A receipt prevents replay; it does not certify the malformed suffix as imported.
+        countLegacyTranscript({ ...record, transcriptPath }, report);
+        record.recovery = {
+          complete: !hasSessionIssue(report, "transcript_malformed", record.sessionKey),
+          repaired: false,
+          events: 0,
+        };
       }
     }
   } else if (params.mode === "import") {
@@ -905,33 +927,16 @@ async function inspectOrMigrateTarget(params: {
       !retainedImport &&
       indexIdentity &&
       verifiedImport &&
-      report.issues.every(isMissingTranscriptIssue)
+      report.issues.every(isRetainedSourceIssue)
     ) {
       try {
-        const sources = new Map<string, MigrationArtifactIdentity>([
-          [path.resolve(params.target.storePath), indexIdentity],
-        ]);
-        for (const record of records) {
-          if (!record.transcriptPath || !record.sourceFingerprint) {
-            continue;
-          }
-          sources.set(
-            path.resolve(record.transcriptPath),
-            readMigrationArtifactIdentity(record.transcriptPath, 1n, record.sourceFingerprint),
-          );
-          for (const file of [
-            resolveTrajectoryPath(record.transcriptPath),
-            resolveTrajectoryPointerPath(record.transcriptPath),
-          ]) {
-            if (file && fs.existsSync(file)) {
-              sources.set(path.resolve(file), readMigrationArtifactIdentity(file));
-            }
-          }
-        }
-        verifiedSources = [...sources].map(([sourcePath, identity]) => ({
-          path: sourcePath,
-          identity,
-        }));
+        verifiedSources = captureDeferredPluginSessionSources({
+          storePath: params.target.storePath,
+          indexIdentity,
+          records,
+          unreferencedJsonlFiles: report.unreferencedJsonlFiles,
+          referencedPaths: params.referencedPaths,
+        });
       } catch (error) {
         report.issues.push({
           code: "transcript_archive_failed",
@@ -942,7 +947,7 @@ async function inspectOrMigrateTarget(params: {
     if (
       deferredPluginIds.length > 0 &&
       verifiedImport &&
-      report.issues.every(isMissingTranscriptIssue)
+      report.issues.every(isRetainedSourceIssue)
     ) {
       if (!retainedImport) {
         if (!verifiedSources) {
@@ -1157,8 +1162,8 @@ function blockingIssueCount(report: DoctorSessionSqliteTargetReport): number {
   return report.issues.filter((issue) => !isSessionSqliteMigrationWarning(issue)).length;
 }
 
-function isMissingTranscriptIssue(issue: DoctorSessionSqliteIssue): boolean {
-  return issue.code === "transcript_missing";
+function isRetainedSourceIssue(issue: DoctorSessionSqliteIssue): boolean {
+  return ["entry_invalid", "transcript_malformed", "transcript_missing"].includes(issue.code);
 }
 
 async function importLegacySessionRecords(
@@ -1648,6 +1653,15 @@ async function archiveLegacyArtifacts(
       }
     }
   }
+  // A physical move must remain resolvable through every receipt that captured its source.
+  for (const owner of owners) {
+    for (const { path: source } of owner.verifiedSources ?? []) {
+      const shared = planned.get(source);
+      if (shared && !shared.owners.has(owner)) {
+        shared.owners.set(owner, undefined);
+      }
+    }
+  }
   const movesForOwner = (owner: LegacyArchiveTarget) =>
     [...planned.values()]
       .filter((item) => item.owners.has(owner))
@@ -1677,11 +1691,12 @@ async function archiveLegacyArtifacts(
       );
       assertCurrent?.();
       completed.add(move.sourcePath);
-      const report = [...referencingOwners.keys()][0]!.report;
-      (move.kind === "unreferenced-jsonl"
-        ? report.archivedUnreferencedJsonlFiles
-        : report.archivedTranscriptFiles
-      ).push(move.archivePath);
+      for (const { report } of referencingOwners.keys()) {
+        (move.kind === "unreferenced-jsonl"
+          ? report.archivedUnreferencedJsonlFiles
+          : report.archivedTranscriptFiles
+        ).push(move.archivePath);
+      }
     } catch (error) {
       if (error instanceof DeferredPluginMigrationConflictError && error.pending.length > 0) {
         break;
@@ -1780,10 +1795,10 @@ async function archiveImportedLegacySessionStores(
         publishSourceRemoval,
       );
       assertCurrent?.();
-      for (const { target } of entries) {
+      for (const { target, report } of entries) {
         recordCompletedMigrationMoves(activeRun, target, [move]);
+        report.archivedLegacyStoreFiles!.push(move.archivePath);
       }
-      first.report.archivedLegacyStoreFiles!.push(move.archivePath);
     } catch (error) {
       if (error instanceof DeferredPluginMigrationConflictError && error.pending.length > 0) {
         break;
@@ -1900,18 +1915,6 @@ function planImportedTranscriptArtifactsToArchive(
     addMove(trajectoryPointerPath, "trajectory");
   }
   return moves;
-}
-
-function resolveTrajectoryPath(transcriptPath: string): string | undefined {
-  return transcriptPath.endsWith(".jsonl")
-    ? `${transcriptPath.slice(0, -".jsonl".length)}.trajectory.jsonl`
-    : undefined;
-}
-
-function resolveTrajectoryPointerPath(transcriptPath: string): string | undefined {
-  return transcriptPath.endsWith(".jsonl")
-    ? `${transcriptPath.slice(0, -".jsonl".length)}.trajectory-path.json`
-    : undefined;
 }
 
 function planSessionJsonlArchiveMove(params: {

@@ -1481,9 +1481,16 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             "original hybrid runner anchor",
           )
         : undefined;
-      const promoted = originalHybridJob?.planConcurrency === 2 && shard.planConcurrency === 1;
+      if (originalHybridJob?.planConcurrency === 2 && shard.planConcurrency === 1) {
+        expect(shard.pretestBuildMode).toBe("runtime");
+      }
+      const promoted =
+        originalHybridJob !== undefined &&
+        originalHybridJob.pretestBuildMode === undefined &&
+        shard.pretestBuildMode === "runtime";
       if (promoted) {
         expect(shard.pretestBuildMode).toBe("runtime");
+        expect(shard.planConcurrency).toBe(1);
         expect(exclusiveCount).toBe(0);
         expect(shard.requiresDist).toBe(false);
         for (const original of originalHybridJob.groups) {
@@ -1491,10 +1498,14 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             shard.groups.find((group) => group.shard_name === original.shard_name),
             "retained ordinary group",
           );
-          expect(retained).toEqual({
-            ...original,
-            env: { OPENCLAW_VITEST_MAX_WORKERS: "2", ...original.env },
-          });
+          if (originalHybridJob.planConcurrency === 2) {
+            expect(retained).toEqual({
+              ...original,
+              env: { OPENCLAW_VITEST_MAX_WORKERS: "2", ...original.env },
+            });
+          } else {
+            expect(retained).toStrictEqual(original);
+          }
         }
       }
       if (
@@ -2011,6 +2022,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "src/commands/doctor-session-sqlite.codex-binding.test.ts",
       "src/commands/doctor-session-sqlite.deferred-plugin.test.ts",
       "src/commands/doctor-session-sqlite.discovery.test.ts",
+      "src/commands/doctor-session-sqlite.shared-orphan.test.ts",
       "src/commands/doctor-session-sqlite.shared-store.test.ts",
       "src/commands/doctor-session-state-providers.test.ts",
       "src/commands/doctor-session-transcript-headers.test.ts",
@@ -2018,6 +2030,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "src/commands/doctor-session-transcripts.incident.test.ts",
       "src/commands/doctor-session-transcripts.sqlite.test.ts",
       "src/commands/doctor-session-transcripts.test.ts",
+      "src/commands/doctor-session-worktree-workspace.test.ts",
     ]);
     const commandFiles = commandShards.flatMap((shard) => shard.includePatterns ?? []).toSorted();
     expect(commandFiles).toEqual(listMatchedTestFiles(createCommandsVitestConfig({})));
@@ -3235,7 +3248,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "agentic-control-plane-runtime",
       "agentic-control-plane-runtime-config",
       "agentic-control-plane-runtime-cron",
-      "agentic-control-plane-runtime-network",
       "agentic-control-plane-runtime-server",
       "agentic-control-plane-runtime-shared-token",
       "agentic-control-plane-runtime-state",
@@ -3416,6 +3428,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         configs: ["test/vitest/vitest.agents-core.config.ts"],
         includePatterns: agentShards[7]?.includePatterns,
         requiresDist: false,
+        pretestBuildMode: "runtime",
         runner: DEFAULT_NODE_TEST_RUNNER,
         shardName: "agentic-agents-core-runner-commands",
       },

@@ -185,10 +185,10 @@ Those default release runs pin this scenario to the published 2026.9.4 driver,
 including when the source candidate still reports version 2026.9.4; other
 scenarios retain their existing baseline selection.
 
-The opt-in `projects-doctor` and `taskflow-restoration` scenarios require the exact
+The opt-in `projects-doctor`, `projects-startup-migration`, and `taskflow-restoration` scenarios require the exact
 published `openclaw@2026.9.4` baseline and a frozen candidate tarball. They use
 isolated state, manual restart, and no live providers or registry companion fixtures;
-neither runs through `reported-issues` or `far-reaching`. Both verify the original
+none runs through `reported-issues` or `far-reaching`. They verify the original
 published driver and installed candidate payload bytes, including when their version
 strings are equal. Select one with `OPENCLAW_UPGRADE_SURVIVOR_SCENARIO` and set
 `OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC=openclaw@2026.9.4`.
@@ -196,11 +196,23 @@ strings are equal. Select one with `OPENCLAW_UPGRADE_SURVIVOR_SCENARIO` and set
 `projects-doctor` preserves one registered project and one configured workspace,
 then runs the real `doctor --lint --only core/doctor/project-clone-shape --json`
 twice. It checks stored rows, schema, sentinels, and read-only snapshot cleanup.
+`projects-startup-migration` creates a project and managed worktree through the
+published owners using local Git, then imports synthetic legacy session JSON/JSONL
+through published Doctor. It verifies the candidate's first normal Gateway startup
+backfills the registered project's canonical workspace and a second startup leaves
+the session and transcript unchanged. The fixture is a supported legacy-format
+import, not a historical runtime-generated session. Both Gateway runs must become
+ready and report clean shutdown before persisted readback. Set
+`OPENCLAW_UPGRADE_SURVIVOR_STARTUP_BINDINGS` to a reviewed JSON file containing the
+candidate `commit`, `agentSchema`, and `operations.prepare`/`operations.open`
+triples of compiled basename, exact export symbol, and SHA-256. The snapshot
+preparer and SQLite opener must match the installed candidate payload; the file
+is mounted read-only. This scenario uses no remote repository or model turn.
 `taskflow-restoration` preserves three terminal tasks and two flows, starts a fresh
 candidate Gateway, exercises awaited task SDK reads through a synthetic local plugin,
 and reads two task pages on the same Gateway connection. Complete task, delivery,
-and flow records are checked again after Gateway shutdown. These cells cover
-terminal persisted state; they do not exercise active task recovery or provider work.
+and flow records are checked again after Gateway shutdown. The taskflow cell covers
+terminal persisted state; it does not exercise active task recovery or provider work.
 
 The `legacy-operator-state` scenario uses the published baseline's own CLI to
 create a second agent, allowlist exec approvals, and two command cron jobs: one
@@ -501,6 +513,23 @@ Start with the artifact identity:
 - Upgrade survivor summary: `.artifacts/upgrade-survivor/summary.json`,
   including baseline version, candidate version, scenario, phase timings, and
   config recipe coverage.
+
+The `legacy-operator-state` survivor installs a matching published companion
+through a moving tag (`latest`, `beta`, or `alpha`). If npm confirms that the
+exact companion version was never published, the row records that companion as
+unavailable in `baselineCompanion` and continues the remaining operator-state
+and external-plugin migration checks. Registry errors still fail fixture setup.
+An update that has not started reports an `unknown` outcome; a failed update
+attempt reports `failed`, independently of later scenario assertions.
+
+Failure capture retains the latest session SQLite migration manifest and Doctor
+issue report in the private diagnostics snapshot, subject to bounded size limits.
+The published diagnostics contain issue histograms and capture omissions rather
+than raw session details. Collect private artifacts before removing the test host.
+Container-owned observation directories can require `sudo tar` on that isolated
+host; keep their permissions intact. When collecting through a remote wrapper,
+use distinct success/failure download destinations. A successful download does
+not change the survivor exit code or `summary.status`.
 
 Prefer rerunning the failed exact lane with the same package artifact over
 rerunning the whole release umbrella.

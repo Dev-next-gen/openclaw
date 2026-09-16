@@ -186,9 +186,15 @@ then `/readyz` as ready within the runtime validation allowance. Plugin-resoluti
 errors attributed to a named plugin are recorded without rejecting the candidate.
 An invalid plugin inventory, an unattributed registry error, or failure to meet
 the required core startup or readiness checks still fails validation. Failure
-records the phase, elapsed time, and bounded diagnostics; the canary process group
-and temporary state are cleaned up. This proves candidate core startup on copied
-state; live channel and provider behavior are checked after activation.
+records the phase, elapsed time, and bounded diagnostics. The updater attempts
+process-tree termination and temporary-state cleanup. If bounded teardown does
+not confirm both termination-request completion and child closure, it records a
+maintenance warning separately from the validation result. Readiness, child
+closure, and temporary-copy cleanup do not prove that every descendant stopped.
+Temporary-copy cleanup remains best effort. This reporting belongs to the invoking
+updater; candidate code cannot change an older updater's teardown behavior.
+The canary proves candidate core startup on copied state; live channel and provider
+behavior are checked after activation.
 Targets that predate migration continuation record runtime validation as
 unavailable and use the current updater's existing finalization path. A present
 continuation entry with an invalid schema contract still refuses activation.
@@ -234,6 +240,27 @@ Git or npm installation. This continuation does not change the recovery limits b
 A candidate can be running while verification fails. Recovery guidance uses the
 latest observed service state and names the running version when known; an
 earlier activation stop does not mean the service remains stopped.
+
+When the readiness allowance expires for the same running PID or boot generation
+while the restart owner reports waiting for a listener, startup migration, or
+healthy settling, the updater records the elapsed wait and startup phase as a warning. It leaves the process starting, keeps readiness
+unconfirmed, and retains recovery backups. The run ends `skipped` with reason
+`gateway-readiness-unverified`, recording an intentional unverified outcome rather
+than success or an indefinite pending run. Observed PID or boot-generation changes
+remain failures and enter recovery. Check `openclaw gateway status --deep`
+before retiring those backups. A timeout alone does not authorize a recovery
+restart or rollback; a refused rollback also leaves the candidate untouched.
+A running status alone, a failed probe on an established listener, or an HTTP
+`/readyz` failure does not establish startup progress. Those unhealthy-service
+observations and concrete version, build, channel, or stopped-service failures
+remain failures with their own diagnostics. Doctor reports a qualifying startup
+timeout explicitly as `gateway-readiness-unverified`, including after migrated
+finalization, and tells the operator that readiness remains unconfirmed.
+
+This warning handling belongs to the updater already running. The published
+2026.9.3 and 2026.9.4 parents cannot distinguish pending readiness from verified
+success when completing a migrated update, so candidate-only updates cannot
+change their backup-retirement and Windows autostart decisions.
 
 Plugin packages download and sync against the installed target before the managed
 Gateway restarts. The service remains stopped through channel/config writes,
