@@ -377,8 +377,8 @@ describe("AcpxRuntime fresh reset wrapper", () => {
   );
 
   it("settles each diagnostic probe cleanup before starting the next probe", async () => {
-    const firstEntered = createDeferred();
-    const releaseFirst = createDeferred();
+    const firstEntered = createDeferred<void>();
+    const releaseFirst = createDeferred<void>();
     const events: string[] = [];
     const { runtime, delegate } = makeRuntime(
       makeEmptySessionStore(),
