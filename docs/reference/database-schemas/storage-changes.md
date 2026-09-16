@@ -354,7 +354,10 @@ extension-capable readers, remain one-shot; incognito reads retain their existin
 process-local owner.
 
 Node Gateway session listings prepare complete per-agent metadata in the existing
-SQLite worker broker. The entry-cache owner still owns completed metadata and its
+SQLite worker broker. Independent durable inventories load at most four at a time.
+All started reads settle before target-order assembly, which rechecks logical and
+physical admission when consuming each result. Synchronous callers retain their
+one-target-at-a-time reads and assembly. The entry-cache owner still owns completed metadata and its
 connection-local invalidation. A request may consume its consistent snapshot when
 later metadata writes prevent cache adoption; a later caller cannot join a fill
 from an older generation. Canonical reader admission is separate from metadata

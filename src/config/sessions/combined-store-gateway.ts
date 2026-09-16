@@ -23,6 +23,7 @@ import {
   readOpenClawAgentDatabaseRegistryToken,
   readOpenIncognitoAgentDatabaseGeneration,
 } from "../../state/openclaw-agent-db.js";
+import { runTasksWithConcurrency } from "../../utils/run-with-concurrency.js";
 import { resolveSessionStoreCompatibilityAgentId } from "../legacy.default-agent-owner.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import {
@@ -522,17 +523,30 @@ type GatewayCombinedSessionStore = {
   targetsBySessionKey: GatewayStoredSessionTargets;
 };
 
-function* prepareCombinedSessionStore(
+function prepareCombinedSessionStore(cfg: OpenClawConfig, opts: GatewaySessionStoreOptions) {
+  const targets = resolveGatewaySessionStoreTargets(cfg, opts);
+  return {
+    projection: opts.projection ?? "list",
+    targets,
+    reads: targets.durableTargets.map((target) => ({
+      target,
+      storeTarget: expectDefined(
+        targets.physicalTargets.get(storeTargetKey(target)),
+        "physical store",
+      ),
+    })),
+  };
+}
+
+function mergeCombinedSessionStore(
   cfg: OpenClawConfig,
   opts: GatewaySessionStoreOptions,
-): Generator<
-  Parameters<typeof loadGatewayStoreEntries>[0],
-  GatewayCombinedSessionStore,
-  SessionEntrySummary[]
-> {
+  prepared: ReturnType<typeof prepareCombinedSessionStore>,
+  readEntries: (target: SessionStoreTarget, index: number) => SessionEntrySummary[],
+): GatewayCombinedSessionStore {
   // Store-wide metadata reads must not materialize saved prompts for every row.
   // Consumers of retained prompt fields opt into the full projection.
-  const projection = opts.projection ?? "list";
+  const { projection } = prepared;
   // Count admission and projection share this exact target set. Otherwise an optional
   // prewarm can approve one database and synchronously materialize another.
   const {
@@ -546,21 +560,17 @@ function* prepareCombinedSessionStore(
     preparedAgentIds,
     sharedStoreRowOwner,
     storeConfig,
-  } = resolveGatewaySessionStoreTargets(cfg, opts);
+  } = prepared.targets;
   const combined: Record<string, SessionEntry> = {};
   // Federation chooses both the logical owner and physical store once. Fresh reads
   // must not re-admit a sentinel through public aliases or select a different store.
   const targetsBySessionKey = new Map<string, GatewayStoredSessionTarget>();
   const projectionDiagnostics = [...diagnostics];
   const modelSources = createSessionModelSources(cfg, projectionDiagnostics, preparedAgentIds);
-  for (const target of durableTargets) {
+  for (const [index, { target, storeTarget }] of prepared.reads.entries()) {
     const agentId = target.agentId;
     const storePath = target.storePath;
-    const storeTarget = expectDefined(
-      physicalTargets.get(storeTargetKey(target)),
-      "physical store",
-    );
-    const store = yield { ...storeTarget, projection };
+    const store = readEntries(storeTarget, index);
     assertAgentDatabaseAdmitted(agentId);
     assertAgentDatabaseAdmitted(storeTarget.agentId);
     // Legacy selector paths can be shared by distinct physical agent partitions.
@@ -659,23 +669,40 @@ export function loadCombinedSessionStoreForGatewayCore(
   cfg: OpenClawConfig,
   opts: GatewaySessionStoreOptions = {},
 ): GatewayCombinedSessionStore {
-  const preparation = prepareCombinedSessionStore(cfg, opts);
-  let step = preparation.next();
-  while (!step.done) {
-    step = preparation.next(loadGatewayStoreEntries(step.value));
-  }
-  return step.value;
+  const prepared = prepareCombinedSessionStore(cfg, opts);
+  return mergeCombinedSessionStore(cfg, opts, prepared, (target) =>
+    loadGatewayStoreEntries({ ...target, projection: prepared.projection }),
+  );
 }
 
 export async function loadCombinedSessionStoreForGatewayAsync(
   cfg: OpenClawConfig,
   opts: GatewaySessionStoreOptions & { projection: "list" },
 ): Promise<GatewayCombinedSessionStore> {
-  const preparation = prepareCombinedSessionStore(cfg, opts);
-  let step = preparation.next();
-  while (!step.done) {
-    const entries = await listSessionEntriesReadOnlyAsync({ ...step.value, clone: false });
-    step = preparation.next(entries);
-  }
-  return step.value;
+  const prepared = prepareCombinedSessionStore(cfg, opts);
+  const errors = new Map<number, unknown>();
+  const { results } = await runTasksWithConcurrency({
+    tasks: prepared.reads.map(
+      ({ storeTarget }) =>
+        () =>
+          listSessionEntriesReadOnlyAsync({
+            ...storeTarget,
+            projection: prepared.projection,
+            clone: false,
+          }),
+    ),
+    limit: 4,
+    errorMode: "stop",
+    onTaskError: (error, index) => {
+      errors.set(index, error);
+    },
+  });
+  // Join every started read before ordered assembly, including failures. A prior
+  // canonicalization or admission error still takes precedence over a later read error.
+  return mergeCombinedSessionStore(cfg, opts, prepared, (_target, index) => {
+    if (errors.has(index)) {
+      throw errors.get(index);
+    }
+    return expectDefined(results[index], "prepared session inventory");
+  });
 }
