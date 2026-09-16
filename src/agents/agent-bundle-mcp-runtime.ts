@@ -6,8 +6,6 @@ import {
   ListToolsResultSchema,
   McpError,
   type CallToolResult,
-  type ClientCapabilities,
-  type ServerCapabilities,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
@@ -51,7 +49,12 @@ import {
 } from "./mcp-connection-resolver.js";
 import { redactMcpDiagnosticError } from "./mcp-error.js";
 import { createMcpJsonSchemaValidator } from "./mcp-json-schema-validator.js";
-import { sanitizeMcpMetadataText } from "./mcp-metadata.js";
+import {
+  buildMcpClientCapabilities,
+  normalizeToolUiVisibility,
+  sanitizeMcpMetadataText,
+  summarizeServerCapabilities,
+} from "./mcp-metadata.js";
 import { collectMcpPaginatedItems } from "./mcp-pagination.js";
 import { isMcpToolAllowed, normalizeMcpToolFilter } from "./mcp-tool-filter.js";
 import { normalizeMcpToolCatalog, type McpToolCatalogMetadata } from "./mcp-tool-metadata.js";
@@ -73,8 +76,6 @@ type BundleMcpSession = {
   toolMetadata?: McpToolCatalogMetadata;
 };
 
-const MCP_APPS_CLIENT_EXTENSION = "io.modelcontextprotocol/ui";
-const MCP_APP_RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
 const BUNDLE_MCP_FAILURE_THRESHOLD = 3;
 const BUNDLE_MCP_FAILURE_COOLDOWN_MS = 60_000;
 const BUNDLE_MCP_CATALOG_FAILURE_RETRY_MS = 5_000;
@@ -198,39 +199,6 @@ function disposeBundleMcpSession(session: BundleMcpSession): Promise<"closed" | 
   );
 }
 
-function buildMcpClientCapabilities(mcpAppsEnabled: boolean): ClientCapabilities {
-  return mcpAppsEnabled
-    ? {
-        extensions: {
-          [MCP_APPS_CLIENT_EXTENSION]: { mimeTypes: [MCP_APP_RESOURCE_MIME_TYPE] },
-        },
-      }
-    : {};
-}
-
-function normalizeToolUiVisibility(value: unknown): Array<"app" | "model"> | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  const normalized = value.filter(
-    (entry): entry is "app" | "model" => entry === "app" || entry === "model",
-  );
-  return [...new Set(normalized)].toSorted();
-}
-
-function summarizeServerCapabilities(capabilities: ServerCapabilities | undefined) {
-  return {
-    resources: capabilities?.resources
-      ? { listChanged: capabilities.resources.listChanged === true }
-      : undefined,
-    prompts: capabilities?.prompts
-      ? { listChanged: capabilities.prompts.listChanged === true }
-      : undefined,
-    tools: capabilities?.tools
-      ? { listChanged: capabilities.tools.listChanged === true }
-      : undefined,
-  };
-}
 function createDisposedError(sessionId: string): Error {
   return new Error(`bundle-mcp runtime disposed for session ${sessionId}`);
 }
@@ -390,6 +358,27 @@ export function createSessionMcpRuntime(
     hasServers: () => owned.size > 0,
     isCurrent: () => !invalidated,
     replace: (nextParams) => createSessionMcpRuntime(nextParams, owned),
+    async retireUnusedServers(retainedServerNames) {
+      if (invalidated) {
+        return;
+      }
+      const retired: SessionMcpRuntime[] = [];
+      for (const [serverName, part] of owned) {
+        if (!retainedServerNames.has(serverName) && (part.activeLeases ?? 0) === 0) {
+          owned.delete(serverName);
+          retired.push(part);
+        }
+      }
+      if (retired.length === 0) {
+        return;
+      }
+      // Reacquisition can discover new members while transferring healthy survivors.
+      invalidated = true;
+      await disposeParts(retired);
+      if (cleanupFailure) {
+        recordAgentCleanupFailure();
+      }
+    },
     async reload({ cfg, manifestRegistry, reloadPlugins }) {
       const nextParams = { ...params, cfg, manifestRegistry };
       const nextConfig = loadSessionMcpConfig({

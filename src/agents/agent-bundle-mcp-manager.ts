@@ -48,9 +48,22 @@ export function createSessionMcpRuntimeManager(
   const store = createSessionMcpRuntimeManagerStore(opts, createSessionMcpRuntimeLazy);
   const lifecycle = createSessionMcpRuntimeManagerLifecycle(store);
   const install = createSessionMcpRuntimeManagerInstall(lifecycle);
-  const leaseRuntime = (runtime: SessionMcpRuntime): SessionMcpRuntimeLease => ({
+  const leaseRuntime = (
+    runtime: SessionMcpRuntime,
+    runtimeKey: string,
+  ): SessionMcpRuntimeLease => ({
     runtime,
     releaseLease: runtime.acquireLease?.() ?? (() => {}),
+    async retireUnusedServers(retainedServerNames) {
+      const owner = sessionMcpRuntimeOwners.get(runtime);
+      if (store.runtimesBySessionId.get(runtimeKey) !== runtime || !owner?.isCurrent()) {
+        return;
+      }
+      await owner.retireUnusedServers(retainedServerNames);
+      if (!owner.hasServers()) {
+        await lifecycle.releaseEmptyRuntimeSlot(runtimeKey, runtime);
+      }
+    },
   });
   const acquireCurrent = <T extends SessionMcpRuntimeLease | undefined>(
     scope: "full" | "requester",
@@ -170,7 +183,7 @@ export function createSessionMcpRuntimeManager(
         ...(messageChannel ? { messageChannel } : {}),
       },
     });
-    return runtime ? leaseRuntime(runtime) : undefined;
+    return runtime ? leaseRuntime(runtime, params.runtimeKey) : undefined;
   };
 
   const manager: SessionMcpRuntimeManager = {
@@ -200,6 +213,7 @@ export function createSessionMcpRuntimeManager(
             excludeServerNames: new Set(requesterScopedServerNames),
             safeServerNamesByServer,
           }),
+          params.sessionId,
         );
         leases.push(staticLease);
         if (requesterScopedServerNames.length === 0) {
@@ -236,6 +250,15 @@ export function createSessionMcpRuntimeManager(
                   parts,
                 }),
           releaseLease: () => leases.forEach((lease) => lease.releaseLease()),
+          async retireUnusedServers(retainedServerNames) {
+            const outcomes = await Promise.allSettled(
+              leases.map(async (lease) => await lease.retireUnusedServers?.(retainedServerNames)),
+            );
+            const failed = outcomes.find((outcome) => outcome.status === "rejected");
+            if (failed) {
+              throw failed.reason;
+            }
+          },
         };
       } catch (error) {
         leases.forEach((lease) => lease.releaseLease());

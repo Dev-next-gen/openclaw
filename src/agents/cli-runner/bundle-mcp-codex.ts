@@ -10,7 +10,6 @@ import { isValidAgentId, normalizeAgentId } from "../../routing/session-key.js";
 import {
   acquireSessionMcpRuntime,
   releaseSessionMcpRuntime,
-  retireSessionMcpRuntime,
 } from "../agent-bundle-mcp-manager-api.js";
 import type { PreparedNativeMcpPolicy } from "../agent-bundle-mcp-types.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
@@ -292,9 +291,9 @@ export async function buildCodexUserMcpServersThreadConfigPatchForRun(params: {
     toolOverrides: scopedToolOverrides,
     toolDenylist: capabilityProfile.policy.explicitToolDenylist,
   });
-  let preparedNativeMcpPolicy: PreparedNativeMcpPolicy;
+  let retainedServerNames: ReadonlySet<string> | undefined;
   try {
-    preparedNativeMcpPolicy = await prepareNativeMcpPolicy({
+    const preparedNativeMcpPolicy = await prepareNativeMcpPolicy({
       runtime: acquisition.runtime,
       config: run.config,
       workspaceDir: run.workspaceDir,
@@ -302,21 +301,17 @@ export async function buildCodexUserMcpServersThreadConfigPatchForRun(params: {
       runtimeToolsAllow: run.toolsAllow,
       warn: params.warn ?? (() => {}),
     });
-  } finally {
-    await releaseSessionMcpRuntime(acquisition);
-    // Native clients receive policy facts, not these discovery connections.
-    await retireSessionMcpRuntime({
-      sessionId: run.sessionId,
-      reason: "native-mcp-policy-prepared",
-      preserveActiveLeases: true,
+    const prepared = await buildCodexUserMcpServersThreadConfigPatchForRuntime(projectionConfig, {
+      agentId,
+      agentDir: run.agentDir,
+      allowLiteralOAuthProjection: params.allowLiteralOAuthProjection,
+      onServerUnavailable: params.onServerUnavailable,
+      toolOverrides: scopedToolOverrides,
+      preparedNativeMcpPolicy,
     });
+    retainedServerNames = new Set(Object.keys(prepared?.mcp_servers ?? {}));
+    return prepared;
+  } finally {
+    await releaseSessionMcpRuntime(acquisition, retainedServerNames);
   }
-  return await buildCodexUserMcpServersThreadConfigPatchForRuntime(projectionConfig, {
-    agentId,
-    agentDir: run.agentDir,
-    allowLiteralOAuthProjection: params.allowLiteralOAuthProjection,
-    onServerUnavailable: params.onServerUnavailable,
-    toolOverrides: scopedToolOverrides,
-    preparedNativeMcpPolicy,
-  });
 }

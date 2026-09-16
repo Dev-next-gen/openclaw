@@ -180,6 +180,8 @@ export type SessionMcpRuntime = {
 export type SessionMcpRuntimeLease = {
   runtime: SessionMcpRuntime;
   releaseLease: () => void;
+  /** Retires unleased discovery servers outside the final prepared bundle. */
+  retireUnusedServers?: (retainedServerNames: ReadonlySet<string>) => Promise<void>;
 };
 
 /** One requester call's lease and immutable catalog publication version. */
