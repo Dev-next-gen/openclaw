@@ -38,6 +38,7 @@ export async function acquireSessionMcpRuntime(params: {
   agentAccountId?: string | null;
   messageChannel?: string | null;
   toolOverrides?: Pick<SessionToolOverrides, "mcpServers" | "mcpToolsDeny">;
+  toolDenylist?: string[];
 }): Promise<SessionMcpRuntimeLease> {
   return await getSessionMcpRuntimeManager().acquire(params);
 }
@@ -57,6 +58,7 @@ export async function acquireRequesterScopedMcpRuntime(params: {
   agentAccountId?: string | null;
   messageChannel?: string | null;
   toolOverrides?: Pick<SessionToolOverrides, "mcpServers" | "mcpToolsDeny">;
+  toolDenylist?: string[];
 }): Promise<RequesterScopedMcpRuntimeHandle | undefined> {
   return await getSessionMcpRuntimeManager().acquireRequesterScoped(params);
 }

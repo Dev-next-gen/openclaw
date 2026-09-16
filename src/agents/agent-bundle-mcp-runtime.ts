@@ -21,7 +21,6 @@ import {
   disposeAllSessionMcpRuntimes,
   getSessionMcpRuntimeManagerForTesting,
 } from "./agent-bundle-mcp-manager-api.js";
-import { assignSafeServerNames } from "./agent-bundle-mcp-names.js";
 import { getSessionMcpRequestSignal } from "./agent-bundle-mcp-request-context.js";
 import { loadSessionMcpConfig } from "./agent-bundle-mcp-runtime-config.js";
 import { sessionMcpRuntimeOwners } from "./agent-bundle-mcp-runtime-owner.js";
@@ -251,11 +250,10 @@ export function createSessionMcpRuntime(
   const config = loadSessionMcpConfig({
     ...params,
     loaded: declared.loaded,
+    safeServerNamesByServer: declared.safeServerNamesByServer,
     logDiagnostics: false,
   });
-  const safeNames =
-    params.safeServerNamesByServer ??
-    assignSafeServerNames(Object.keys(declared.loaded.mcpServers));
+  const safeNames = declared.safeServerNamesByServer;
   const configForServer = (serverName: string, nextParams = params, loaded = config.loaded) => {
     const connection = nextParams.connectionOverrides?.get(serverName);
     const serverConfig = loadSessionMcpConfig({
@@ -398,9 +396,10 @@ export function createSessionMcpRuntime(
         ...nextParams,
         includeServerNames: undefined,
         excludeServerNames: undefined,
+        safeServerNamesByServer: undefined,
         logDiagnostics: false,
       });
-      const nextSafeNames = assignSafeServerNames(Object.keys(nextConfig.loaded.mcpServers));
+      const nextSafeNames = nextConfig.safeServerNamesByServer;
       const { requesterScopedServerNames } = partitionMcpServersByConnectionScope(
         nextConfig.loaded.mcpServers,
       );

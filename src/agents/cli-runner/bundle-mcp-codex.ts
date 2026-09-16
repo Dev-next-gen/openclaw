@@ -10,6 +10,7 @@ import { isValidAgentId, normalizeAgentId } from "../../routing/session-key.js";
 import {
   acquireSessionMcpRuntime,
   releaseSessionMcpRuntime,
+  retireSessionMcpRuntime,
 } from "../agent-bundle-mcp-manager-api.js";
 import type { PreparedNativeMcpPolicy } from "../agent-bundle-mcp-types.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
@@ -289,6 +290,7 @@ export async function buildCodexUserMcpServersThreadConfigPatchForRun(params: {
     agentAccountId: run.agentAccountId,
     messageChannel: run.messageChannel,
     toolOverrides: scopedToolOverrides,
+    toolDenylist: capabilityProfile.policy.explicitToolDenylist,
   });
   let preparedNativeMcpPolicy: PreparedNativeMcpPolicy;
   try {
@@ -302,6 +304,12 @@ export async function buildCodexUserMcpServersThreadConfigPatchForRun(params: {
     });
   } finally {
     await releaseSessionMcpRuntime(acquisition);
+    // Native clients receive policy facts, not these discovery connections.
+    await retireSessionMcpRuntime({
+      sessionId: run.sessionId,
+      reason: "native-mcp-policy-prepared",
+      preserveActiveLeases: true,
+    });
   }
   return await buildCodexUserMcpServersThreadConfigPatchForRuntime(projectionConfig, {
     agentId,

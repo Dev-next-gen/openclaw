@@ -10,7 +10,6 @@ import {
   type SessionMcpRuntimeManagerOpts,
   type SessionMcpConfigPublication,
 } from "./agent-bundle-mcp-manager-lifecycle.js";
-import { assignSafeServerNames } from "./agent-bundle-mcp-names.js";
 import { loadSessionMcpConfig } from "./agent-bundle-mcp-runtime-config.js";
 import { sessionMcpRuntimeOwners } from "./agent-bundle-mcp-runtime-owner.js";
 import {
@@ -109,13 +108,14 @@ export function createSessionMcpRuntimeManager(
         }
       }
     };
-  const prepareAcquisition = (params: PreparedAcquisitionParams) => {
+  const prepareAcquisition = async (params: PreparedAcquisitionParams) => {
     const fullConfig = loadSessionMcpConfig({ ...params, logDiagnostics: false });
     const partition = partitionMcpServersByConnectionScope(fullConfig.loaded.mcpServers);
     // Full-set names stay stable when only some requester connections resolve.
-    const safeServerNamesByServer = assignSafeServerNames(
-      Object.keys(fullConfig.loaded.mcpServers),
-    );
+    const { safeServerNamesByServer } = fullConfig;
+    if (params.requester && partition.requesterScopedServerNames.length === 0) {
+      await lifecycle.disposeRuntimeKeyNow(params.requester.runtimeKey);
+    }
     const advertisedCatalogConfigFingerprint = loadSessionMcpConfig({
       ...params,
       loaded: fullConfig.loaded,
@@ -188,7 +188,7 @@ export function createSessionMcpRuntimeManager(
         resolverRequesterServerNames,
         safeServerNamesByServer,
         requester,
-      } = prepareAcquisition(params);
+      } = await prepareAcquisition(params);
 
       const leases: SessionMcpRuntimeLease[] = [];
       try {
@@ -254,7 +254,7 @@ export function createSessionMcpRuntimeManager(
         safeServerNamesByServer,
         requester,
         advertisedCatalogConfigFingerprint,
-      } = prepareAcquisition(params);
+      } = await prepareAcquisition(params);
       if (!requester) {
         return undefined;
       }

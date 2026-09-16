@@ -201,6 +201,7 @@ export type SessionMcpRuntimeManager = {
     agentAccountId?: string | null;
     messageChannel?: string | null;
     toolOverrides?: Pick<SessionToolOverrides, "mcpServers" | "mcpToolsDeny">;
+    toolDenylist?: string[];
   }) => Promise<SessionMcpRuntimeLease>;
   /**
    * Requester-scoped partition only — never creates static transports.
@@ -217,6 +218,7 @@ export type SessionMcpRuntimeManager = {
     agentAccountId?: string | null;
     messageChannel?: string | null;
     toolOverrides?: Pick<SessionToolOverrides, "mcpServers" | "mcpToolsDeny">;
+    toolDenylist?: string[];
   }) => Promise<RequesterScopedMcpRuntimeHandle | undefined>;
   /**
    * Session-stable advertised catalog for scoped servers. Used by shared-thread

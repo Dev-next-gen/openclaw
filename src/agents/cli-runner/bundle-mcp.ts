@@ -23,6 +23,7 @@ import type { CliBundleMcpMode } from "../../plugins/types.js";
 import {
   acquireSessionMcpRuntime,
   releaseSessionMcpRuntime,
+  retireSessionMcpRuntime,
 } from "../agent-bundle-mcp-manager-api.js";
 import { isRecord } from "../bundle-mcp-adapter.js";
 import {
@@ -470,6 +471,7 @@ export async function prepareCliBundleMcpConfig(params: {
       agentDir: params.agentDir,
       cfg: runtimeConfig,
       toolOverrides: params.toolOverrides,
+      toolDenylist: params.nativeMcpPolicy.capabilityProfile.policy.explicitToolDenylist,
     });
     let policy: Awaited<ReturnType<typeof prepareNativeMcpPolicy>>;
     try {
@@ -483,6 +485,12 @@ export async function prepareCliBundleMcpConfig(params: {
       });
     } finally {
       await releaseSessionMcpRuntime(acquisition);
+      // The CLI owns its own connections after consuming this policy snapshot.
+      await retireSessionMcpRuntime({
+        sessionId: params.nativeMcpPolicy.sessionId,
+        reason: "native-mcp-policy-prepared",
+        preserveActiveLeases: true,
+      });
     }
     effectiveConfig = {
       mcpServers: {
