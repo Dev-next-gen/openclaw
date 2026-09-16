@@ -1022,7 +1022,7 @@ const unresolvedMigrationStepLayout = [
   ["subagent-registry", "final", "doctor"],
   ["rescue-pending", "final", "doctor"],
   ["skill-workshop", "final", "all"],
-  ["channel-pairing", "final", "all"],
+  ["channel-pairing", "final", "doctor"],
   ["plugin-doctor-state", "final", "all"],
   ["sessions", "final", "doctor-agent"],
   ["legacy-main-session-keys", "final", "automatic"],
@@ -2107,18 +2107,22 @@ function buildLegacyStateMigrationSteps(
       ),
       runWithoutFileDetection: true,
     },
-    finalStep(
-      "channel-pairing",
-      channelPairingRefusal
-        ? () => ({ changes: [], warnings: [channelPairingRefusal.message] })
-        : () =>
-            migrateLegacyChannelPairingState({
-              detected: detected.channelPairing,
-              env: { ...env, OPENCLAW_STATE_DIR: stateDir },
-            }),
-      false,
-      channelPairingRefusal,
-    ),
+    ...(isDoctor
+      ? [
+          finalStep(
+            "channel-pairing",
+            channelPairingRefusal
+              ? () => ({ changes: [], warnings: [channelPairingRefusal.message] })
+              : () =>
+                  migrateLegacyChannelPairingState({
+                    detected: detected.channelPairing,
+                    env: { ...env, OPENCLAW_STATE_DIR: stateDir },
+                  }),
+            false,
+            channelPairingRefusal,
+          ),
+        ]
+      : []),
     finalStep(
       "plugin-doctor-state",
       () =>
@@ -2163,10 +2167,10 @@ function buildLegacyStateMigrationSteps(
               const result = await migrateLegacyMainSessionKeys({
                 cfg: params.sessionConfig ?? params.config,
                 env,
-                mode: "automatic",
+                mode: "detect",
                 now,
               });
-              return { changes: result.changes, warnings: [], notices: result.warnings };
+              return { changes: [], warnings: [], notices: result.warnings };
             },
         true,
         legacySessionStoreRefusal,

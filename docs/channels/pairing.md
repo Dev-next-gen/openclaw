@@ -140,9 +140,10 @@ Account scoping behavior:
 
 Older gateways wrote `<channel>-pairing.json` and
 `<channel>-<accountId>-allowFrom.json` under `~/.openclaw/credentials/`.
-Startup migration and `openclaw doctor --fix` import those files into SQLite and
-remove each source after a successful import. Treat the SQLite database as
-sensitive because these rows gate access to your assistant.
+`openclaw doctor --fix` imports those files into SQLite and removes each source
+after a successful import. Normal Gateway startup leaves these legacy files
+unchanged. Treat the SQLite database as sensitive because these rows gate access
+to your assistant.
 
 <Note>
 The pairing allowlist store is for DM access. Group authorization is separate.

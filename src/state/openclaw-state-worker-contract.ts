@@ -1,6 +1,7 @@
 import type { NativeHookRelayStoreWorkerOperations } from "../agents/harness/native-hook-relay-store.worker-contract.js";
 import type { SubagentRunReadRecord } from "../agents/subagents/registry/subagent-registry-read.types.js";
 import type { ClawInstallSchemaVersionRow } from "../claws/provenance-runtime-read.kernel.js";
+import type { readSqliteDatabaseBloat } from "../commands/doctor-db-bloat.read.js";
 import type { ConfigHealthPatch } from "../config/io.health-state.kernel.js";
 import type {
   ConfigHealthSnapshot,
@@ -21,6 +22,7 @@ import type { HostedCatalogSnapshotWorkerOperations } from "../plugins/official-
 import type { TaskFlowView } from "../plugins/runtime/task-domain-types.js";
 import type {
   ProjectRegistryIdentity,
+  ProjectRegistryInsert,
   ProjectRegistryRecord,
 } from "../projects/project-registry.kernel.js";
 import type { ManagedTaskInFlowInput } from "../tasks/task-flow-managed-run-task.kernel.js";
@@ -66,6 +68,10 @@ export type OpenClawStateWorkerOperations = NativeHookRelayStoreWorkerOperations
   CronStoreSaveWorkerOperations &
   SessionDeliveryWorkerOperations &
   DeliveryQueueWorkerOperations & {
+    "doctor.databaseBloat": {
+      input: undefined;
+      output: ReturnType<typeof readSqliteDatabaseBloat>;
+    };
     "subagents.sessionList": {
       input: undefined;
       output: Map<string, SubagentRunReadRecord> | undefined;
@@ -73,9 +79,17 @@ export type OpenClawStateWorkerOperations = NativeHookRelayStoreWorkerOperations
     "backup.recordOutcome": { input: PreparedBackupRunRecord; output: void };
     "projects.findRoot": { input: { repoRoot: string }; output: string | undefined };
     "projects.list": { input: undefined; output: ProjectRegistryRecord[] };
+    "projects.insert": {
+      input: { project: ProjectRegistryInsert; lease: OpenClawStateLeaseIdentity };
+      output: ProjectRegistryRecord;
+    };
     "projects.remove": {
       input: { project: ProjectRegistryIdentity; lease: OpenClawStateLeaseIdentity };
       output: boolean;
+    };
+    "projects.resolveRefreshOwner": {
+      input: { project: ProjectRegistryIdentity; lease: OpenClawStateLeaseIdentity };
+      output: ProjectRegistryRecord | undefined;
     };
     "modelCatalog.remote.read": {
       input: { artifactPreservingReadOnly: boolean };

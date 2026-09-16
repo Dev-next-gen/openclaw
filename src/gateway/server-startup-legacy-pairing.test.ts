@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { getPairedDevice, listDevicePairing } from "../infra/device-pairing.js";
 import { autoMigrateLegacyState } from "../infra/state-migrations.doctor.js";
+import { readChannelPairingState } from "../pairing/pairing-store-sqlite.js";
 import { EMPTY_LEGACY_SESSION_SURFACES } from "../plugins/legacy-session-surfaces.types.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import {
@@ -69,6 +70,53 @@ afterEach(async () => {
 });
 
 describe("legacy pairing repair ownership", () => {
+  it("imports legacy DM requests and approvals only in Doctor mode", async () => {
+    const timestamp = new Date().toISOString();
+    const request = {
+      id: "12345",
+      code: "ABCDEFGH",
+      createdAt: timestamp,
+      lastSeenAt: timestamp,
+      meta: { accountId: "default" },
+    };
+    const credentials = path.join(stateDir, "credentials");
+    await fs.mkdir(credentials, { recursive: true });
+    const legacy = new Map([
+      [path.join(credentials, "telegram-pairing.json"), JSON.stringify({ requests: [request] })],
+      [
+        path.join(credentials, "telegram-default-allowFrom.json"),
+        JSON.stringify({ allowFrom: ["67890"] }),
+      ],
+    ]);
+    for (const [file, bytes] of legacy) {
+      await fs.writeFile(file, bytes);
+    }
+    const before = readChannelPairingState("telegram", process.env);
+    const params = { cfg, env: process.env, legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES };
+
+    const automatic = await autoMigrateLegacyState(params);
+    expect(automatic.stepReceipts.some((receipt) => receipt.id === "channel-pairing")).toBe(false);
+    for (const [file, bytes] of legacy) {
+      expect(await fs.readFile(file, "utf8")).toBe(bytes);
+    }
+    expect(readChannelPairingState("telegram", process.env)).toEqual(before);
+
+    const repaired = await autoMigrateLegacyState({ ...params, doctorOnlyStateMigrations: true });
+    expect(repaired.warnings).toEqual([]);
+    expect(repaired.stepReceipts.find((receipt) => receipt.id === "channel-pairing")).toMatchObject(
+      {
+        outcome: "completed",
+      },
+    );
+    expect(readChannelPairingState("telegram", process.env)).toMatchObject({
+      requests: [request],
+      allowFrom: { default: ["67890"] },
+    });
+    for (const file of legacy.keys()) {
+      await expect(fs.access(file)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
   it.each(["EACCES", "EIO"])(
     "reports pairing inspection failure %s without treating it as absence",
     async (code) => {
