@@ -303,6 +303,19 @@ describe.each(["automatic", "saved-clear", "automatic-during-catalog"] as const)
 
           // Observe the next turn before CLI or browser reads can affect runtime preparation.
           const beforeRecovery = provider.requests.length;
+          let beforeRecoveryReply: ReturnType<typeof stats>;
+          if (catalogHold) {
+            const heldCatalog = catalogHold;
+            provider.observeNextSuccess(() => {
+              beforeRecoveryReply = stats();
+              observations.push({
+                action: "catalog-release-at-recovery",
+                state: beforeRecoveryReply,
+              });
+              // Publish after recovery without spending the catalog deadline on terminal delivery.
+              heldCatalog.release();
+            });
+          }
           const nextTurn = await turn();
           const inference = provider.requests
             .slice(beforeRecovery)
@@ -324,7 +337,8 @@ describe.each(["automatic", "saved-clear", "automatic-during-catalog"] as const)
           expect(gateway.child).toBe(gatewayProcess);
           expect(gatewayProcess?.exitCode).toBeNull();
           if (catalogHold) {
-            catalogHold.release();
+            expect(beforeRecoveryReply, evidence()).toBeDefined();
+            expect(beforeRecoveryReply?.blockedUntil, evidence()).toBeUndefined();
             const refreshed = await catalogRefresh;
             observations.push({ action: "held-catalog-refresh", result: refreshed });
             expect(refreshed, evidence()).toMatchObject({ ok: true });

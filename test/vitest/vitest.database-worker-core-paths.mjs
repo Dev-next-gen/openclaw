@@ -9,6 +9,9 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/harness/native-hook-relay.test.ts",
   "src/cli/native-hook-relay-cli.locator-worker.test.ts",
   "src/snapshot/git-backup.test.ts",
+  "src/plugins/conversation-binding.test.ts",
+  "src/plugins/conversation-binding.worker.test.ts",
+  "src/plugins/conversation-binding.sqlite.test.ts",
   "src/state/backup-run-records.test.ts",
   "src/claws/provenance-runtime-read.async.test.ts",
   "src/projects/project-registry.test.ts",
@@ -59,6 +62,8 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugins/status.runtime-inspection.test.ts",
 
   "src/plugins/plugin-metadata-state-worker.test.ts",
+  "src/plugins/official-external-plugin-catalog-snapshot-store.worker.test.ts",
+  "src/plugins/official-external-plugin-catalog.test.ts",
   "src/infra/session-cost-usage-metadata.test.ts",
   "src/plugins/installed-plugin-index-records.test.ts",
   "src/acp/runtime/session-meta-doctor.test.ts",
