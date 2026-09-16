@@ -1,4 +1,7 @@
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { invokeNativeHookRelay, onAgentEvent } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { createAgentHarnessTaskRuntime } from "openclaw/plugin-sdk/agent-harness-task-runtime";
 // Codex tests cover native subagent monitor plugin behavior.
 import type {
   deliverAgentHarnessTaskCompletion,
@@ -8,6 +11,7 @@ import type {
   AgentHarnessTaskRuntimeScope,
 } from "openclaw/plugin-sdk/agent-harness-task-runtime";
 import { createAdmittedHostCapabilityTestFixture } from "openclaw/plugin-sdk/plugin-test-runtime";
+import { withStateDirEnv } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   claimCodexAppServerLiveThread,
@@ -3141,6 +3145,25 @@ describe("CodexNativeSubagentMonitor", () => {
         params: {
           threadId: "parent-thread",
           turnId: "parent-turn",
+          item: {
+            type: "collabAgentToolCall",
+            tool: "closeAgent",
+            status: "failed",
+            senderThreadId: "parent-thread",
+            receiverThreadIds: ["child-thread"],
+            agentsStates: {
+              "child-thread": { status: "errored", message: "stale lifecycle error" },
+            },
+          },
+        },
+      });
+      expect(runtime.finalizeTaskRunByRunId).not.toHaveBeenCalled();
+      expect(runtime.recordTaskRunProgressByRunId).not.toHaveBeenCalled();
+      await client.notify({
+        method: "item/completed",
+        params: {
+          threadId: "parent-thread",
+          turnId: "parent-turn",
           item: { type: "subAgentActivity", kind: "interacted", agentThreadId: "child-thread" },
         },
       });
@@ -5533,6 +5556,126 @@ describe("CodexNativeSubagentMonitor", () => {
       }
     },
   );
+
+  it("preserves the delivered predecessor when a cold recovered follow-up errors", async () => {
+    await withStateDirEnv("codex-cold-followup-", async ({ stateDir }) => {
+      const requesterSessionKey = "agent:main:cold-followup";
+      const host = await createAdmittedHostCapabilityTestFixture({
+        runId: "cold-followup-parent",
+        agentId: "main",
+        sessionKey: requesterSessionKey,
+        config: {},
+      });
+      const scope = host.agentHarnessTaskRuntimeScope;
+      if (!scope) {
+        throw new Error("task runtime scope missing");
+      }
+      const runtime = createAgentHarnessTaskRuntime({
+        runtime: "subagent",
+        taskKind: "codex-native",
+        scope,
+        runIdPrefix: "codex-thread:",
+      });
+      const initialRunId = "codex-thread:child-thread";
+      const followupRunId = "codex-thread:child-thread:turn:turn-1";
+      const nativeHistory = {
+        parentThreadId: "parent-thread",
+        sessionId: "parent-session",
+        connectionFingerprint: "a".repeat(64),
+      };
+      runtime.createRunningTaskRun({
+        runId: initialRunId,
+        sourceId: initialRunId,
+        task: "initial assignment",
+        startedAt: 1,
+        detail: { nativeHistory, nativeTurnId: "turn-previous" },
+      });
+      runtime.finalizeTaskRunByRunId({
+        runId: initialRunId,
+        status: "succeeded",
+        endedAt: 2,
+        terminalSummary: "original successful result",
+      });
+      runtime.setDetachedTaskDeliveryStatusByRunId({
+        runId: initialRunId,
+        deliveryStatus: "delivered",
+      });
+      runtime.createRunningTaskRun({
+        runId: followupRunId,
+        sourceId: followupRunId,
+        task: "follow-up assignment",
+        startedAt: 3,
+        detail: { nativeHistory, nativeTurnId: "turn-1" },
+      });
+      const database = new DatabaseSync(path.join(stateDir, "state", "openclaw.sqlite"), {
+        readOnly: true,
+      });
+      const readInitial = () =>
+        database.prepare("SELECT * FROM task_runs WHERE run_id = ?").get(initialRunId);
+      const original = readInitial();
+      expect(original).toMatchObject({
+        status: "succeeded",
+        delivery_status: "delivered",
+        terminal_summary: "original successful result",
+      });
+      const client = createClient();
+      client.setThreadRead(
+        "child-thread",
+        threadRead({ status: "inProgress", previousResult: "original successful result" }),
+      );
+      ensureCodexAppServerClientRuntime(client as never, { agentDir: stateDir });
+      const parent = registerCodexNativeSubagentMonitor({
+        client: client as never,
+        parentThreadId: "parent-thread",
+        requesterSessionKey,
+        taskRuntimeScope: scope,
+        agentId: "main",
+        runtime: {
+          createAgentHarnessTaskRuntime,
+          deliverAgentHarnessTaskCompletion: vi.fn(async () => ({
+            delivered: true,
+            path: "direct" as const,
+          })),
+        },
+      });
+      try {
+        parent.bindTurn("parent-turn");
+        await vi.waitFor(() =>
+          expect(isCodexAppServerLiveThreadClaimed(client as never, "child-thread")).toBe(true),
+        );
+        await client.notify({
+          method: "item/completed",
+          params: {
+            threadId: "parent-thread",
+            turnId: "parent-turn",
+            item: {
+              type: "collabAgentToolCall",
+              tool: "wait",
+              status: "completed",
+              senderThreadId: "parent-thread",
+              receiverThreadIds: ["child-thread"],
+              agentsStates: {
+                "child-thread": { status: "errored", message: "follow-up failed" },
+              },
+            },
+          },
+        });
+        expect(readInitial()).toEqual(original);
+        expect(
+          runtime.listTaskRecords().find((task) => task.runId === followupRunId),
+        ).toMatchObject({
+          status: "failed",
+          terminalSummary: "follow-up failed",
+        });
+      } finally {
+        parent.unregister();
+        client.close();
+        database.close();
+        host.closeHost();
+        host.closeAdmission();
+      }
+    });
+  });
 
   it("reconciles queued task rows owned by the registered requester", async () => {
     const client = createClient();

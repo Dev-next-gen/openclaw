@@ -70,6 +70,12 @@ export class CodexNativeSubagentTaskMirror {
     this.expectedAuthoritativeRunIds.add(this.runId(childThreadId));
   }
 
+  restoreCurrentTaskRun(threadId: string, runId: string): void {
+    this.runIdsByThreadId.set(threadId, runId);
+    this.mirrorStateByThreadId.set(threadId, "mirrored");
+    this.expectedAuthoritativeRunIds.add(runId);
+  }
+
   startFollowupTurn(threadId: string, turnId: string): string {
     const previousRunId = this.runId(threadId);
     const previous = this.runtime.listTaskRecords().find((task) => task.runId === previousRunId);

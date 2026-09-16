@@ -3280,6 +3280,11 @@ class Monitor {
       if (history && history.parentThreadId !== state.parentThreadId) {
         continue;
       }
+      const taskTerminal =
+        task.status === "succeeded" || task.status === "failed" || task.status === "cancelled";
+      if (taskTerminal) {
+        state.mirror?.markAuthoritativeCompletion(assignment.childThreadId, candidate.runId);
+      }
       for (const turnId of [candidate.nativeTurnId, candidate.initialTurnId]) {
         if (turnId) {
           storedTurnIds.add(turnId);
@@ -3293,10 +3298,13 @@ class Monitor {
             candidate.nativeTurnId ??
             (candidate.runId === assignment.runId ? assignment.nativeTurnId : undefined),
         };
-        terminal =
-          task.status === "succeeded" || task.status === "failed" || task.status === "cancelled";
+        terminal = taskTerminal;
         latestAt = startedAt;
       }
+    }
+    if (latestAt !== -Infinity) {
+      // Recovery may visit older rows later; lifecycle events belong to the selected current run.
+      state.mirror?.restoreCurrentTaskRun(assignment.childThreadId, current.runId);
     }
     const currentIndex = observedTurns.findIndex((turn) => turn.turnId === current.nativeTurnId);
     const pendingTurns = observedTurns
