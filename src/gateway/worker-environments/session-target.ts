@@ -27,7 +27,10 @@ export function resolveWorkerSessionTarget(
   cfg: OpenClawConfig,
   sessionId: string,
 ): ResolvedWorkerSessionTarget | undefined {
-  const { store, targetsBySessionKey } = loadCombinedSessionStoreForGatewayCore(cfg);
+  // Selection needs identity and freshness; unrelated prompt snapshots can dwarf the transcript batch.
+  const { store, targetsBySessionKey } = loadCombinedSessionStoreForGatewayCore(cfg, {
+    projection: "list",
+  });
   const matches = Object.entries(store).filter(([, entry]) => entry.sessionId === sessionId);
   const selection = resolveSessionIdMatchSelection(matches, sessionId);
   if (selection.kind !== "selected") {
@@ -44,6 +47,7 @@ export function resolveWorkerSessionTarget(
     key: selection.sessionKey,
     agentId,
     clone: false,
+    exactRead: true,
   });
   const entry = resolveCanonicalSessionEntryFromStoreKeys(target.store, target.storeKeys);
   if (!entry || entry.sessionId !== sessionId) {
