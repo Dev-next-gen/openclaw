@@ -436,6 +436,8 @@ describe("tsdown config", () => {
       expect(alwaysBundle("openclaw/plugin-sdk/ssrf-runtime")).toBe(false);
       expect(alwaysBundle("zod")).toBe(true);
       expect(alwaysBundle("zod/v4/core")).toBe(true);
+      expect(alwaysBundle("typebox")).toBe(true);
+      expect(alwaysBundle("typebox/schema")).toBe(true);
       expect(alwaysBundle("not-a-runtime-dependency")).toBe(false);
     }
   });
