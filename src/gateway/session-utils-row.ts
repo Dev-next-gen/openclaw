@@ -61,6 +61,7 @@ import type {
 } from "./session-utils-contracts.js";
 import {
   deriveSessionTitle,
+  prepareSessionTitleRead,
   resolveEstimatedSessionCostUsd,
   resolvePositiveNumber,
   buildStoreChildSessionLinksWork,
@@ -176,9 +177,10 @@ export function readSessionRowInputs(params: {
     storePath,
   });
 
-  let derivedTitle: string | undefined;
+  const titleRead = prepareSessionTitleRead(entry, displayName, params);
+  let derivedTitle = titleRead?.derivedTitle;
   let lastMessagePreview: string | undefined;
-  if (entry?.sessionId && (params.includeDerivedTitles || params.includeLastMessage)) {
+  if (entry?.sessionId && titleRead?.needsTranscript) {
     const fields = readScopedSessionTitleFieldsFromTranscript({
       agentId,
       sessionEntry: entry,
@@ -187,7 +189,7 @@ export function readSessionRowInputs(params: {
       storePath,
     });
     if (params.includeDerivedTitles) {
-      derivedTitle = deriveSessionTitle(entry, fields.firstUserMessage, displayName);
+      derivedTitle ??= deriveSessionTitle(entry, fields.firstUserMessage, displayName);
     }
     lastMessagePreview = (params.includeLastMessage && fields.lastMessagePreview) || undefined;
   }

@@ -35,7 +35,12 @@ import type {
   SessionListRowContext,
   SessionListRowContextProvider,
 } from "./session-utils-contracts.js";
-import { deriveSessionTitle, buildStoreChildSessionLinksWork } from "./session-utils-core.js";
+import {
+  deriveSessionTitle,
+  prepareSessionTitleRead,
+  buildStoreChildSessionLinksWork,
+} from "./session-utils-core.js";
+import { resolveGatewaySessionDisplayName } from "./session-utils-display.js";
 import { getSessionDefaults } from "./session-utils-model.js";
 import {
   buildSessionListRowMetadataContext,
@@ -401,10 +406,22 @@ export async function listSessionsFromStoreAsync(
         const list = step.value;
         const sessions: GatewaySessionRow[] = [];
         const includeTranscriptFields = list.includeDerivedTitles || list.includeLastMessage;
+        // Keep preparation indexed by the original page: skipped named rows do
+        // not extend the transcript budget or shift another row's result.
+        const titleReads = includeTranscriptFields
+          ? list.entries.slice(0, list.transcriptFieldRows).map(([key, entry]) => {
+              const target = expectDefined(targetsBySessionKey.get(key), "transcript row target");
+              return prepareSessionTitleRead(
+                entry,
+                resolveGatewaySessionDisplayName(target.storeKey ?? key, entry),
+                list,
+              );
+            })
+          : [];
         const transcriptFields = includeTranscriptFields
           ? readScopedSessionTitleFieldsFromTranscriptBatch(
-              list.entries.slice(0, list.transcriptFieldRows).flatMap(([key, entry]) => {
-                if (!entry.sessionId) {
+              list.entries.slice(0, list.transcriptFieldRows).flatMap(([key, entry], i) => {
+                if (!titleReads[i]?.needsTranscript) {
                   return [];
                 }
                 const target = expectDefined(targetsBySessionKey.get(key), "transcript row target");
@@ -457,16 +474,21 @@ export async function listSessionsFromStoreAsync(
               });
               const row = presentSessionRow(materializeSessionRow(inputs), presentation);
               row.key = key;
-              if (entry?.sessionId && i < list.transcriptFieldRows && includeTranscriptFields) {
-                const { firstUserMessage, lastMessagePreview } = expectDefined(
-                  transcriptFields[transcriptFieldIndex++],
-                  "batched transcript fields at transcriptFieldIndex",
-                );
+              const titleRead = titleReads[i];
+              if (entry?.sessionId && titleRead) {
+                const fields = titleRead.needsTranscript
+                  ? expectDefined(
+                      transcriptFields[transcriptFieldIndex++],
+                      "batched transcript fields at transcriptFieldIndex",
+                    )
+                  : undefined;
                 if (list.includeDerivedTitles) {
-                  row.derivedTitle = deriveSessionTitle(entry, firstUserMessage, row.displayName);
+                  row.derivedTitle =
+                    titleRead.derivedTitle ??
+                    deriveSessionTitle(entry, fields?.firstUserMessage, row.displayName);
                 }
-                if (list.includeLastMessage && lastMessagePreview) {
-                  row.lastMessagePreview = lastMessagePreview;
+                if (list.includeLastMessage && fields?.lastMessagePreview) {
+                  row.lastMessagePreview = fields.lastMessagePreview;
                 }
               }
               sessions.push(row);
