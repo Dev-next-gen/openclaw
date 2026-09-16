@@ -166,10 +166,7 @@ test.each(["scalar", "batch"] as const)(
             },
           },
         ] satisfies RowDefinition[]
-      ).map((definition) => ({
-        ...definition,
-        transcript: "named" as const,
-      })),
+      ).map((definition) => Object.assign({}, definition, { transcript: "named" as const })),
       async ({ render, queries }) => {
         const parse = vi.spyOn(JSON, "parse");
         const titles = await render(mode);

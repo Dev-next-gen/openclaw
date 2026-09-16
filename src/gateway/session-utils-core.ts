@@ -74,7 +74,7 @@ export function prepareSessionTitleRead(
     : undefined;
   return {
     derivedTitle,
-    needsTranscript: Boolean(opts.includeLastMessage || !derivedTitle),
+    needsTranscript: opts.includeLastMessage || !derivedTitle,
   };
 }
 
