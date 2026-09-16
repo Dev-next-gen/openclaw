@@ -85,7 +85,9 @@ function shouldCollapseUserMessage(markdown: string): boolean {
   );
 }
 
-function userMessageOverflowRef(expanded: boolean) {
+const FORWARDED_MESSAGE_COLLAPSE_LINE_LIMIT = 3;
+
+function messageOverflowRef(expanded: boolean, forwarded: boolean) {
   let resizeObserver: ResizeObserver | null = null;
   return (element: Element | undefined) => {
     resizeObserver?.disconnect();
@@ -101,7 +103,13 @@ function userMessageOverflowRef(expanded: boolean) {
       if (!disclosure || !toggle) {
         return;
       }
-      toggle.hidden = !expanded && element.scrollHeight <= element.clientHeight + 1;
+      const text = element.querySelector<HTMLElement>(":scope > .chat-text");
+      const threshold =
+        forwarded && text
+          ? Number.parseFloat(getComputedStyle(text).lineHeight) *
+            FORWARDED_MESSAGE_COLLAPSE_LINE_LIMIT
+          : element.clientHeight;
+      toggle.hidden = !expanded && element.scrollHeight <= threshold + 1;
     };
     // Lit resolves refs while siblings are still committing. Measure after the
     // toggle exists; it renders visible so collapsing never shifts row height,
@@ -120,6 +128,7 @@ export function renderMessageMarkdown(
   opts: {
     role: string;
     isStreaming: boolean;
+    isForwarded?: boolean;
     isUserMessageExpanded?: (messageId: string) => boolean;
     onToggleUserMessageExpanded?: (messageId: string) => void;
     assistantMessageDisclosure?: AssistantMessageDisclosure;
@@ -159,18 +168,24 @@ export function renderMessageMarkdown(
     `;
   }
   if (
-    opts.role !== "user" ||
     !opts.onToggleUserMessageExpanded ||
-    !shouldCollapseUserMessage(markdown)
+    (opts.isForwarded
+      ? opts.isStreaming
+      : opts.role !== "user" || !shouldCollapseUserMessage(markdown))
   ) {
     return text;
   }
 
-  const disclosureId = `user-message:${messageKey}`;
+  const disclosureId = `${opts.isForwarded ? "forwarded" : "user"}-message:${messageKey}`;
   const expanded = opts.isUserMessageExpanded?.(disclosureId) ?? false;
   return html`
-    <div class="chat-message-disclosure ${expanded ? "is-expanded" : ""}">
-      <div class="chat-message-disclosure__content" ${ref(userMessageOverflowRef(expanded))}>
+    <div
+      class="chat-message-disclosure ${opts.isForwarded ? "chat-message-disclosure--forwarded" : ""} ${expanded ? "is-expanded" : ""}"
+    >
+      <div
+        class="chat-message-disclosure__content"
+        ${ref(messageOverflowRef(expanded, Boolean(opts.isForwarded)))}
+      >
         ${text}
       </div>
       <button

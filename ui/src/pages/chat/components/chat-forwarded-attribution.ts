@@ -41,7 +41,7 @@ export function renderForwardedAttribution(group: MessageGroup, opts: ForwardedA
       ? sourceAgentDisplayName
       : undefined;
   return html`
-    <div class="chat-reply-attribution">
+    <div class="chat-reply-attribution chat-reply-attribution--forwarded">
       <span class="chat-reply-attribution__icon" aria-hidden="true">${icons.forward}</span>
       ${
         linkableSourceKey
