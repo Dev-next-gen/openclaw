@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
-import { SqliteWorkerBroker } from "../../infra/sqlite-worker-broker.js";
+import * as sqliteWorkerStore from "../../infra/sqlite-worker-store.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
@@ -33,17 +33,15 @@ it("lists more stores than the broker can retain without evicting active reads o
     const heldStore = await seed("held");
     const delivered = createDeferredCore();
     const release = createDeferredCore();
-    // oxlint-disable-next-line typescript/unbound-method -- call restores the intercepted broker receiver below.
-    const original = SqliteWorkerBroker.prototype.runOperation;
-    vi.spyOn(SqliteWorkerBroker.prototype, "runOperation").mockImplementationOnce(async function (
-      this: SqliteWorkerBroker,
-      ...args
-    ) {
-      const value = await original.call(this, ...args);
-      delivered.resolve();
-      await release.promise;
-      return value;
-    });
+    const original = sqliteWorkerStore.runSqliteWorkerStoreOperation;
+    vi.spyOn(sqliteWorkerStore, "runSqliteWorkerStoreOperation").mockImplementationOnce(
+      async (...args) => {
+        const value = await original(...args);
+        delivered.resolve();
+        await release.promise;
+        return value;
+      },
+    );
     const held = listSessionEntriesReadOnlyAsync(heldStore.scope);
     let heldSettled = false;
     void held.then(

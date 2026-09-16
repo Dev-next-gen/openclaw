@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import * as sqliteRuntime from "../../infra/node-sqlite.js";
-import { SqliteWorkerBroker } from "../../infra/sqlite-worker-broker.js";
+import * as sqliteWorkerStore from "../../infra/sqlite-worker-store.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
@@ -54,12 +54,11 @@ function fixture(state: OpenClawTestState) {
 function holdNextBrokerResult() {
   const delivered = createDeferredCore();
   const release = createDeferredCore();
-  // oxlint-disable-next-line typescript/unbound-method -- call restores the intercepted broker below.
-  const runOperation = SqliteWorkerBroker.prototype.runOperation;
+  const runOperation = sqliteWorkerStore.runSqliteWorkerStoreOperation;
   const work = vi
-    .spyOn(SqliteWorkerBroker.prototype, "runOperation")
-    .mockImplementationOnce(async function (this: SqliteWorkerBroker, ...args) {
-      const result = await runOperation.call(this, ...args);
+    .spyOn(sqliteWorkerStore, "runSqliteWorkerStoreOperation")
+    .mockImplementationOnce(async (...args) => {
+      const result = await runOperation(...args);
       delivered.resolve();
       await release.promise;
       return result;
@@ -71,9 +70,9 @@ it("retains cold read-only inventory across requests without opening a host writ
   await withOpenClawTestState({ label: "async-list-cold-observer" }, async (state) => {
     const { scope, keys, database } = fixture(state);
     await closeOpenClawAgentDatabaseByPathAsync(database.path, scope.agentId);
-    const opening = vi.spyOn(SqliteWorkerBroker.prototype, "open");
+    const opening = vi.spyOn(sqliteWorkerStore, "openSqliteWorkerStore");
     const hostOpens = vi.spyOn(sqliteRuntime, "openNodeSqliteDatabase");
-    const work = vi.spyOn(SqliteWorkerBroker.prototype, "runOperation");
+    const work = vi.spyOn(sqliteWorkerStore, "runSqliteWorkerStoreOperation");
     expect(isOpenClawAgentDatabaseOpen(database.path)).toBe(false);
     const first = await listSessionEntriesReadOnlyAsync({ ...scope, clone: false });
     expect(first.map(({ sessionKey }) => sessionKey)).toEqual(keys);
@@ -141,7 +140,7 @@ it("keeps a selected hold current through async expansion and retains the comple
   await withOpenClawTestState({ label: "async-list-selected-hold" }, async (state) => {
     const { scope, keys, database } = fixture(state);
     const held = captureSessionEntryCacheRead(database, keys[0]);
-    const work = vi.spyOn(SqliteWorkerBroker.prototype, "runOperation");
+    const work = vi.spyOn(sqliteWorkerStore, "runSqliteWorkerStoreOperation");
     try {
       expect(held.isCurrent()).toBe(true);
       const expanded = await listSessionEntriesReadOnlyAsync({ ...scope, clone: false });
@@ -164,7 +163,7 @@ it("rejects delivered inventory after resource revocation and reopens for a late
   await withOpenClawTestState({ label: "async-list-revoked-result" }, async (state) => {
     const { scope, keys, database } = fixture(state);
     await closeOpenClawAgentDatabaseByPathAsync(database.path, scope.agentId);
-    const opening = vi.spyOn(SqliteWorkerBroker.prototype, "open");
+    const opening = vi.spyOn(sqliteWorkerStore, "openSqliteWorkerStore");
     const gate = holdNextBrokerResult();
     const first = listSessionEntriesReadOnlyAsync(scope);
     let closing: Promise<boolean> | undefined;
@@ -196,7 +195,7 @@ it("returns cold inventory through the worker and reuses current metadata withou
       { ...scope, sessionKey: hidden.sessionKey },
       { sessionId: hidden.sessionId, updatedAt: 1 },
     );
-    const work = vi.spyOn(SqliteWorkerBroker.prototype, "runOperation");
+    const work = vi.spyOn(sqliteWorkerStore, "runSqliteWorkerStoreOperation");
     const first = await listSessionEntriesReadOnlyAsync({ ...scope, clone: false });
     expect(work).toHaveBeenCalled();
     expect(first.map(({ sessionKey }) => sessionKey)).toEqual(keys);
@@ -220,7 +219,7 @@ it("invalidates warm inventory for external same-value commits and same-timestam
     const { scope, keys, database } = fixture(state);
     const before = await listSessionEntriesReadOnlyAsync(scope);
     const external = new DatabaseSync(database.path);
-    const work = vi.spyOn(SqliteWorkerBroker.prototype, "runOperation");
+    const work = vi.spyOn(sqliteWorkerStore, "runSqliteWorkerStoreOperation");
     try {
       external
         .prepare("UPDATE session_nodes SET entry_json = entry_json WHERE session_key = ?")
@@ -269,7 +268,7 @@ it("preserves selected order and tail-chunk membership after inventory projectio
       readSessionListPageReadOnlyAsync([{ ...scope, sessionKeys }], {
         membershipIdentityId: " viewer ",
       });
-    const work = vi.spyOn(SqliteWorkerBroker.prototype, "runOperation");
+    const work = vi.spyOn(sqliteWorkerStore, "runSqliteWorkerStoreOperation");
     const first = await read();
     expect(work).toHaveBeenCalled();
     expect(first).toMatchObject([
@@ -328,7 +327,7 @@ it.each(["canonical identity", "native conversion"] as const)(
             .prepare("UPDATE session_participants SET contribution_count = ? WHERE session_key = ?")
             .run(9007199254740993n, keys[1]);
         }
-        const work = vi.spyOn(SqliteWorkerBroker.prototype, "runOperation");
+        const work = vi.spyOn(sqliteWorkerStore, "runSqliteWorkerStoreOperation");
         const results = await readSessionListPageReadOnlyAsync(
           [[keys[0]], [keys[1]], ["agent:main:missing"], [keys[0], keys[1]]].map((sessionKeys) => ({
             agentId: scope.agentId,
@@ -378,7 +377,7 @@ it("reads process-held incognito metadata without creating a durable worker stor
     };
     const storePath = resolveIncognitoOpenClawAgentSqlitePath(scope);
     replaceSessionEntrySync(scope, { sessionId: "private", updatedAt: 1, label: "Private" });
-    const opening = vi.spyOn(SqliteWorkerBroker.prototype, "open");
+    const opening = vi.spyOn(sqliteWorkerStore, "openSqliteWorkerStore");
     expect(await listSessionEntriesReadOnlyAsync({ ...scope, storePath })).toMatchObject([
       { sessionKey: scope.sessionKey, entry: { sessionId: "private", label: "Private" } },
     ]);

@@ -25,6 +25,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server-methods/requester-cron-authority.integration.test.ts",
   "src/gateway/server-methods/server-methods.test.ts",
   "src/gateway/server-methods/session-creator-preparation.test.ts",
+  "src/gateway/server-methods/sessions-create-thinking-claim.test.ts",
   "src/gateway/server-methods/sessions-describe-worker.test.ts",
   "src/gateway/server-methods/sessions-list-cache.live-reuse.test.ts",
   "src/gateway/server-methods/sessions-list-cache.visibility.test.ts",
