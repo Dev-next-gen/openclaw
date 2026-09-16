@@ -83,7 +83,6 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
   let foregroundPublicationGeneration = 0;
   let inFlight: Promise<SessionRefreshAttempt | null> | null = null;
   let queuedRefresh: QueuedSessionRefresh | null = null;
-  let eventRefreshQueued = false;
   let lastListOptions: SessionListOptions = {};
   let primaryList: { scope: SessionListScope } = { scope: {} };
   let listOptionsSource: "none" | "seeded" | "foreground" = "none";
@@ -117,8 +116,12 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
       listeners: new Set(),
       coordinator: createSessionEventRefreshCoordinator({
         active: false,
-        refresh: () =>
-          refreshManagedList(entry, { append: false, invalidated: true, background: true }),
+        refresh: (isCurrent) =>
+          refreshManagedList(
+            entry,
+            { append: false, invalidated: true, background: true },
+            isCurrent,
+          ),
       }),
       pending: null,
       queued: null,
@@ -345,11 +348,6 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     }
   };
 
-  const absorbPendingEventRefresh = () => {
-    eventRefreshCoordinator.absorb();
-    eventRefreshQueued = false;
-  };
-
   const startRefresh = (
     options: SessionRefreshOptions,
     bootstrap = false,
@@ -382,8 +380,6 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
         } else {
           void drainQueuedRefresh();
         }
-      } else if (eventRefreshQueued && pageActive && host.connection.isCurrent(scope)) {
-        void host.background(request, refreshFromEvent);
       }
     });
     inFlight = request;
@@ -402,7 +398,7 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     const options =
       typeof queued.intent === "function" ? replacementOptions(queued.intent()) : queued.options;
     if (!options.append) {
-      absorbPendingEventRefresh();
+      eventRefreshCoordinator.absorb();
     }
     const snapshot = host.snapshot();
     const sameErrorQuery = isSameSessionListQuery(
@@ -459,7 +455,7 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
       foregroundPublicationGeneration += 1;
     }
     if (options.append !== true) {
-      absorbPendingEventRefresh();
+      eventRefreshCoordinator.absorb();
     }
     return startRefresh(options, bootstrap, isErrorCurrent);
   };
@@ -468,26 +464,27 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     await refreshInternal(options, false);
   };
 
-  const refreshFromEvent = async (): Promise<void> => {
-    if (!eventRefreshQueued || queuedRefresh || !host.connection.capture()) {
+  const refreshFromEvent = async (isCurrent: () => boolean): Promise<void> => {
+    const scope = host.connection.capture();
+    for (let request = inFlight; request && isCurrent(); request = inFlight) {
+      await request;
+    }
+    if (!scope || !host.connection.isCurrent(scope) || !isCurrent()) {
       return;
     }
-    if (inFlight) {
-      await inFlight;
+    if (!pageActive) {
+      eventRefreshCoordinator.setActive(false, true);
       return;
     }
-    eventRefreshQueued = false;
-    await startRefresh({ ...lastListOptions, force: true });
+    if (!queuedRefresh) {
+      await startRefresh({ ...lastListOptions, force: true });
+    }
   };
 
   const eventRefreshCoordinator = createSessionEventRefreshCoordinator({
     active: pageActive,
-    refresh: () => {
-      eventRefreshQueued = true;
-      return inFlight
-        ? refreshFromEvent()
-        : host.background(eventRefreshCoordinator, refreshFromEvent);
-    },
+    refresh: (isCurrent) =>
+      host.background(eventRefreshCoordinator, () => refreshFromEvent(isCurrent)),
   });
 
   const handlePageLifecycle = (event: Event) => {
@@ -702,7 +699,6 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
       retireForegroundRefresh();
       primaryList = { scope: primaryList.scope };
       eventRefreshCoordinator.reset();
-      eventRefreshQueued = false;
       for (const entry of managedLists.values()) {
         entry.coordinator.reset();
         entry.pending = entry.queued = null;

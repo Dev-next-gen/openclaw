@@ -1481,9 +1481,16 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             "original hybrid runner anchor",
           )
         : undefined;
-      const promoted = originalHybridJob?.planConcurrency === 2 && shard.planConcurrency === 1;
+      if (originalHybridJob?.planConcurrency === 2 && shard.planConcurrency === 1) {
+        expect(shard.pretestBuildMode).toBe("runtime");
+      }
+      const promoted =
+        originalHybridJob !== undefined &&
+        originalHybridJob.pretestBuildMode === undefined &&
+        shard.pretestBuildMode === "runtime";
       if (promoted) {
         expect(shard.pretestBuildMode).toBe("runtime");
+        expect(shard.planConcurrency).toBe(1);
         expect(exclusiveCount).toBe(0);
         expect(shard.requiresDist).toBe(false);
         for (const original of originalHybridJob.groups) {
@@ -1491,10 +1498,14 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             shard.groups.find((group) => group.shard_name === original.shard_name),
             "retained ordinary group",
           );
-          expect(retained).toEqual({
-            ...original,
-            env: { OPENCLAW_VITEST_MAX_WORKERS: "2", ...original.env },
-          });
+          if (originalHybridJob.planConcurrency === 2) {
+            expect(retained).toEqual({
+              ...original,
+              env: { OPENCLAW_VITEST_MAX_WORKERS: "2", ...original.env },
+            });
+          } else {
+            expect(retained).toStrictEqual(original);
+          }
         }
       }
       if (

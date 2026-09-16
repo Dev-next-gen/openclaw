@@ -130,7 +130,7 @@ it.each([
     clearSubagentRunsReadCacheForTest();
   }
   replies[0]!.resolve(runs("old"));
-  if (["restore", "ownership rebind", "reset"].includes(change)) {
+  if (["ownership rebind", "reset"].includes(change)) {
     (await started(1)).resolve(runs("current"));
   }
   expect(await first).toEqual(change === "named deletion" ? [] : ["current"]);
@@ -254,7 +254,7 @@ it("keeps unrelated publication context failures visible", () => {
 });
 
 it.each([1600, 900])(
-  "lets a waiting caller consume a slow or clock-shifted fill once (%i)",
+  "reuses a completed fill after idle time and clock shifts (%i)",
   async (completedAt) => {
     const now = vi.spyOn(Date, "now").mockReturnValue(1000);
     const first = read();
@@ -262,10 +262,10 @@ it.each([1600, 900])(
     now.mockReturnValue(completedAt);
     replies[0]!.resolve(runs("first"));
     expect(await first).toEqual(["first"]);
-    const second = read();
-    await started(1);
-    replies[1]!.resolve(runs("second"));
-    expect(await second).toEqual(["second"]);
+    now.mockReturnValue(completedAt + 60_000);
+    transport.execute.mockResolvedValueOnce(runs("first"));
+    expect(await read()).toEqual(["first"]);
+    expect(transport.execute).toHaveBeenCalledTimes(1);
   },
 );
 
@@ -385,15 +385,12 @@ it.each([false, true])(
     replies[0]!.resolve(initial);
     expect(await first).toEqual(["durable", "current-7"]);
     now.mockReturnValue(1600);
-    const second = read();
-    await started(1);
     for (let index = 8; index < 16; index++) {
       persistSubagentRunsToDisk(runs(`current-${index}`), ["one"]);
       persistSubagentRunsToDisk(new Map(), ["deleted"]);
     }
-    replies[1]!.resolve(new Map([...runs("stale"), ...runs("deleted", "deleted")]));
-    expect(await second).toEqual(["durable", "current-15"]);
-    expect(replies).toHaveLength(2);
+    expect(await read()).toEqual(["durable", "current-15"]);
+    expect(replies).toHaveLength(1);
   },
 );
 

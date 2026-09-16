@@ -282,7 +282,7 @@ class OpenShellFsBridge implements SandboxFsBridge {
     return target.hostPath;
   }
 
-  private resolveTarget(params: { filePath: string; cwd?: string }): ResolvedMountPath {
+  private containerMounts(readOnlyMounts = this.readOnlyMounts()) {
     const workspaceRoot = path.resolve(this.sandbox.workspaceDir);
     const agentRoot = path.resolve(this.sandbox.agentWorkspaceDir);
     const hasAgentMount = this.sandbox.workspaceAccess !== "none" && workspaceRoot !== agentRoot;
@@ -291,9 +291,6 @@ class OpenShellFsBridge implements SandboxFsBridge {
       "/",
     );
     const workspaceContainerRoot = this.sandbox.containerWorkdir.replace(/\\/g, "/");
-    const input = params.filePath.trim();
-    const readOnlyMounts = this.readOnlyMounts();
-
     const containerMounts: OpenShellWorkspaceRoot<{
       hostRoot: string;
       writable: boolean;
@@ -327,6 +324,28 @@ class OpenShellFsBridge implements SandboxFsBridge {
         value: { hostRoot: path.resolve(mount.hostPath), writable: false },
       })),
     );
+    return containerMounts;
+  }
+
+  get pathMappings(): NonNullable<SandboxFsBridge["pathMappings"]> {
+    return this.containerMounts()
+      .toSorted((a, b) => Number(a.owner === "agent") - Number(b.owner === "agent"))
+      .map((mount) => ({ hostRoot: mount.value.hostRoot, containerRoot: mount.remote }));
+  }
+
+  private resolveTarget(params: { filePath: string; cwd?: string }): ResolvedMountPath {
+    const workspaceRoot = path.resolve(this.sandbox.workspaceDir);
+    const agentRoot = path.resolve(this.sandbox.agentWorkspaceDir);
+    const hasAgentMount = this.sandbox.workspaceAccess !== "none" && workspaceRoot !== agentRoot;
+    const agentContainerRoot = (this.backend.remoteAgentWorkspaceDir || "/agent").replace(
+      /\\/g,
+      "/",
+    );
+    const workspaceContainerRoot = this.sandbox.containerWorkdir.replace(/\\/g, "/");
+    const input = params.filePath.trim();
+    const readOnlyMounts = this.readOnlyMounts();
+
+    const containerMounts = this.containerMounts(readOnlyMounts);
     const resolveContainerTarget = (containerPath: string): ResolvedMountPath | undefined => {
       const containerMount = resolveOpenShellWorkspaceRoot(containerMounts, containerPath);
       if (!containerMount) {

@@ -312,6 +312,18 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   comparison; capacity alone is not a measured speedup.
 - The Docker seed job requests `blacksmith-32vcpu-ubuntu-2404`; its weighted
   scheduler and serial declaration compiler policy stay unchanged.
+  Canonical PRs and `main` share `resolveChangedDockerSeedLanes` owner-path
+  selection; unknown paths retain the published survivor. Canonical manual CI
+  selects survivor when the target declares the Docker seed capability, retaining
+  `legacy-operator-state` with `auto-auth`. Full Release Validation reaches this
+  exact proof through `normal_ci`; expanded Package Acceptance scenarios alone
+  do not replace its restart mode.
+- `run_control_ui_performance` selects production UI, plugin browser, workspace
+  package, dependency/build/policy inputs and their relative import graph,
+  including tooling. Workspace package aliases require conservative package
+  ownership. Test-only files and unrelated runtime changes omit this lane;
+  manual runs, unknown paths and older planners retain coverage. Preserve the
+  target's existing performance-script capability checks.
 - Eligible Control UI E2E rows request the 32-vCPU class with unchanged live
   backend/event/contributor routing and two/one-worker project limits. Targets
   with the named-project contract use six shards on non-frozen Blacksmith and
@@ -343,6 +355,14 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   matrix. Keep the complete scenario inventory, separate Matrix run, worker
   limits, stagger, cleanup and deadlines. Measure the four-part jobs natively;
   summed build intervals are not a wall-time saving estimate.
+  PR and main selection uses the existing QA/channel/packaging/orchestration
+  owners. Manual and Full Release Validation retain the full profile; unknown
+  paths or older selectors retain supported coverage. Integration detection
+  outside these owners now waits for manual/release validation. The burden
+  analysis projects about 1,526 Blacksmith vCPU-minutes/hour saved across Docker
+  and QA; zero failures in 20 Docker and 80 QA main jobs is limited evidence,
+  not a measured post-change saving. Keep backend settings, caps, budgets and
+  timeouts unchanged, and verify actual emitted rows and timings.
 - GitHub/hybrid test types use three jobs: two paired core rows run the original
   stripes 1+2 and 3+4 sequentially; the central row runs stripe 5 before the
   extensions/scripts/root tail. Keep every canonical core test graph, at most two compiler

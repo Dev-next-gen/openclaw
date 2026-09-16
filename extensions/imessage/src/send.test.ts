@@ -74,9 +74,10 @@ function createClient(result: Record<string, unknown>): IMessageRpcClient {
   } as unknown as IMessageRpcClient;
 }
 
-function createRejectingClient(error: Error): IMessageRpcClient {
+function createRejectingClient(error: Error, onRequest?: () => void): IMessageRpcClient {
   return {
     request: vi.fn(async () => {
+      onRequest?.();
       await Promise.resolve();
       throw error;
     }),
@@ -1651,7 +1652,7 @@ describe("sendMessageIMessage receipts", () => {
 
   it("allows a delegated reply with a current same-account cache binding", async () => {
     const client = createClient({ guid: "p:0/imsg-bound" });
-    rememberIMessageReplyCache({
+    await rememberIMessageReplyCache({
       accountId: "default",
       messageId: "bound-reply-guid",
       chatId: 42,
@@ -1683,7 +1684,7 @@ describe("sendMessageIMessage receipts", () => {
 
   it("uses the effective SMS service for a delegated raw-handle reply", async () => {
     const client = createClient({ guid: "p:0/imsg-sms-bound" });
-    rememberIMessageReplyCache({
+    await rememberIMessageReplyCache({
       accountId: "default",
       messageId: "sms-reply-guid",
       chatGuid: "SMS;-;+15550004567",
@@ -1721,7 +1722,7 @@ describe("sendMessageIMessage receipts", () => {
 
   it("rejects a delegated reply when an auto handle has no concrete service", async () => {
     const client = createClient({ guid: "should-not-send" });
-    rememberIMessageReplyCache({
+    await rememberIMessageReplyCache({
       accountId: "default",
       messageId: "ambiguous-service-guid",
       chatGuid: "SMS;-;+15550004567",
@@ -2260,10 +2261,12 @@ describe("sendMessageIMessage receipts", () => {
   it("floors a configured probe timeout so one delayed imsg fallback can resolve", async () => {
     vi.useFakeTimers();
     const delayedFallbackMs = 158_000;
+    const requestStarted = createDeferred<void>();
     const client = {
       request: vi.fn(
-        (_method: string, _params: Record<string, unknown>, opts?: { timeoutMs?: number }) =>
-          new Promise<Record<string, unknown>>((resolve, reject) => {
+        (_method: string, _params: Record<string, unknown>, opts?: { timeoutMs?: number }) => {
+          requestStarted.resolve();
+          return new Promise<Record<string, unknown>>((resolve, reject) => {
             const timeout = setTimeout(
               () => reject(new Error("imsg rpc timeout (send)")),
               opts?.timeoutMs,
@@ -2272,7 +2275,8 @@ describe("sendMessageIMessage receipts", () => {
               clearTimeout(timeout);
               resolve({ guid: "p:0/imsg-delayed-fallback" });
             }, delayedFallbackMs);
-          }),
+          });
+        },
       ),
       stop: vi.fn(async () => {}),
     } as unknown as IMessageRpcClient;
@@ -2288,7 +2292,7 @@ describe("sendMessageIMessage receipts", () => {
       },
       client,
     });
-    await vi.waitFor(() => expect(getClientMocks(client).request).toHaveBeenCalled());
+    await requestStarted.promise;
     await vi.advanceTimersByTimeAsync(delayedFallbackMs);
 
     await expect(send).resolves.toMatchObject({ messageId: "p:0/imsg-delayed-fallback" });
@@ -3570,7 +3574,11 @@ describe("sendMessageIMessage receipts", () => {
     fs.writeFileSync(wrapperPath, '#!/bin/sh\nexec ssh -T gateway-host imsg "$@"\n');
     await resolveIMessageRemoteHost({ cliPath: wrapperPath });
     vi.useFakeTimers({ now: 1_000 });
-    const client = createRejectingClient(new Error("imsg rpc timeout (send)"));
+    const requestStarted = createDeferred<void>();
+    const client = createRejectingClient(
+      new Error("imsg rpc timeout (send)"),
+      requestStarted.resolve,
+    );
     const runCliJson = vi.fn();
     const resolveSentMessageGuidImpl = vi.fn(async () => null);
     const approvalText = createApprovalText("approval-ssh-wrapper");
@@ -3585,7 +3593,7 @@ describe("sendMessageIMessage receipts", () => {
           resolveSentMessageGuidImpl,
         }),
       ).rejects.toThrow("imsg rpc timeout (send)");
-      await vi.waitFor(() => expect(getClientMocks(client).request).toHaveBeenCalled());
+      await requestStarted.promise;
       await vi.advanceTimersByTimeAsync(5_000);
       await rejection;
     } finally {
@@ -3622,7 +3630,11 @@ describe("sendMessageIMessage receipts", () => {
 
   it("throws the rpc timeout without resending when sent-row recovery misses", async () => {
     vi.useFakeTimers({ now: 1_000 });
-    const client = createRejectingClient(new Error("imsg rpc timeout (send)"));
+    const requestStarted = createDeferred<void>();
+    const client = createRejectingClient(
+      new Error("imsg rpc timeout (send)"),
+      requestStarted.resolve,
+    );
     const runCliJson = vi.fn();
     const resolveSentMessageGuidImpl = vi.fn(async () => null);
     const rejection = expect(
@@ -3634,7 +3646,7 @@ describe("sendMessageIMessage receipts", () => {
         resolveSentMessageGuidImpl,
       }),
     ).rejects.toThrow("imsg rpc timeout (send)");
-    await vi.waitFor(() => expect(getClientMocks(client).request).toHaveBeenCalled());
+    await requestStarted.promise;
     await vi.advanceTimersByTimeAsync(5_000);
     await rejection;
 
@@ -3644,7 +3656,11 @@ describe("sendMessageIMessage receipts", () => {
 
   it("does not stop caller-owned rpc clients after sent-row recovery misses", async () => {
     vi.useFakeTimers({ now: 1_000 });
-    const client = createRejectingClient(new Error("imsg rpc timeout (send)"));
+    const requestStarted = createDeferred<void>();
+    const client = createRejectingClient(
+      new Error("imsg rpc timeout (send)"),
+      requestStarted.resolve,
+    );
     const runCliJson = vi.fn();
     const resolveSentMessageGuidImpl = vi.fn(async () => null);
     const rejection = expect(
@@ -3656,7 +3672,7 @@ describe("sendMessageIMessage receipts", () => {
         resolveSentMessageGuidImpl,
       }),
     ).rejects.toThrow("imsg rpc timeout (send)");
-    await vi.waitFor(() => expect(getClientMocks(client).request).toHaveBeenCalled());
+    await requestStarted.promise;
     await vi.advanceTimersByTimeAsync(5_000);
     await rejection;
 
@@ -3683,7 +3699,11 @@ describe("sendMessageIMessage receipts", () => {
 
   it("throws the rpc timeout without resending when approval GUID recovery misses", async () => {
     vi.useFakeTimers({ now: 1_000 });
-    const client = createRejectingClient(new Error("imsg rpc timeout (send)"));
+    const requestStarted = createDeferred<void>();
+    const client = createRejectingClient(
+      new Error("imsg rpc timeout (send)"),
+      requestStarted.resolve,
+    );
     const runCliJson = vi.fn();
     const resolveSentMessageGuidImpl = vi.fn(async () => null);
     const approvalText = createApprovalText();
@@ -3697,7 +3717,7 @@ describe("sendMessageIMessage receipts", () => {
         resolveSentMessageGuidImpl,
       }),
     ).rejects.toThrow("imsg rpc timeout (send)");
-    await vi.waitFor(() => expect(getClientMocks(client).request).toHaveBeenCalled());
+    await requestStarted.promise;
     await vi.advanceTimersByTimeAsync(5_000);
     await rejection;
 

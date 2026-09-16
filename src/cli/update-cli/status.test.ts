@@ -272,6 +272,33 @@ afterEach(() => {
   tempDirs.cleanup();
 });
 
+describe("update status readiness outcome", () => {
+  it("shows installed but unverified as a closed non-success outcome", async () => {
+    const run = createUpdateRun({ trigger: "cli" });
+    recordUpdateRunVerification(run.runId, { serviceRunning: true, readyz: false, settled: false });
+    const finished = finishUpdateRun(run.runId, {
+      status: "skipped",
+      reason: "gateway-readiness-unverified",
+      after: { version: "2026.9.4" },
+    });
+    await updateStatusCommand({});
+    expect(runtime.log.mock.calls.flat().join("\n")).toContain(
+      "OpenClaw 2026.9.4 installed; Gateway readiness unverified; recovery backups retained.",
+    );
+    await updateStatusCommand({ json: true });
+    expect(runtime.writeJson.mock.lastCall?.[0]).toMatchObject({
+      lastRun: {
+        ...finished,
+        phase: "finished",
+        confirmedAtMs: null,
+        finishedAtMs: expect.any(Number),
+      },
+    });
+    expect(runtime.writeJson.mock.lastCall?.[0].activeRun).toBeUndefined();
+    expect(getUpdateRun(run.runId)).toEqual(finished);
+  });
+});
+
 describe("update status abandoned-run reporting", () => {
   it.each([true, false])(
     "qualifies historical recovery advice using the recorded port (responding=%s)",

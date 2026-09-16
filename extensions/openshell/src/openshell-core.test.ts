@@ -1370,6 +1370,10 @@ describe("openshell fs bridges", () => {
       if (!bridge) {
         throw new Error("Expected an OpenShell filesystem bridge");
       }
+      expect(bridge.pathMappings).toContainEqual({
+        hostRoot: path.resolve(workspaceDir),
+        containerRoot: "/sandbox",
+      });
       expect(bridge.resolvePath({ filePath: "owner.txt" })).toEqual({
         ...(mode === "mirror" ? { hostPath: path.join(workspaceDir, "owner.txt") } : {}),
         relativePath: "owner.txt",
@@ -2081,7 +2085,7 @@ describe("openshell fs bridges", () => {
     await using agentWorkspace = await createOpenShellTestWorkspace("agent");
     const agentWorkspaceDir = agentWorkspace.dir;
     await fs.writeFile(path.join(agentWorkspaceDir, "note.txt"), "agent", "utf8");
-    const backend = createMirrorBackendMock();
+    const backend = { ...createMirrorBackendMock(), remoteAgentWorkspaceDir: "/native-agent-root" };
     const sandbox = createSandboxTestContext({
       overrides: {
         backendId: "openshell",
@@ -2094,10 +2098,16 @@ describe("openshell fs bridges", () => {
 
     const { createOpenShellFsBridge } = await import("./fs-bridge.js");
     const bridge = createOpenShellFsBridge({ sandbox, backend });
-    const resolved = bridge.resolvePath({ filePath: "/agent/note.txt" });
+    expect(bridge.pathMappings).toContainEqual({
+      hostRoot: path.resolve(agentWorkspaceDir),
+      containerRoot: "/native-agent-root",
+    });
+    const resolved = bridge.resolvePath({ filePath: "/native-agent-root/note.txt" });
     expect(resolved.hostPath).toBe(path.join(agentWorkspaceDir, "note.txt"));
-    expect(await bridge.readFile({ filePath: "/agent/note.txt" })).toEqual(Buffer.from("agent"));
-    await expect(bridge.readDirectory({ filePath: "/agent" })).resolves.toEqual([
+    expect(await bridge.readFile({ filePath: "/native-agent-root/note.txt" })).toEqual(
+      Buffer.from("agent"),
+    );
+    await expect(bridge.readDirectory({ filePath: "/native-agent-root" })).resolves.toEqual([
       { name: "note.txt", isDirectory: false },
     ]);
   });

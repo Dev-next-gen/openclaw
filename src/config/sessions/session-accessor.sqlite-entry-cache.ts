@@ -13,6 +13,11 @@ import {
   readExactSessionEntryRow,
   validateDeliveryCanonicalSessionEntry,
 } from "./session-accessor.sqlite-entry-read.js";
+import type { SqliteSessionEntryRevision } from "./session-accessor.sqlite-entry-revision.js";
+import {
+  advanceSessionEntryMaintenanceAgeFact,
+  hasSessionEntryMaintenanceAgeFact,
+} from "./session-accessor.sqlite-maintenance-age.js";
 import {
   hasSqliteSessionOwnerColumns,
   readSqliteSessionOwner,
@@ -37,15 +42,10 @@ export type SessionEntryCacheSnapshot = {
 };
 
 type SqliteSessionEntryCache = SessionEntryCacheSnapshot & {
-  validityToken: SqliteSessionEntryCacheValidityToken;
+  validityToken: SqliteSessionEntryRevision;
   /** Present until a listing expands an exact-read snapshot to the complete store. */
   selectedKeys?: Set<string>;
   activeReads?: number;
-};
-
-type SqliteSessionEntryCacheValidityToken = {
-  dataVersion: number;
-  sessionNodesGeneration: number;
 };
 
 type SqliteSessionEntryCacheWriteGeneration = {
@@ -109,6 +109,13 @@ function ensureSessionNodesGenerationTracker(database: DatabaseSync): void {
   // A rolled-back schema change can reuse its version on retry after SQLite removes the triggers.
   if (!database.isTransaction) {
     sessionNodesGenerationTrackerSchemaVersions.set(database, schemaRow.schema_version);
+  } else {
+    const version = schemaRow.schema_version;
+    stageSqliteTransactionState(database, {
+      stage: () => sessionNodesGenerationTrackerSchemaVersions.set(database, version),
+      rollback: () => sessionNodesGenerationTrackerSchemaVersions.delete(database),
+      commit: () => {},
+    });
   }
 }
 
@@ -123,7 +130,9 @@ function readSessionNodesGeneration(database: DatabaseSync): number {
   return row.generation;
 }
 
-function readCacheValidityToken(database: DatabaseSync): SqliteSessionEntryCacheValidityToken {
+export function readSessionEntryCacheValidityToken(
+  database: DatabaseSync,
+): SqliteSessionEntryRevision {
   return {
     dataVersion: readSqliteDataVersion(database),
     sessionNodesGeneration: readSessionNodesGeneration(database),
@@ -131,8 +140,8 @@ function readCacheValidityToken(database: DatabaseSync): SqliteSessionEntryCache
 }
 
 function cacheValidityTokensEqual(
-  left: SqliteSessionEntryCacheValidityToken,
-  right: SqliteSessionEntryCacheValidityToken,
+  left: SqliteSessionEntryRevision,
+  right: SqliteSessionEntryRevision,
 ): boolean {
   return (
     left.dataVersion === right.dataVersion &&
@@ -155,7 +164,7 @@ export function readCachedExactSessionEntries(
   }
   const validityToken = cached.validityToken;
   try {
-    if (!cacheValidityTokensEqual(validityToken, readCacheValidityToken(database.db))) {
+    if (!cacheValidityTokensEqual(validityToken, readSessionEntryCacheValidityToken(database.db))) {
       return undefined;
     }
     // List snapshots do not retain these columns; matching generations alone
@@ -189,7 +198,7 @@ export function readCachedExactSessionEntries(
       entries.set(sessionKey, validateDeliveryCanonicalSessionEntry(key, structuredClone(entry)));
     }
     return sessionEntryCaches.get(database.db) === cached &&
-      cacheValidityTokensEqual(validityToken, readCacheValidityToken(database.db))
+      cacheValidityTokensEqual(validityToken, readSessionEntryCacheValidityToken(database.db))
       ? entries
       : undefined;
   } catch {
@@ -209,7 +218,7 @@ export function captureSessionEntryCacheRead(
   release: () => void;
 } {
   assertCanonicalSqliteSessionKeysCurrent(database);
-  const validityToken = readCacheValidityToken(database.db);
+  const validityToken = readSessionEntryCacheValidityToken(database.db);
   let cached = sessionEntryCaches.get(database.db);
   if (!cached || !cacheValidityTokensEqual(cached.validityToken, validityToken)) {
     cached = { entries: new Map(), keys: [], selectedKeys: new Set(), validityToken };
@@ -237,7 +246,10 @@ export function captureSessionEntryCacheRead(
     isObservedCurrent,
     isCurrent: () =>
       isObservedCurrent() &&
-      cacheValidityTokensEqual(owner.validityToken, readCacheValidityToken(database.db)),
+      cacheValidityTokensEqual(
+        owner.validityToken,
+        readSessionEntryCacheValidityToken(database.db),
+      ),
     release: () => {
       if (released) {
         return;
@@ -259,14 +271,19 @@ export function captureSessionEntryCacheRead(
 export function trackSessionEntryCacheWrite(
   database: OpenClawAgentDatabase,
   write: () => void,
+  entryUpdate?: { sessionKey: string; entry: SessionEntry; previousEntry?: SessionEntry },
 ): SqliteSessionEntryCacheWriteGeneration | undefined {
-  const before = sessionEntryCaches.has(database.db)
-    ? readSessionNodesGeneration(database.db)
-    : undefined;
+  const before =
+    sessionEntryCaches.has(database.db) || hasSessionEntryMaintenanceAgeFact(database.db)
+      ? readSessionNodesGeneration(database.db)
+      : undefined;
   write();
-  return before === undefined
-    ? undefined
-    : { before, after: readSessionNodesGeneration(database.db) };
+  if (before === undefined) {
+    return undefined;
+  }
+  const generation = { before, after: readSessionNodesGeneration(database.db) };
+  advanceSessionEntryMaintenanceAgeFact(database.db, generation, entryUpdate);
+  return generation;
 }
 
 function loadSessionEntrySnapshot(
@@ -337,12 +354,14 @@ export function readSessionEntryCache(
       options.fullEntryKeys ? new Set(options.fullEntryKeys) : undefined,
     );
   }
-  const validityToken = readCacheValidityToken(database.db);
+  const validityToken = readSessionEntryCacheValidityToken(database.db);
   const cached = sessionEntryCaches.get(database.db);
   if (cached && cacheValidityTokensEqual(cached.validityToken, validityToken)) {
     if (cached.selectedKeys) {
       const loaded = loadSessionEntrySnapshot(database, options.projection, prepared);
-      if (!cacheValidityTokensEqual(validityToken, readCacheValidityToken(database.db))) {
+      if (
+        !cacheValidityTokensEqual(validityToken, readSessionEntryCacheValidityToken(database.db))
+      ) {
         const next = { ...loaded, validityToken };
         sessionEntryCaches.set(database.db, next);
         return next;
