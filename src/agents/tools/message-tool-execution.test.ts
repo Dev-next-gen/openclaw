@@ -6,6 +6,11 @@ import {
 } from "../../../packages/gateway-protocol/src/gateway-error-details.js";
 import { withGroupThreadTurn } from "../../auto-reply/group-thread-context.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import {
+  mintMessageActionTurnCapability,
+  revokeMessageActionTurnCapability,
+} from "../../gateway/message-action-turn-capability.js";
 import type {
   MessageActionInput,
   MessageActionResult,
@@ -97,6 +102,62 @@ describe("message tool queued gateway delivery", () => {
       tool.execute("ordinary-failure", { action: "send", message: "hello" }),
     ).rejects.toBe(error);
   });
+});
+
+it("rejects a missing scheduled account before resolving another provider's credentials", async () => {
+  const cfg: OpenClawConfig = {
+    channels: {
+      discord: { accounts: { creator: { token: "synthetic-creator-token" } } },
+      slack: { botToken: "synthetic-root-slack-token" },
+    },
+  };
+  const plugin = createChannelTestPluginBase({
+    id: "slack",
+    config: { listAccountIds: () => ["default"], resolveAccount: () => ({ enabled: true }) },
+  });
+  setActivePluginRegistry(createTestRegistry([{ pluginId: "slack", source: "test", plugin }]));
+  const identity = {
+    agentId: "main",
+    runId: "scheduled-account-selection",
+    sessionKey: "agent:main:cron:account-selection",
+  };
+  const token = mintMessageActionTurnCapability({
+    ...identity,
+    scheduled: {
+      policy: {
+        version: 1,
+        mode: "account",
+        ownerSessionKey: "agent:main:local-creator",
+        ownerAccountId: "creator",
+        ownerOrigin: { kind: "local" },
+      },
+      assertCurrent: () => {},
+    },
+  });
+  const resolveSecrets = vi.fn(async () => {
+    throw new Error("Credential preparation must not run for a missing account");
+  });
+  try {
+    const tool = createMessageTool({
+      config: cfg,
+      agentId: identity.agentId,
+      runId: identity.runId,
+      agentSessionKey: identity.sessionKey,
+      agentAccountId: "creator",
+      currentChannelProvider: "discord",
+      messageActionTurnCapability: token,
+      preparedMessageToolCatalog: EMPTY_CATALOG,
+      admitScheduledInvocation: () => cfg,
+      resolveCommandSecretRefsViaGateway: resolveSecrets,
+    });
+    await expect(
+      tool.execute("read", { action: "read", channel: "slack", target: "channel:C123" }),
+    ).rejects.toThrow('Unknown account "creator" for channel slack');
+    expect(resolveSecrets).not.toHaveBeenCalled();
+  } finally {
+    revokeMessageActionTurnCapability(token);
+    resetPluginRuntimeStateForTest();
+  }
 });
 
 describe("message tool prompt-cache contract", () => {

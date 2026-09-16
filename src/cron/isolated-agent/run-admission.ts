@@ -55,18 +55,20 @@ export function prepareCronPromptRunAdmission(params: {
       )
     : basePreparedRunAdmission;
   const scheduledMessageAuthority =
-    scheduledToolPolicy?.mode === "trusted" && isRuntimeToolAllowed("message", params.toolsAllow)
+    scheduledToolPolicy && isRuntimeToolAllowed("message", params.toolsAllow)
       ? captureCronJobMessageActionAuthority({ jobId: params.jobId, operationalRunInstance })
       : undefined;
   // This opaque token remains unusable until this exact operational instance
   // is admitted by the live occurrence. Both runners redeem the same host grant.
   const messageActionTurnCapability =
-    scheduledMessageAuthority && scheduledToolPolicy?.mode === "trusted"
+    scheduledMessageAuthority && scheduledToolPolicy
       ? mintMessageActionTurnCapability({
           agentId: params.agentId,
           runId,
           sessionKey: params.sessionKey,
           sessionId: params.runId,
+          requesterAccountId:
+            scheduledToolPolicy.mode === "account" ? scheduledToolPolicy.ownerAccountId : undefined,
           scheduled: {
             policy: scheduledToolPolicy,
             assertCurrent: scheduledMessageAuthority,

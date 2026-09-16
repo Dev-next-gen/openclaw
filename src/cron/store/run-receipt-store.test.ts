@@ -31,7 +31,7 @@ import {
 import { proposeCronRunRecovery, recoverCronRunProposal } from "../service/run-recovery.js";
 import { createCronServiceState } from "../service/state.js";
 import { loadCronStore, saveCronStore } from "../store.js";
-import type { CronJob } from "../types.js";
+import type { CronJob, CronStoredJob, CronToolsAllowProvenance } from "../types.js";
 import { cronStoreKey } from "./key.js";
 import {
   assertCronRunReceiptCurrent,
@@ -122,19 +122,41 @@ function makeForeignOwner(handle: CronRunReceiptHandle) {
 
 describe("cron run receipt store", () => {
   it.each([
-    { writer: "service", enabled: true },
-    { writer: "service", enabled: false },
-    { writer: "canonical store", enabled: true },
+    { writer: "service", enabled: true, change: "tools" },
+    { writer: "service", enabled: false, change: "tools" },
+    { writer: "canonical store", enabled: true, change: "tools" },
+    { writer: "service", enabled: true, change: "origin" },
+    { writer: "canonical store", enabled: true, change: "origin" },
   ])(
-    "retires message access after $writer permission changes from enabled=$enabled without retiring its receipt",
-    async ({ writer, enabled }) => {
+    "retires message access after $writer $change changes from enabled=$enabled without retiring its receipt",
+    async ({ writer, enabled, change }) => {
       const { storePath } = await makeStorePath();
-      const job: CronJob = {
+      const job: CronStoredJob = {
         ...makeJob("message-permission-change"),
         enabled,
         payload: { kind: "agentTurn", message: "read updates", toolsAllow: ["message", "exec"] },
         scheduledToolPolicy: { version: 1, mode: "trusted" },
       };
+      const provenance: CronToolsAllowProvenance = {
+        version: 1,
+        source: "final-executable-surface",
+        callerOrigin: { kind: "external", channel: "discord" },
+      };
+      if (change === "origin") {
+        const owner = {
+          agentId: "alpha",
+          sessionKey: "agent:alpha:discord:channel:creator",
+          accountId: "creator",
+        };
+        job.owner = owner;
+        job.scheduledToolPolicy = {
+          version: 1,
+          mode: "account",
+          ownerSessionKey: owner.sessionKey,
+          ownerAccountId: owner.accountId,
+        };
+        job.toolsAllowProvenance = provenance;
+      }
       await saveCronStore(storePath, { version: 1, jobs: [job] });
       const receipt = claim(storePath, job, Date.now());
       const state = createCronServiceState({
@@ -168,10 +190,33 @@ describe("cron run receipt store", () => {
         await update(state, job.id, {
           name: "renamed",
           delivery: { mode: "none" },
-          payload: { kind: "agentTurn", toolsAllow: ["message"] },
+          ...(change === "tools"
+            ? { payload: { kind: "agentTurn" as const, toolsAllow: ["message"] } }
+            : {}),
         });
         expect(assertCurrent).not.toThrow();
-        if (writer === "service") {
+        if (change === "origin") {
+          for (const channel of ["slack", "discord"]) {
+            const toolsAllowProvenance: CronToolsAllowProvenance = {
+              ...provenance,
+              callerOrigin: { kind: "external", channel },
+            };
+            if (writer === "service") {
+              await update(
+                state,
+                job.id,
+                { payload: { kind: "agentTurn", toolsAllow: ["message", "exec"] } },
+                { toolsAllowProvenance },
+              );
+            } else {
+              await saveCronStore(storePath, {
+                version: 1,
+                jobs: [{ ...job, toolsAllowProvenance }],
+              });
+              expect(assertCurrent).toThrow();
+            }
+          }
+        } else if (writer === "service") {
           await update(state, job.id, { payload: { kind: "agentTurn", toolsAllow: ["read"] } });
           await update(state, job.id, { payload: { kind: "agentTurn", toolsAllow: ["message"] } });
         } else {

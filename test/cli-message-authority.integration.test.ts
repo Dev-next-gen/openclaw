@@ -809,7 +809,7 @@ describe("CLI message authority integration", () => {
           ...identity,
           target: namedTarget ? `#${directoryChannelName}` : channelEdit.target,
         }),
-        /requires an operator-created job/,
+        /Account jobs cannot inherit operator administration/,
       );
       if (namedTarget) {
         expect(requests).toEqual([]);
