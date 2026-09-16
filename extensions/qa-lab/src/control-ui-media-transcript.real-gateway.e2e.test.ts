@@ -136,16 +136,19 @@ suite.define(() => {
     const omittedSessionKey = "agent:qa:omitted-image-history";
     const retainedSessionKey = "agent:qa:retained-image-history";
     const retainedImageUrl = "https://example.invalid/retained-history-image.png";
-    await seed(omittedSessionKey, "omitted-image-history", [
-      {
-        type: "image",
-        mimeType: "image/png",
-        data: Buffer.from("omitted inline image").toString("base64"),
-      },
-    ]);
-    await seed(retainedSessionKey, "retained-image-history", [
-      { type: "image", mimeType: "image/png", source: { type: "url", url: retainedImageUrl } },
-    ]);
+    // Startup admits the fixture rows into the child Gateway's resident projection.
+    await gateway.gateway.restartAfterStateMutation(async () => {
+      await seed(omittedSessionKey, "omitted-image-history", [
+        {
+          type: "image",
+          mimeType: "image/png",
+          data: Buffer.from("omitted inline image").toString("base64"),
+        },
+      ]);
+      await seed(retainedSessionKey, "retained-image-history", [
+        { type: "image", mimeType: "image/png", source: { type: "url", url: retainedImageUrl } },
+      ]);
+    });
     try {
       const omittedHistory = await gateway.gateway.call("chat.history", {
         sessionKey: omittedSessionKey,

@@ -642,6 +642,8 @@ export async function directSessionReq<TPayload = unknown>(
   directContexts.set(contextKey, context);
   if (
     [
+      "chat.startup",
+      "chat.history",
       "sessions.list",
       "sessions.describe",
       "sessions.resolve",
