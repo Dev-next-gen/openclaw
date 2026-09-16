@@ -149,7 +149,9 @@ describe("published runtime choice", () => {
       status: "ready",
       runtime: { kind: "set", runtime: "native-fixture" },
     });
-    if (result.status !== "ready") throw new Error("Expected native selection");
+    if (result.status !== "ready") {
+      throw new Error("Expected native selection");
+    }
     current = false;
     expect(result.validateRuntimeSelection?.()).toContain("not available");
     expect(
@@ -243,7 +245,7 @@ describe("published runtime choice", () => {
       },
     ];
     const registry = createEmptyPluginRegistry();
-    for (const entry of entries)
+    for (const entry of entries) {
       registry.agentHarnesses.push({
         pluginId: entry.nativeRuntime,
         source: "test",
@@ -255,12 +257,13 @@ describe("published runtime choice", () => {
           runAttempt: vi.fn(),
         },
       });
+    }
     const owner = publish(() => true, cfg, {
       pluginRegistry: registry,
       modelCatalog: { entries, routeVariants: entries },
     });
     setPreparedModelRuntimeAuthStore(owner, { version: 1, profiles: {} });
-    for (const entry of entries)
+    for (const entry of entries) {
       expect(
         await prepareModelSelectionRuntime({
           cfg,
@@ -270,6 +273,7 @@ describe("published runtime choice", () => {
           catalog: entries,
         }),
       ).toMatchObject({ status: "ready", runtime: { kind: "set", runtime: entry.nativeRuntime } });
+    }
   });
 
   it("selects the published native owner without an explicit runtime and rejects stale publication", async () => {

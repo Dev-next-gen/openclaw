@@ -432,7 +432,7 @@ vi.mock("../../agents/prepared-model-catalog.js", async () => {
     { provider: "localai", id: "ultra-chat", name: "Ultra Chat" },
   ];
   const loadModelCatalog = vi.fn(async () => entries);
-  const catalog = {
+  const catalogMocks = {
     readPreparedModelCatalog: loadModelCatalog,
     loadProviderScopedThinkingCatalog: loadModelCatalog,
     loadPreparedModelCatalogOwnerSnapshot: vi.fn(() => {
@@ -503,10 +503,10 @@ vi.mock("../../agents/prepared-model-catalog.js", async () => {
     },
   };
   return {
-    ...catalog,
+    ...catalogMocks,
     loadPublishedPreparedModelCatalogOwnerSnapshot: async (
-      params: Parameters<typeof catalog.getPublishedPreparedModelCatalogOwnerSnapshot>[0],
-    ) => catalog.getPublishedPreparedModelCatalogOwnerSnapshot(params),
+      params: Parameters<typeof catalogMocks.getPublishedPreparedModelCatalogOwnerSnapshot>[0],
+    ) => catalogMocks.getPublishedPreparedModelCatalogOwnerSnapshot(params),
   };
 });
 
