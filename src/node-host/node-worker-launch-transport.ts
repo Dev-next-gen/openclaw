@@ -83,15 +83,14 @@ export async function prepareNodeWorkerLaunchTransport(
       },
     } as const;
     if (supportsNodeWorkerProcessOwner()) {
-      return {
-        kind: "started",
-        adapter: await createServiceChildRelayAdapter({
-          ...workerOptions,
-          command: process.execPath,
-          args,
-          oomScoreWrapperSelected: false,
-        }),
-      };
+      const { adapter, ready } = await createServiceChildRelayAdapter({
+        ...workerOptions,
+        command: process.execPath,
+        args,
+        oomScoreWrapperSelected: false,
+      });
+      await ready;
+      return { kind: "started", adapter };
     }
     const { adapter, ready } = await createChildAdapter({
       ...workerOptions,

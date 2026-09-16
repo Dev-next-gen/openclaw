@@ -18,7 +18,7 @@ it
     const home = tempDirs.make("openclaw-owned-worker-gate-");
     const marker = path.join(home, "started.txt");
     const onWorkerMessage = vi.fn<(message: unknown) => void>();
-    let adapter: Awaited<ReturnType<typeof createServiceChildRelayAdapter>> | undefined;
+    let adapter: Awaited<ReturnType<typeof createServiceChildRelayAdapter>>["adapter"] | undefined;
     let cleanup: Promise<void> | undefined;
     const expectedOutput =
       action === "delayed-output" ? "x".repeat(256 * 1024) : "owned worker finished\n";
@@ -42,7 +42,7 @@ it
             process.send({ phase: "waiting", pid: process.pid, parentPid: process.ppid });
           `,
       ];
-      adapter = await createServiceChildRelayAdapter({
+      const startup = await createServiceChildRelayAdapter({
         command: action === "stdin-closed" ? "/bin/sh" : process.execPath,
         // Redirect the inherited pipe before Node initializes its standard stream handles.
         args:
@@ -65,6 +65,8 @@ it
           void pending.catch(() => undefined);
         },
       });
+      adapter = startup.adapter;
+      await startup.ready;
       const collectOutput = (chunk: string) => {
         output += chunk;
       };
