@@ -324,7 +324,7 @@ describe("gateway session lookups", () => {
     });
   });
 
-  it("preserves the worker target payload while narrowing its identity scan", async () => {
+  it("preserves the worker target payload without decoding unrelated saved prompts", async () => {
     await withOpenClawTestState({ label: "lookup-worker-projection" }, async () => {
       setRuntimeConfigSnapshot(cfg);
       seedStore();
@@ -336,12 +336,11 @@ describe("gateway session lookups", () => {
       expect(observed.result?.agentId).toBe("main");
       expect(observed.result?.sessionId).toBe("target-id");
 
-      // The selected entry is re-read through its own still-full loader, so the
-      // narrowed store default must not strip the payload this caller returns.
+      // The exact selected-entry read must retain the full payload this caller returns.
       expect(observed.result?.sessionEntry.skillsSnapshot?.prompt).toBe(TARGET_PROMPT);
 
-      // The separate selected-store loader still reads full entries.
-      expect(observed.decodes).toBe(SIBLING_ROWS);
+      // Metadata discovery and the exact payload read must never decode sibling prompts.
+      expect(observed.decodes).toBe(0);
 
       expect(resolveWorkerSessionTarget(cfg, "absent-session-id")).toBeUndefined();
     });
