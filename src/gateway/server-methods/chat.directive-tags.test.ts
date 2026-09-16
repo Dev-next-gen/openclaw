@@ -3385,31 +3385,35 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
   });
 
   it("returns the rendered history branch leaf in session info", async () => {
-    await createSqliteTranscriptFixture("openclaw-chat-history-active-leaf-");
-    await appendTranscriptMessage(transcriptScope(), {
-      eventId: "history-active-leaf",
-      message: { role: "user", content: "render this branch" },
-      now: 1,
-      parentId: null,
-    });
-    const respond = vi.fn();
-    const context = createChatContext();
-    await initializeSessionReadContext(context);
+    await withSqliteTranscriptFixtureState("openclaw-chat-history-active-leaf-", async () => {
+      mockState.config = { session: { store: mockState.storePath } };
+      await appendTranscriptMessage(transcriptScope(), {
+        eventId: "history-active-leaf",
+        message: { role: "user", content: "render this branch" },
+        now: 1,
+        parentId: null,
+      });
+      const respond = vi.fn();
+      const context = createChatContext();
+      await initializeSessionReadContext(context);
 
-    await expectDefined(
-      chatHandlers["chat.history"],
-      'chatHandlers["chat.history"] test invariant',
-    )({
-      params: { sessionKey: "main" },
-      respond: respond as never,
-      req: {} as never,
-      client: null,
-      isWebchatConnect: () => false,
-      context,
-    });
+      await expectDefined(
+        chatHandlers["chat.history"],
+        'chatHandlers["chat.history"] test invariant',
+      )({
+        params: { sessionKey: "main" },
+        respond: respond as never,
+        req: {} as never,
+        client: null,
+        isWebchatConnect: () => false,
+        context,
+      });
 
-    expect(lastRespondCall(respond)?.[1]).toMatchObject({
-      sessionInfo: { activeLeafEntryId: "history-active-leaf" },
+      const result = lastRespondCall(respond);
+      expect(result?.[0], JSON.stringify(result?.[2])).toBe(true);
+      expect(result?.[1]).toMatchObject({
+        sessionInfo: { activeLeafEntryId: "history-active-leaf" },
+      });
     });
   });
 

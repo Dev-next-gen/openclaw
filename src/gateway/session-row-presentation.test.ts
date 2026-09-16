@@ -20,6 +20,7 @@ import { rolePolicyConfig, sharingPolicyClient } from "./session-sharing.test-ut
 afterEach(() => vi.restoreAllMocks());
 
 it("presents current recipient roles without SQLite while rejecting source overrides and excluded children", async () => {
+  using _ = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const owner = ensureProfileForEmail("owner@presentation.test");
     const member = ensureProfileForEmail("member@presentation.test");

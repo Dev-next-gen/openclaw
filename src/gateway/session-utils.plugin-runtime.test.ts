@@ -230,9 +230,12 @@ describe("gateway session list plugin runtime normalization", () => {
         loadPluginManifestRegistryCoreMock.mockClear();
         const lifecycle = projection.snapshot({ key: sessionKey, agentId: "main" });
         expect(lifecycle.row?.model).toBe("custom-modern-model");
-        expect(projection.snapshot({ key: sessionKey, agentId: "main" }).row).toEqual(
-          lifecycle.row,
-        );
+        expect(
+          projection.snapshot(
+            { key: sessionKey, agentId: "main" },
+            { now: lifecycle.row?.snapshotAt },
+          ).row,
+        ).toEqual(lifecycle.row);
         expect(normalizeProviderModelIdWithPluginMock).not.toHaveBeenCalled();
         expect(loadPluginManifestRegistryCoreMock).not.toHaveBeenCalled();
       } finally {

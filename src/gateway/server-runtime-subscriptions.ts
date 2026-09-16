@@ -62,7 +62,6 @@ import type { TerminalSessionManager } from "./terminal/session-manager.js";
 
 function dispatchEventHandler<TEvent>(params: {
   loadHandler: () => Promise<(event: TEvent) => unknown>;
-  getSessionRowProjection?: () => SessionRowProjection | undefined;
   event: TEvent;
   log: SubsystemLogger;
   failureMessage: string;
@@ -71,15 +70,7 @@ function dispatchEventHandler<TEvent>(params: {
 }) {
   return params
     .loadHandler()
-    .then(async (handler) => {
-      const projection = params.getSessionRowProjection?.();
-      if (projection) {
-        do {
-          await projection.ensureMaterialized();
-        } while (projection.needsMaterialization);
-      }
-      return handler(params.event);
-    })
+    .then((handler) => handler(params.event))
     .then(() => undefined)
     .catch((error: unknown) => {
       params.log.warn(params.failureMessage, { ...params.context, error });
@@ -212,7 +203,6 @@ export function startGatewayEventSubscriptions(params: {
       : undefined;
   const sessionLifecyclePersistence = createSessionLifecyclePersistenceOwner();
   const agentEventDispatches = new Set<Promise<void>>();
-  const agentEventLanes = new Map<string, Promise<void>>();
   const eventRowOwners = new WeakMap<
     AgentEventRuntimePayload,
     { projection: SessionRowProjection; record: ReturnType<SessionRowProjection["capture"]> }
@@ -321,6 +311,13 @@ export function startGatewayEventSubscriptions(params: {
             sessionMessageSubscribers: params.sessionMessageSubscribers,
             getSessionRowProjection: params.getSessionRowProjection,
             loadGatewaySessionLifecycleSnapshotForEvent: (key, options) => {
+              // Tool progress must not wait for optional row enrichment before reply capture.
+              if (
+                !options?.ownerEvent &&
+                params.getSessionRowProjection?.()?.needsMaterialization
+              ) {
+                return { row: null };
+              }
               const owner = options?.ownerEvent
                 ? eventRowOwners.get(options.ownerEvent)
                 : undefined;
@@ -587,12 +584,12 @@ export function startGatewayEventSubscriptions(params: {
     }
     const dispatchPreparation = terminalPreparation;
     const dispatch = dispatchEventHandler<AgentEventRuntimePayload>({
-      getSessionRowProjection: params.getSessionRowProjection,
-      loadHandler: async () => {
-        await agentEventLanes.get(evt.runId);
-        await dispatchPreparation;
-        return getAgentEventHandler();
-      },
+      loadHandler: dispatchPreparation
+        ? async () => {
+            await dispatchPreparation;
+            return getAgentEventHandler();
+          }
+        : getAgentEventHandler,
       event: evt,
       log: params.log,
       failureMessage: "Agent event dispatch failed",
@@ -600,13 +597,7 @@ export function startGatewayEventSubscriptions(params: {
       onFailure: () => failedDispatchCleanup?.(),
     });
     agentEventDispatches.add(dispatch);
-    agentEventLanes.set(evt.runId, dispatch);
-    void dispatch.then(() => {
-      agentEventDispatches.delete(dispatch);
-      if (agentEventLanes.get(evt.runId) === dispatch) {
-        agentEventLanes.delete(evt.runId);
-      }
-    });
+    void dispatch.then(() => agentEventDispatches.delete(dispatch));
   });
   const agentUnsub = async () => {
     unsubscribeAgentEvents();

@@ -33,6 +33,7 @@ import { createLifecycleEventBroadcastHandler } from "./server-session-events.js
 import { GatewayClientRegistry } from "./server/client-registry.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
 import { createSessionObserverAudience } from "./session-observer-audience.js";
+import { bindSessionRowProjection } from "./session-row-projection-access.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
 import {
   canReceiveSessionEvent as canReceiveSessionEventForClient,
@@ -294,11 +295,11 @@ describe("board and progress event session ownership", () => {
           broadcast,
           broadcastToConnIds,
           getRuntimeConfig: () => cfg,
-          getSessionRowProjection: connection.getSessionRowProjection,
           getSessionEventSubscriberConnIds: () => new Set(peers.map(({ client }) => client.connId)),
           chatAbortControllers: new Map(),
           resolveGatewayContext: (): GatewayRequestContext => context,
         } as unknown as GatewayRequestContext;
+        bindSessionRowProjection(context, connection.getSessionRowProjection);
         const invoke = async (method: string, params: Record<string, unknown>) => {
           const respond = vi.fn<RespondFn>();
           await handlers[method]!({

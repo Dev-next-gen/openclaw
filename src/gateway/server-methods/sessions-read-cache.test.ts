@@ -51,6 +51,7 @@ import type { GatewayRequestContext } from "./types.js";
 const { emitSessionsChanged } = await import("./session-change-event.js");
 
 beforeEach(() => {
+  vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
   resetAgentEventsForTest();
 });
 
@@ -376,7 +377,9 @@ describe("resident sessions.list", () => {
 
       const first = await listSessions({ client, context, request });
       clock.mockReturnValue(60_401);
-      expect((await listSessions({ client, context, request })).sessions).toEqual(first.sessions);
+      expect((await listSessions({ client, context, request })).sessions).toEqual(
+        first.sessions.map((row) => Object.assign({}, row, { snapshotAt: 60_401 })),
+      );
 
       // Terminal persistence must update resident rows after the run has ended.
       await persistGatewaySessionLifecycleEvent({
@@ -528,7 +531,9 @@ describe("resident sessions.list", () => {
       ).toMatchObject({ expiresAt: 1_200 });
 
       clock.mockReturnValue(1_099);
-      expect((await listSessions({ client, context, request })).sessions).toEqual(first.sessions);
+      expect((await listSessions({ client, context, request })).sessions).toEqual(
+        first.sessions.map((row) => Object.assign({}, row, { snapshotAt: 1_099 })),
+      );
 
       clock.mockReturnValue(1_100);
       const expired = await Promise.all(
@@ -546,7 +551,7 @@ describe("resident sessions.list", () => {
 
       clock.mockReturnValue(1_199);
       expect((await listSessions({ client, context, request })).sessions).toEqual(
-        expired[0]?.sessions,
+        expired[0]?.sessions.map((row) => Object.assign({}, row, { snapshotAt: 1_199 })),
       );
 
       clock.mockReturnValue(1_200);
@@ -832,12 +837,13 @@ describe("resident sessions.list", () => {
     "selects the current visible page after a readiness yield (%j)",
     async (filter: SessionsListParams) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
-        const config = await seedSessions();
+        const { clock, config } = await seedSessionsWithActivityTimes();
         for (const [name, updatedAt] of [
           ["third", 500],
           ["second", 600],
           ["first", 700],
         ] as const) {
+          clock.mockReturnValue(updatedAt);
           await upsertSessionEntryCore(
             { agentId: "main", sessionKey: `agent:main:page-${name}` },
             {
@@ -879,6 +885,7 @@ describe("resident sessions.list", () => {
           request: { ...filter, agentId: "main", archived: "all", limit: 1 },
         });
         await vi.waitFor(() => expect(readiness).toHaveBeenCalledOnce());
+        clock.mockReturnValue(800);
         await upsertSessionEntryCore(
           { agentId: "main", sessionKey: "agent:main:page-first" },
           { visibility: "draft", updatedAt: 800 },

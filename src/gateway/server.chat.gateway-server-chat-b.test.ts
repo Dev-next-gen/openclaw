@@ -1906,6 +1906,12 @@ describe("gateway server chat", () => {
             fixture.rawCatalog === "slow" ? slowCatalog.promise : Promise.resolve(rawSnapshot),
           ),
         getRuntimeConfig: () => config,
+        readPreparedGatewayModelCatalog: async () =>
+          fixture.preparedEmpty
+            ? { entries: [] }
+            : fixture.preparedReasoning === undefined && !fixture.preparedUnknown
+              ? undefined
+              : { entries: preparedCatalog },
         readChatStartupProjection: async () =>
           fixture.preparedEmpty
             ? {
@@ -2305,6 +2311,7 @@ describe("gateway server chat", () => {
                     ...catalogSnapshot,
                   }),
                 getRuntimeConfig: () => persistedConfig,
+                readPreparedGatewayModelCatalog: async () => catalogSnapshot,
                 readChatStartupProjection: vi.fn(async ({ agentId, sessionEntry }) => {
                   const [neutralProjection, sessionProjection] = await Promise.all([
                     projectAgent(context, agentId),

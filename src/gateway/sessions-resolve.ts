@@ -17,11 +17,7 @@ import {
 import { listAgentIds } from "../agents/agent-scope.js";
 import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import {
-  isIncognitoSessionKey,
-  normalizeAgentId,
-  parseAgentSessionKey,
-} from "../routing/session-key.js";
+import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { resolveSessionIdMatchSelection } from "../sessions/session-id-resolution.js";
 import { normalizeSessionKeyPreservingOpaquePeerIds } from "../sessions/session-key-utils.js";
 import { parseSessionLabel } from "../sessions/session-label.js";
@@ -34,7 +30,6 @@ import { authorizeIncognitoSessionTarget } from "./session-sharing-policy.js";
 import { resolveSessionStoreKey } from "./session-store-key.js";
 import { resolveGatewaySessionDisplayName } from "./session-utils-display.js";
 import { filterAndSortSessionEntries, prepareSessionRowSelection } from "./session-utils-list.js";
-import { resolveGatewaySessionStoreTargetWithStore } from "./session-utils-store-lookup.js";
 import { resolveDeletedAgentIdFromSessionKey } from "./session-utils-store.js";
 
 export type SessionsResolveResult =
@@ -234,24 +229,7 @@ export async function resolveSessionKeyFromResolveParams(params: {
     if (authorizeIncognitoSessionTarget({ client, sessionKey: key, target: null })) {
       return noSessionFoundResult({ p, message: `No session found: ${key}` });
     }
-    const privateTarget = isIncognitoSessionKey(key)
-      ? resolveGatewaySessionStoreTargetWithStore({
-          cfg,
-          key,
-          agentId: requestedAgent.agentId,
-          readOnly: true,
-          exactRead: true,
-          projection: "list",
-          clone: false,
-        })
-      : undefined;
-    const target = privateTarget
-      ? {
-          key: privateTarget.canonicalKey,
-          agentId: privateTarget.agentId,
-          entry: privateTarget.store[privateTarget.canonicalKey],
-        }
-      : projection.describe({ agentId: requestedAgent.agentId, key });
+    const target = projection.describe({ agentId: requestedAgent.agentId, key });
     if (target?.entry) {
       const { entry } = target;
       const spawnedBy = typeof p.spawnedBy === "string" && p.spawnedBy.trim().length > 0;

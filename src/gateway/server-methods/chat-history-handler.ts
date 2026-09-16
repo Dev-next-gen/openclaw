@@ -19,7 +19,7 @@ import {
   measureDiagnosticsTimelineSpanSync,
 } from "../../infra/diagnostics-timeline.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { isIncognitoSessionKey, scopeLegacySessionKeyToAgent } from "../../routing/session-key.js";
+import { scopeLegacySessionKeyToAgent } from "../../routing/session-key.js";
 import {
   boundInFlightRunSnapshotForChatHistory,
   resolveInFlightRunSnapshot,
@@ -43,7 +43,6 @@ import {
 } from "../session-sharing.js";
 import { capArrayByJsonBytes } from "../session-transcript-readers.js";
 import { buildGatewaySessionRow } from "../session-utils-row.js";
-import { createGatewaySessionEntryReader } from "../session-utils-store-lookup.js";
 import {
   getSessionDefaults,
   loadGatewaySessionEntryReadOnly,
@@ -459,39 +458,25 @@ export async function handleChatHistoryRequest({
   if (!currentSharing) {
     return;
   }
-  const incognito = entry?.incognito || isIncognitoSessionKey(canonicalKey);
   const sessionInfo = measureDiagnosticsTimelineSpanSync(
     `gateway.${method}.session_info`,
-    () => {
-      // Incognito history keeps its row metadata without retaining the session in the projection.
-      if (entry && incognito) {
-        return buildGatewaySessionRow({
-          cfg,
-          storePath,
-          store: selectedSession.store,
-          key: canonicalKey,
-          entry,
-          agentId: sessionAgentId,
-          modelCatalog: sessionModelCatalog,
-          modelSource: {
-            entry,
-            loadSessionEntry: createGatewaySessionEntryReader(selectedSession),
-          },
-          lightweightListRow: true,
-          skipTranscriptUsageFallback: true,
-        });
-      }
-      return (
-        prepareProjectedSessionPresentation(rowProjection, client).snapshot({
-          key: canonicalKey,
-          agentId: sessionAgentId,
-          storePath: selectedSession.readSource?.path ?? storePath,
-        }).row ?? undefined
-      );
-    },
+    () =>
+      prepareProjectedSessionPresentation(rowProjection, client).snapshot({
+        key: canonicalKey,
+        agentId: sessionAgentId,
+        storePath: selectedSession.readSource?.path ?? storePath,
+      }).row ??
+      (entry
+        ? undefined
+        : buildGatewaySessionRow({
+            ...selectedSession,
+            key: canonicalKey,
+            modelCatalog: sessionModelCatalog,
+            rowContext: rowProjection.state.rowContext,
+          })),
     { config: cfg, phase: method },
   );
-  if (entry && !incognito && !sessionInfo) {
+  if (entry && !sessionInfo) {
     respondChatHistoryUnavailable(
       method,
       respond,

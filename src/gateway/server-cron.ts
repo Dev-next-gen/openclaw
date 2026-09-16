@@ -136,7 +136,7 @@ import { toPluginCronJob } from "./server-cron-plugin-job.js";
 import { reconcileSkillCollectionReviewJobs } from "./server-cron-skill-review-jobs.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import {
-  bumpSessionAutomationVersion,
+  invalidateSessionAutomationIndex,
   claimSessionAutomationEpoch,
   registerSessionAutomationSource,
   unregisterSessionAutomationSource,
@@ -1037,7 +1037,7 @@ export function buildGatewayCronService(params: {
     onEvent: (evt) => {
       // Any job/store change can alter session automation bindings, including
       // in-place enable flips during runs; run/schedule events bump too (cheap).
-      bumpSessionAutomationVersion();
+      invalidateSessionAutomationIndex();
       const jobSnapshot = evt.job ?? cron.getJob(evt.jobId);
       const scopedSessionKey =
         jobSnapshot?.owner?.sessionKey ??

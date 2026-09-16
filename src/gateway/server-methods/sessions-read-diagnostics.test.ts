@@ -35,6 +35,7 @@ let previousDiagnostics: boolean;
 let clock: number;
 let records: Array<{ trace: DiagnosticTraceContext | undefined; fields: Record<string, unknown> }>;
 beforeEach(() => {
+  vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
   previousDiagnostics = areDiagnosticsEnabledForProcess();
   setDiagnosticsEnabledForProcess(true);
   clock = 0;

@@ -1398,7 +1398,7 @@ test("sessions.create keeps incognito rows process-local through list, spawn, re
       "sessions.list",
       {},
     );
-    expect(listed.payload?.sessions).toContainEqual(
+    expect(listed.payload?.sessions).not.toContainEqual(
       expect.objectContaining({ key, incognito: true }),
     );
 

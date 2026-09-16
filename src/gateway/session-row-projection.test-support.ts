@@ -41,7 +41,13 @@ export function createSessionRowProjectionFixture(params: {
   let revision = 0;
   const id = (row: Pick<Row, "agentId" | "key" | "storeTarget">) =>
     `${row.agentId}\0${row.storeTarget.storePath}\0${row.key}`;
-  const describe: SessionRowProjection["describe"] = ({ agentId, key, storePath: path }) => {
+  const describe: SessionRowProjection["describe"] = (
+    { agentId, key, storePath: path },
+    captured,
+  ) => {
+    if (captured && rows.get(id(captured))?.generation !== captured.generation) {
+      return undefined;
+    }
     const canonical = resolveStoredSessionKeyForAgentStore({ cfg, agentId, sessionKey: key });
     const exact = [...rows.values()].find(
       (row) =>
@@ -124,7 +130,23 @@ export function createSessionRowProjectionFixture(params: {
           (!query.storePath || row.storeTarget.storePath === query.storePath),
       ),
     describe,
-    modelFor: (row) => row.fallbackModel,
+    present: (record, options) => {
+      const now = options?.now ?? Date.now();
+      const row = presentSessionRow(record.materialized, {
+        now,
+        subagentRuns: rowContext.subagentRuns.atTime(now),
+        activeModel: record.fallbackModel,
+        excludedChildKeys: options?.excludedChildKeys,
+      });
+      Object.assign(row, record.facts?.present());
+      if (!options?.includeDerivedTitles) {
+        delete row.derivedTitle;
+      }
+      if (!options?.includeLastMessage) {
+        delete row.lastMessagePreview;
+      }
+      return row;
+    },
     ensureMaterialized: () => Promise.resolve(),
     get materializedCount() {
       return revision;
@@ -158,25 +180,11 @@ export function createSessionRowProjectionFixture(params: {
           compareSessionEntryPairs([a.key, a.entry], [b.key, b.entry], query.sortBy),
         );
     },
-    snapshot: (query, presentation?: Parameters<SessionRowProjection["snapshot"]>[1]) => {
-      const options = presentation ?? {};
+    snapshot: (query, options) => {
       const record = describe(query);
-      if (!record) {
-        return { row: null };
-      }
-      const now = options.now ?? Date.now();
-      const row = presentSessionRow(record.materialized, {
-        now,
-        subagentRuns: rowContext.subagentRuns.atTime(now),
-        activeModel: record.fallbackModel,
-      });
-      if (!options.includeDerivedTitles) {
-        delete row.derivedTitle;
-      }
-      if (!options.includeLastMessage) {
-        delete row.lastMessagePreview;
-      }
-      return { row, lifecycleRunId: record.entry.lifecycleRunId };
+      return record
+        ? { row: projection.present(record, options), lifecycleRunId: record.entry.lifecycleRunId }
+        : { row: null };
     },
     dispose: () => rows.clear(),
   };

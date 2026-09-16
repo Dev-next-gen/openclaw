@@ -7,7 +7,6 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import { listAgentIds } from "../agents/agent-scope.js";
 import { type AgentsConfig, getRuntimeConfig as getMockedRuntimeConfig } from "../config/config.js";
 import { loadSessionEntry, updateSessionEntry } from "../config/sessions/session-accessor.js";
-import { disposeOpenClawAgentDatabaseByPath } from "../state/openclaw-agent-db.js";
 import { listOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.test-support.js";
 import { SQLITE_SESSION_WRITER_QUEUES } from "../state/openclaw-agent-write-admission.js";
 import { createGatewayConfigOverrides } from "./test-helpers.config-runtime.js";
@@ -20,6 +19,7 @@ import {
   writeSessionStore,
 } from "./test-helpers.js";
 import { installConnectedControlUiServerSuite } from "./test-with-server.js";
+import { releaseGatewaySessionStoreFixture } from "./test/server-sessions-resources.test-helpers.js";
 
 installGatewayTestHooks({ scope: "suite" });
 let ws: WebSocket;
@@ -74,8 +74,7 @@ describe("Gateway RPC fixture session writes", () => {
       release.resolve();
       await Promise.allSettled([...writes, ...drains]);
       // This custom store lives outside the Gateway HOME and owns its own disposal.
-      disposeOpenClawAgentDatabaseByPath(storePath);
-      testState.sessionStorePath = undefined;
+      await releaseGatewaySessionStoreFixture(dir);
       await fs.rm(dir, { recursive: true, force: true });
     }
     expect(

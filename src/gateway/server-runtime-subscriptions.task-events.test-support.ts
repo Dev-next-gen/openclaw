@@ -3,14 +3,14 @@ import type { CronServiceState } from "../cron/service/state.js";
 import { tryFinishCronTaskRunWithoutHistory } from "../cron/service/task-runs.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import type { SubsystemLogger } from "../logging/subsystem.js";
+import { getTaskRegistryObservers } from "../tasks/task-registry.store.js";
 import {
-  createTaskRecord,
+  createTaskFixture,
+  finishTaskFixture,
   markTaskLostById,
-  markTaskTerminalById,
   recordTaskProgressByRunId,
   reloadTaskRegistryFromStore,
-} from "../tasks/task-registry.js";
-import { getTaskRegistryObservers } from "../tasks/task-registry.store.js";
+} from "../tasks/task-registry.test-support.js";
 import type { TaskEventPayload } from "./server-methods/task-summary.js";
 import type { startGatewayEventSubscriptions } from "./server-runtime-subscriptions.js";
 import {
@@ -39,15 +39,13 @@ export function registerTaskEventSubscriptionTests(
     unsubs = start({ broadcast });
     await waitForFast(() => expect(getTaskRegistryObservers()).not.toBeNull());
 
-    const completed = createTaskRecord({
-      runtime: "subagent",
+    const completed = createTaskFixture("subagent", {
       ...sessionTaskDefaults,
       task: "Completed task",
       status: "succeeded",
       terminalSummary: "x".repeat(10_000),
     });
-    const lost = createTaskRecord({
-      runtime: "cli",
+    const lost = createTaskFixture("cli", {
       ...sessionTaskDefaults,
       task: "Lost task",
       status: "lost",
@@ -73,8 +71,7 @@ export function registerTaskEventSubscriptionTests(
     void unsubs?.taskUnsub();
     await waitForFast(() => expect(getTaskRegistryObservers()).toBeNull());
     broadcast.mockClear();
-    createTaskRecord({
-      runtime: "cli",
+    createTaskFixture("cli", {
       ...sessionTaskDefaults,
       task: "After dispose",
       status: "queued",
@@ -89,8 +86,7 @@ export function registerTaskEventSubscriptionTests(
     vi.useFakeTimers();
     vi.setSystemTime(10_000);
 
-    const primary = createTaskRecord({
-      runtime: "subagent",
+    const primary = createTaskFixture("subagent", {
       ...sessionTaskDefaults,
       childSessionKey: "agent:main:subagent:primary",
       runId: "run-throttle-primary",
@@ -98,8 +94,7 @@ export function registerTaskEventSubscriptionTests(
       status: "running",
       detail: { notes: [["runtime-owned task detail"]] },
     });
-    const secondary = createTaskRecord({
-      runtime: "subagent",
+    const secondary = createTaskFixture("subagent", {
       ...sessionTaskDefaults,
       childSessionKey: "agent:main:subagent:secondary",
       runId: "run-throttle-secondary",
@@ -169,7 +164,7 @@ export function registerTaskEventSubscriptionTests(
       stream: "assistant",
       data: { text: "final activity" },
     });
-    markTaskTerminalById({ taskId: primary.taskId, status: "succeeded", endedAt: Date.now() });
+    finishTaskFixture({ taskId: primary.taskId, status: "succeeded", endedAt: Date.now() });
     const terminalFlush = readTaskUpserts(broadcast).filter(
       ({ task }) => task.id === primary.taskId,
     );
@@ -187,8 +182,7 @@ export function registerTaskEventSubscriptionTests(
     unsubs = start({ broadcast });
     await waitForFast(() => expect(getTaskRegistryObservers()).not.toBeNull());
     const runId = "run-identical-task-summary";
-    const task = createTaskRecord({
-      runtime: "subagent",
+    const task = createTaskFixture("subagent", {
       ...sessionTaskDefaults,
       childSessionKey: "agent:main:subagent:summary",
       runId,
@@ -222,7 +216,7 @@ export function registerTaskEventSubscriptionTests(
       progressSummary: "Working",
     });
     expect(readTaskUpserts(broadcast)).toEqual(beforeRestore);
-    markTaskTerminalById({ taskId: task.taskId, status: "succeeded", endedAt: 300 });
+    finishTaskFixture({ taskId: task.taskId, status: "succeeded", endedAt: 300 });
 
     const taskEvents = readTaskUpserts(broadcast);
     expect(taskEvents.map((event) => event.task.status)).toEqual(["running", "completed"]);
@@ -237,8 +231,7 @@ export function registerTaskEventSubscriptionTests(
       });
       await waitForFast(() => expect(getTaskRegistryObservers()).not.toBeNull());
 
-      const task = createTaskRecord({
-        runtime: "cron",
+      const task = createTaskFixture("cron", {
         requesterSessionKey: "",
         ownerKey: "",
         scopeKind: "system",
@@ -255,7 +248,7 @@ export function registerTaskEventSubscriptionTests(
           markTaskLostById({ taskId: task.taskId, endedAt: 2_000 });
           return;
         }
-        markTaskTerminalById({
+        finishTaskFixture({
           taskId: task.taskId,
           status,
           endedAt: 2_000,
@@ -285,8 +278,7 @@ export function registerTaskEventSubscriptionTests(
 
     const runId = "cron:job-1:run-1";
     const runSessionKey = "agent:main:cron:job-1:run:run-1";
-    const task = createTaskRecord({
-      runtime: "cron",
+    const task = createTaskFixture("cron", {
       requesterSessionKey: "",
       ownerKey: "",
       scopeKind: "system",
@@ -343,8 +335,7 @@ export function registerTaskEventSubscriptionTests(
     await waitForFast(() => expect(getTaskRegistryObservers()).not.toBeNull());
 
     const runSessionKey = "agent:main:cron:job-1:run:run-1";
-    const task = createTaskRecord({
-      runtime: "cron",
+    const task = createTaskFixture("cron", {
       requesterSessionKey: "",
       ownerKey: "",
       scopeKind: "system",
@@ -360,13 +351,13 @@ export function registerTaskEventSubscriptionTests(
     expect(closeTaskSessions).not.toHaveBeenCalled();
     expect(events).toEqual(["task:running"]);
 
-    markTaskTerminalById({ taskId: task.taskId, status: "succeeded", endedAt: 2_000 });
+    finishTaskFixture({ taskId: task.taskId, status: "succeeded", endedAt: 2_000 });
     expect(closeTaskSessions).toHaveBeenCalledOnce();
     expect(closeTaskSessions).toHaveBeenCalledWith(task.taskId);
     expect(events).toEqual(["task:running", "task:completed", `terminal:${task.taskId}`]);
 
     // Later terminal-row updates cannot close terminals opened by a newer owner.
-    markTaskTerminalById({ taskId: task.taskId, status: "succeeded", endedAt: 2_001 });
+    finishTaskFixture({ taskId: task.taskId, status: "succeeded", endedAt: 2_001 });
     expect(closeTaskSessions).toHaveBeenCalledOnce();
   });
 
@@ -396,8 +387,7 @@ export function registerTaskEventSubscriptionTests(
     staleSubs.lifecycleUnsub();
     expect(getTaskRegistryObservers()).not.toBeNull();
 
-    createTaskRecord({
-      runtime: "cli",
+    createTaskFixture("cli", {
       ...sessionTaskDefaults,
       task: "After stale dispose",
       status: "queued",

@@ -3,7 +3,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { CronJob } from "../cron/types.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import {
-  bumpSessionAutomationVersion,
+  invalidateSessionAutomationIndex,
   claimSessionAutomationEpoch,
   registerSessionAutomationSource,
   sessionHasAutomation,
@@ -32,7 +32,7 @@ describe("session automation index", () => {
     expect(sessionHasAutomation("agent:main:main", cfg)).toBe(false);
   });
 
-  test("version bumps invalidate the memo after in-place job mutations", () => {
+  test("owner publications invalidate the memo after in-place job mutations", () => {
     const jobs = [job({ id: "a" })];
     registerSessionAutomationSource({
       getJobs: () => jobs,
@@ -40,7 +40,7 @@ describe("session automation index", () => {
     });
     expect(sessionHasAutomation("agent:main:cron:a", cfg)).toBe(true);
     (jobs[0] as { enabled: boolean }).enabled = false;
-    bumpSessionAutomationVersion();
+    invalidateSessionAutomationIndex();
     expect(sessionHasAutomation("agent:main:cron:a", cfg)).toBe(false);
   });
 
@@ -85,7 +85,7 @@ describe("session automation index", () => {
       expect(sessionHasAutomation("agent:main:cron:fresh", cfg)).toBe(true);
       unregisterSessionAutomationSource(freshSource);
       expect(sessionHasAutomation("agent:main:cron:fresh", cfg)).toBe(false);
-      bumpSessionAutomationVersion();
+      invalidateSessionAutomationIndex();
       expect(changes).toEqual(
         Array.from({ length: 3 }, () => ({ all: true, scope: "automation" })),
       );

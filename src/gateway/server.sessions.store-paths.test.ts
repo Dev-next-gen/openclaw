@@ -7,12 +7,14 @@ import * as sessionDirs from "../agents/session-dirs.js";
 import * as runtimePaths from "../config/paths.js";
 import type { InternalSessionEntry } from "../config/sessions.js";
 import {
+  deleteSessionEntryLifecycle,
   appendTranscriptEvent,
   appendTranscriptMessage,
   loadSessionEntry,
 } from "../config/sessions/session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import * as agentDatabaseRegistry from "../state/openclaw-agent-db-registry.js";
+import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { rpcReq, testState, writeSessionStore } from "./test-helpers.js";
 import {
@@ -182,6 +184,7 @@ test("configured-only multi-store target preparation is reused across distinct l
       });
     }
 
+    expect((await directSessionReq("sessions.list", { configuredAgentsOnly: true })).ok).toBe(true);
     const matcher = vi.spyOn(agentDatabaseRegistry, "createOpenClawAgentDatabasePathMatcher");
     const lstat = vi.spyOn(fsSync, "lstatSync");
     const readlink = vi.spyOn(fsSync, "readlinkSync");
@@ -194,11 +197,11 @@ test("configured-only multi-store target preparation is reused across distinct l
         includeGlobal: false,
       });
       expect(first).toMatchObject({ ok: true, payload: { path: "(multiple)" } });
-      expect(matcher).toHaveBeenCalledTimes(1);
+      expect(matcher).not.toHaveBeenCalled();
       expect({
         realpath: realpath.mock.calls.length,
         stat: stat.mock.calls.length,
-      }).toEqual({ realpath: agentIds.length, stat: agentIds.length });
+      }).toEqual({ realpath: 0, stat: 0 });
 
       for (const spy of [matcher, lstat, readlink, realpath, stat]) {
         spy.mockClear();
@@ -300,9 +303,7 @@ test("automatic list and search projection reuse conventional state-directory pr
                   expect(listed.payload?.sessions).toHaveLength(
                     search === "unmatched-runtime-search" ? 0 : agentIds.length,
                   );
-                  expect
-                    .soft(environments.mock.calls.length, search ?? "list")
-                    .toBe(agentRuntimeOverride ? 0 : 1);
+                  expect.soft(environments.mock.calls.length, search ?? "list").toBe(0);
                   counts.push({
                     exists: exists.mock.calls.length,
                     stateDirectoryExists: exists.mock.calls.filter(
@@ -363,6 +364,7 @@ test("configured-only parent-owned stores keep lineage children without director
       },
     });
 
+    expect((await directSessionReq("sessions.list", { configuredAgentsOnly: true })).ok).toBe(true);
     const enumerateAgentDirs = vi.spyOn(sessionDirs, "resolveAgentSessionDirsFromAgentsDirSync");
     try {
       const listed = await directSessionReq<{ sessions: Array<{ key: string }> }>("sessions.list", {
@@ -448,6 +450,13 @@ test("filters sessions by agentId", async () => {
 });
 
 test("resolves and patches main alias to default agent main key", async () => {
+  // Remove the shared server's bootstrap main before changing its canonical main key.
+  await deleteSessionEntryLifecycle({
+    agentId: "main",
+    storePath: resolveOpenClawAgentSqlitePath({ agentId: "main" }),
+    archiveTranscript: false,
+    target: { canonicalKey: "agent:main:main", storeKeys: ["agent:main:main"] },
+  });
   const { storePath } = await createSessionStoreDir();
   testState.agentsConfig = { list: [{ id: "ops", default: true }] };
   testState.sessionConfig = { mainKey: "work" };
@@ -469,7 +478,7 @@ test("resolves and patches main alias to default agent main key", async () => {
     const resolved = await rpcReq<{ ok: true; key: string }>(ws, "sessions.resolve", {
       key: "main",
     });
-    expect(resolved.ok).toBe(true);
+    expect(resolved.ok, JSON.stringify(resolved)).toBe(true);
     expect(resolved.payload?.key).toBe("agent:ops:work");
 
     const patched = await rpcReq<{ ok: true; key: string }>(ws, "sessions.patch", {

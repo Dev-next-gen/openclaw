@@ -158,6 +158,7 @@ function publishedCatalogContext(
 }
 
 beforeEach(() => {
+  vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
   resetAgentEventsForTest();
 });
 

@@ -286,9 +286,6 @@ function buildGatewaySessionRow(
   const rowContext = buildSessionListRowMetadataContext({
     now: params.now ?? Date.now(),
   });
-  // Row projection tests do not own ACP persistence. Mark the supplied fixture
-  // as already checked so each assertion does not open the ambient state DB.
-  rowContext.acpSessionMetaByEntry.set(entry, undefined);
   return buildSessionRowFixture({
     ...params,
     entry,
@@ -1891,9 +1888,6 @@ describe("gateway session utils", () => {
       });
       setTestActivePluginRegistry(registry);
       const rowContext = buildSessionListRowMetadataContext({ now: 1 });
-      for (const current of Object.values(store)) {
-        rowContext.acpSessionMetaByEntry.set(current, undefined);
-      }
       const readRow = (key: keyof typeof store) =>
         buildGatewaySessionRowOwner({
           cfg,

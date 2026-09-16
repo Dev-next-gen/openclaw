@@ -96,6 +96,12 @@ count.
   roster member's snapshot locally; refresh the list when a row is missing or
   the event is a broad, keyless invalidation. Profile identity, runner
   availability, and loaded cron bindings can produce broad invalidations.
+  Authorized incognito descriptions and events use the same row presentation from
+  transient process-local state. Incognito rows remain excluded from the session
+  roster, and queued events cannot cross a reset or database replacement.
+  Tool/progress events keep delivering while rows refresh; their optional row
+  metadata can be absent until ready. Full roster rows remain guaranteed on
+  keyed `sessions.changed` and `session.message` snapshots.
   Active-run fields use the
   same aggregate and complete-exact semantics as `sessions.list`; `activeRunIds: null`
   clears cached exact identities to unavailable, omission leaves the cache unchanged,

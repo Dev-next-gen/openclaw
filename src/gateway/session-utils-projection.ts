@@ -69,7 +69,6 @@ export function buildSessionListRowMetadataContext(params: {
     displayModelIdentityByKey: new Map(),
     modelCostConfigByModelRef: new Map(),
     userProfileIdentityById: params.userProfileIdentityById ?? new Map(),
-    acpSessionMetaByEntry: new Map(),
   };
 }
 
@@ -84,6 +83,7 @@ export function resolveTranscriptUsageFallbacks(params: {
   maxTranscriptBytes?: number;
   rowContext?: SessionListRowContext;
   agentId: string;
+  storeAgentId?: string;
 }): Map<
   string | undefined,
   { estimatedCostUsd?: number; totalTokens?: number; totalTokensFresh?: boolean } | null
@@ -122,7 +122,7 @@ export function resolveTranscriptUsageFallbacks(params: {
       try {
         snapshot = readScopedRecentSessionUsageFromTranscript(
           {
-            agentId,
+            agentId: params.storeAgentId ?? agentId,
             sessionEntry: entry,
             sessionId: entry.sessionId,
             sessionKey: params.key,
@@ -172,16 +172,13 @@ export function resolveGatewaySessionRuntimeProjection(params: {
   metadataSnapshot?: PluginMetadataSnapshot;
 }) {
   const { cfg, agentId, sessionKey, entry } = params;
-  const cachedAcpMeta = params.rowContext?.acpSessionMetaByEntry;
   // Keep metadata bound to the projected row; rereading its key can adopt a
   // replacement lifecycle while projecting the original entry.
   const acpMeta =
     entry?.acp ??
-    (entry && cachedAcpMeta?.has(entry)
-      ? cachedAcpMeta.get(entry)
-      : entry
-        ? readAcpSessionMetaForEntry({ cfg, sessionKey, agentId, entry })
-        : readAcpSessionMeta({ sessionKey, agentId }));
+    (entry
+      ? readAcpSessionMetaForEntry({ cfg, sessionKey, agentId, entry })
+      : readAcpSessionMeta({ sessionKey, agentId }));
   const agentRuntime = resolveCurrentSessionAgentRuntimeMetadata({
     cfg: params.cfg,
     agentScope: { kind: "prepared", agentId: params.agentId },

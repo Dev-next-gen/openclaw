@@ -83,7 +83,8 @@ vi.mock("../agents/prepared-model-catalog.js", () => ({
   })),
 }));
 
-vi.mock("../agents/model-selection.js", () => {
+vi.mock("../agents/model-selection.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../agents/model-selection.js")>();
   type ConfigWithModels = {
     meta?: { migrations?: { modelPolicyAllowlist?: boolean } };
     agents?: {
@@ -169,6 +170,7 @@ vi.mock("../agents/model-selection.js", () => {
   };
 
   return {
+    ...actual,
     buildAllowedModelSet: vi.fn(({ cfg }: { cfg?: ConfigWithModels; catalog?: CatalogEntry[] }) => {
       const refs = new Set<string>();
       const policyRefs = resolvePolicyRefs(cfg).refs;

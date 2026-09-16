@@ -10,15 +10,6 @@ import { loadSessionEntriesForTarget, requireSessionKey } from "./sessions-share
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
-function createRoleVisibilityFilter(
-  client: Parameters<typeof hasOperatorBoundary>[0],
-  cfg: Parameters<typeof hasOperatorBoundary>[1],
-) {
-  return hasOperatorBoundary(client, cfg)
-    ? createSessionListEntryFilter({ client, cfg })
-    : undefined;
-}
-
 export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
   "sessions.describe": async ({ params, respond, context, client }) => {
     if (!assertValidParams(params, validateSessionsDescribeParams, "sessions.describe", respond)) {
@@ -91,7 +82,9 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
       cfg,
       agentId: requestedAgent.agentId,
     });
-    const boundaryFilter = createRoleVisibilityFilter(client, cfg);
+    const boundaryFilter = hasOperatorBoundary(client, cfg)
+      ? createSessionListEntryFilter({ client, cfg })
+      : undefined;
     if (!entry?.sessionId || boundaryFilter?.(target.canonicalKey, entry) === false) {
       respond(true, { messages: [] }, undefined);
       return;
@@ -124,7 +117,9 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
           agentId: currentRequestedAgent.agentId,
         })
       : null;
-    const currentBoundaryFilter = createRoleVisibilityFilter(client, currentCfg);
+    const currentBoundaryFilter = hasOperatorBoundary(client, currentCfg)
+      ? createSessionListEntryFilter({ client, cfg: currentCfg })
+      : undefined;
     if (
       !current ||
       current.target.agentId !== target.agentId ||

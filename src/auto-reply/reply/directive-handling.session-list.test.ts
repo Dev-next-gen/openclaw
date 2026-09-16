@@ -1,5 +1,5 @@
 import { expectDefined } from "@openclaw/normalization-core";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import {
   loadSessionEntryReadOnly,
@@ -20,6 +20,7 @@ it.each([
 ])(
   "keeps resident session rows current after $command (authorized=$authorized)",
   async ({ command, authorized, expected }) => {
+    using _ = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const cfg: OpenClawConfig = {};
       const scope = { agentId: "main", sessionKey: "agent:main:main" };

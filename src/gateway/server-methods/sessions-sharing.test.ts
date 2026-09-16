@@ -402,8 +402,8 @@ describe("session sharing handlers", () => {
         expect(creator?.path).toBe(before?.path);
         expect(creator?.sessions?.some((session) => session.key === incognitoKey)).toBe(false);
         const visible = await listFor(admin);
-        expect(visible?.sessions?.some((session) => session.key === incognitoKey)).toBe(true);
-        expect(visible?.path).not.toBe(before?.path);
+        expect(visible?.sessions?.some((session) => session.key === incognitoKey)).toBe(false);
+        expect(visible?.path).toBe(before?.path);
       });
     },
   );

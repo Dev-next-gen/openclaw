@@ -12,16 +12,11 @@ type SessionAutomationSource = {
 };
 
 let source: SessionAutomationSource | null = null;
-// Bumped on every cron service event so in-place job mutations (enable/disable,
-// auto-disable during runs) invalidate the memo even when the array identity
-// and config reference stay stable.
-let sourceVersion = 0;
 let epochCounter = 0;
 let registeredEpoch = 0;
 
 let memo: {
   jobs: readonly CronJob[];
-  version: number;
   cfg: OpenClawConfig;
   keys: ReadonlySet<string>;
 } | null = null;
@@ -46,9 +41,7 @@ export function registerSessionAutomationSource(
   }
   registeredEpoch = effectiveEpoch;
   source = next;
-  memo = null;
-  sourceVersion += 1;
-  sessionChanges.emit({ all: true, scope: "automation" });
+  invalidateSessionAutomationIndex();
 }
 
 /**
@@ -60,14 +53,12 @@ export function unregisterSessionAutomationSource(owner: SessionAutomationSource
     return;
   }
   source = null;
-  memo = null;
-  sourceVersion += 1;
-  sessionChanges.emit({ all: true, scope: "automation" });
+  invalidateSessionAutomationIndex();
 }
 
 /** Called from the cron onEvent hook after any job/store change. */
-export function bumpSessionAutomationVersion(): void {
-  sourceVersion += 1;
+export function invalidateSessionAutomationIndex(): void {
+  memo = null;
   sessionChanges.emit({ all: true, scope: "automation" });
 }
 
@@ -103,10 +94,9 @@ export function sessionHasAutomation(
   if (!source || !jobs || jobs.length === 0) {
     return false;
   }
-  if (!memo || memo.jobs !== jobs || memo.version !== sourceVersion || memo.cfg !== cfg) {
+  if (!memo || memo.jobs !== jobs || memo.cfg !== cfg) {
     memo = {
       jobs,
-      version: sourceVersion,
       cfg,
       keys: buildAutomationKeys(jobs, cfg, source.getDefaultAgentId()),
     };
