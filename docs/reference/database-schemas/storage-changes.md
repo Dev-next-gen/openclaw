@@ -335,8 +335,22 @@ entries and checking each entry's current visibility. The entry accessor closes
 that connection before transcript search, including on errors; inherited async
 callbacks fall back to ordinary fresh reads. This scope preserves the same
 per-read admission and committed-row checks without caching visibility decisions.
-Other cold readers outside the history worker and extension-capable readers
-remain one-shot; incognito reads retain their existing process-local owner.
+Other cold readers outside the history and Node session-list workers, including
+extension-capable readers, remain one-shot; incognito reads retain their existing
+process-local owner.
+
+Node Gateway session listings prepare complete per-agent metadata in the existing
+SQLite worker broker. The entry-cache owner still owns completed metadata and its
+connection-local invalidation. A request may consume its consistent snapshot when
+later metadata writes prevent cache adoption; a later caller cannot join a fill
+from an older generation. Canonical reader admission is separate from metadata
+freshness and remains bound to the physical database, schema, and main-key policy.
+Selected entries and membership are read again after row projection. Access changes
+during that read trigger a bounded refresh through already admitted observers,
+followed by current caller and configuration checks; they never trigger a synchronous
+inventory scan. Read resources retain cold observers independently of writable
+handles and drain their worker backends before disposal. Bun keeps its existing
+native read path until native statement retirement supports this observer lifetime.
 
 The history worker retains one read-only connection across requests, rechecking
 schema, agent owner, and physical file identity before reuse. Every request keeps

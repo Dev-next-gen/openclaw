@@ -26,9 +26,12 @@ import {
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import { parseSessionEntryJson, selectSessionEntryRows } from "./session-accessor.sqlite-status.js";
 import {
+  adoptCanonicalSessionReadAdmission,
   assertCanonicalSqliteSessionKeysCurrent,
+  readCanonicalSessionMainKey,
   type ValidatedSessionMetadata,
 } from "./session-canonical-key.js";
+import { withCanonicalSessionValidationDeferral } from "./session-canonical-validation-deferral.js";
 import type { SessionEntry } from "./types.js";
 
 type SessionEntryCacheDatabase = Pick<OpenClawAgentDatabase, "agentId" | "db">;
@@ -54,6 +57,14 @@ type SqliteSessionEntryCacheWriteGeneration = {
 // structural/unknown writes invalidate. Without both, every read would re-query and re-parse
 // every entry_json document.
 const sessionEntryCaches = new WeakMap<DatabaseSync, SqliteSessionEntryCache>();
+const sessionEntryCacheFills = new WeakMap<
+  DatabaseSync,
+  {
+    validityToken: SqliteSessionEntryCacheValidityToken;
+    mainKey: string;
+    promise: Promise<SessionEntryCacheSnapshot>;
+  }
+>();
 const sessionNodesGenerationTrackerSchemaVersions = new WeakMap<DatabaseSync, number>();
 
 function ensureSessionNodesGenerationTracker(database: DatabaseSync): void {
@@ -220,7 +231,7 @@ export function trackSessionEntryCacheWrite(
   return generation;
 }
 
-function loadSessionEntrySnapshot(
+export function loadSessionEntrySnapshot(
   database: SessionEntryCacheDatabase,
   projection: "full" | "list" = "list",
   prepared?: ValidatedSessionMetadata,
@@ -299,6 +310,87 @@ export function readSessionEntryCache(
   const next = { ...loaded, validityToken };
   sessionEntryCaches.set(database.db, next);
   return next;
+}
+
+/** A read cohort may consume its snapshot once; only unchanged admissions publish reusable state. */
+export function readSessionEntryCacheAsync(
+  database: SessionEntryCacheDatabase & { path: string },
+  params: {
+    assertCurrent: () => void;
+    load: (
+      validateCanonical: boolean,
+      mainKey: string,
+    ) => Promise<SessionEntryCacheSnapshot & { mainKey: string }>;
+  },
+): Promise<SessionEntryCacheSnapshot> {
+  params.assertCurrent();
+  const validityToken = readCacheValidityToken(database.db);
+  const mainKey = readCanonicalSessionMainKey(database);
+  const admission = withCanonicalSessionValidationDeferral(() =>
+    assertCanonicalSqliteSessionKeysCurrent(database),
+  );
+  const owner = sessionEntryCaches.get(database.db);
+  if (
+    admission.kind === "complete" &&
+    owner &&
+    !owner.selectedKeys &&
+    cacheValidityTokensEqual(owner.validityToken, validityToken) &&
+    cacheValidityTokensEqual(validityToken, readCacheValidityToken(database.db))
+  ) {
+    return Promise.resolve(owner);
+  }
+  const pending = sessionEntryCacheFills.get(database.db);
+  if (
+    pending?.mainKey === mainKey &&
+    cacheValidityTokensEqual(pending.validityToken, validityToken)
+  ) {
+    return pending.promise.then((snapshot) => {
+      params.assertCurrent();
+      return snapshot;
+    });
+  }
+  const fill = {
+    validityToken,
+    mainKey,
+    promise: Promise.resolve().then(async (): Promise<SessionEntryCacheSnapshot> => {
+      params.assertCurrent();
+      const loaded = await params.load(admission.kind === "pending", mainKey);
+      params.assertCurrent();
+      if (!adoptCanonicalSessionReadAdmission(database, loaded.mainKey)) {
+        throw new Error("Session metadata canonical policy changed during the read");
+      }
+      if (
+        database.db.isTransaction ||
+        !cacheValidityTokensEqual(validityToken, readCacheValidityToken(database.db))
+      ) {
+        return loaded;
+      }
+      const current = sessionEntryCaches.get(database.db);
+      if (current !== owner) {
+        return loaded;
+      }
+      if (current?.selectedKeys && cacheValidityTokensEqual(current.validityToken, validityToken)) {
+        for (const [key, entry] of current.entries) {
+          loaded.entries.set(key, entry);
+        }
+        current.entries = loaded.entries;
+        current.keys = loaded.keys;
+        delete current.selectedKeys;
+        return current;
+      }
+      const next = { entries: loaded.entries, keys: loaded.keys, validityToken };
+      sessionEntryCaches.set(database.db, next);
+      return next;
+    }),
+  };
+  sessionEntryCacheFills.set(database.db, fill);
+  const clear = () => {
+    if (sessionEntryCacheFills.get(database.db) === fill) {
+      sessionEntryCacheFills.delete(database.db);
+    }
+  };
+  void fill.promise.then(clear, clear);
+  return fill.promise;
 }
 
 function publishTrackedCacheUpdate(database: OpenClawAgentDatabase, publish: () => void): void {

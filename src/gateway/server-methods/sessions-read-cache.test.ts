@@ -52,20 +52,28 @@ const loader = vi.hoisted(() => ({
   rowGate: undefined as Promise<void> | undefined,
 }));
 
-vi.mock("../session-utils.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../session-utils.js")>();
+vi.mock("../../config/sessions/combined-store-gateway.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../config/sessions/combined-store-gateway.js")>();
   return {
     ...actual,
-    loadCombinedSessionStoreForGatewayCore: (
-      ...args: Parameters<typeof actual.loadCombinedSessionStoreForGatewayCore>
+    loadCombinedSessionStoreForGatewayAsync: async (
+      ...args: Parameters<typeof actual.loadCombinedSessionStoreForGatewayAsync>
     ) => {
       loader.calls(...args);
       if (loader.failNext) {
         loader.failNext = false;
         throw new Error("synthetic store load failure");
       }
-      return actual.loadCombinedSessionStoreForGatewayCore(...args);
+      return await actual.loadCombinedSessionStoreForGatewayAsync(...args);
     },
+  };
+});
+
+vi.mock("../session-utils.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../session-utils.js")>();
+  return {
+    ...actual,
     listSessionsFromStoreAsync: async (
       ...args: Parameters<typeof actual.listSessionsFromStoreAsync>
     ) => {

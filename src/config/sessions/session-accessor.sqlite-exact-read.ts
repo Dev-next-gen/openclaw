@@ -129,12 +129,12 @@ export function loadExactSessionEntryReadOnly(
 }
 
 /** Read requested keys through synchronous store/projection groups. */
-export function loadExactSessionEntryCandidatesReadOnlyBatch(
-  scopes: readonly (Omit<SessionEntryReadScope, "sessionKey"> & {
-    sessionKeys: readonly string[];
-    onReadSource?: (source: SessionEntryReadSource) => void;
-  })[],
-): Array<Result<ExactSessionEntry[], unknown>> {
+export type ExactSessionEntryBatchScope = Omit<SessionEntryReadScope, "sessionKey"> & {
+  sessionKeys: readonly string[];
+  onReadSource?: (source: SessionEntryReadSource) => void;
+};
+
+export function groupExactSessionEntryReadRequests(scopes: readonly ExactSessionEntryBatchScope[]) {
   const results: Array<Result<ExactSessionEntry[], unknown>> = scopes.map(() => ok([]));
   const targetCache: SessionSqliteTargetResolutionCache = new Map();
   const groups = new Map<
@@ -165,6 +165,13 @@ export function loadExactSessionEntryCandidatesReadOnlyBatch(
       results[index] = err(error);
     }
   }
+  return { groups, results };
+}
+
+export function loadExactSessionEntryCandidatesReadOnlyBatch(
+  scopes: readonly ExactSessionEntryBatchScope[],
+): Array<Result<ExactSessionEntry[], unknown>> {
+  const { groups, results } = groupExactSessionEntryReadRequests(scopes);
   for (const group of groups.values()) {
     try {
       withOpenClawAgentDatabaseReadOnly((database) => {
@@ -172,47 +179,16 @@ export function loadExactSessionEntryCandidatesReadOnlyBatch(
         // suppress healthy logical targets after a warm handle was validated.
         assertCanonicalSqliteSessionKeysCurrent(database);
         const source = { agentId: database.agentId, path: database.path };
-        const entries = new Map<string, Result<ExactSessionEntry | undefined, unknown>>();
-        const keys = [...new Set(group.requests.flatMap((request) => request.sessionKeys))];
-        const cachedEntries =
-          group.projection === "list" ? readCachedExactSessionEntries(database, keys) : undefined;
-        let readPrepared: (sessionKey: string) => SessionEntry | undefined;
-        if (cachedEntries) {
-          readPrepared = (sessionKey) => cachedEntries.get(sessionKey);
-        } else {
-          const readRows = prepareExactSessionEntryRowReads(database, keys, group.projection);
-          readPrepared = (sessionKey) => readRows(sessionKey)?.entry;
-        }
-        const readEntry = (sessionKey: string): Result<ExactSessionEntry | undefined, unknown> => {
-          const cached = entries.get(sessionKey);
-          if (cached) {
-            return cached;
-          }
-          let result: Result<ExactSessionEntry | undefined, unknown>;
-          try {
-            const entry = readPrepared(sessionKey);
-            result = ok(entry ? { sessionKey, entry } : undefined);
-          } catch (error) {
-            result = err(error);
-          }
-          entries.set(sessionKey, result);
-          return result;
-        };
-        for (const { index, sessionKeys } of group.requests) {
-          const matches: ExactSessionEntry[] = [];
-          results[index] = ok(matches);
-          for (const sessionKey of sessionKeys) {
-            const entry = readEntry(sessionKey);
-            if (!entry.ok) {
-              results[index] = err(entry.error);
-              break;
-            }
-            if (entry.value) {
-              matches.push(entry.value);
-            }
-          }
-          if (results[index]!.ok) {
-            scopes[index]!.onReadSource?.(source);
+        const grouped = readExactSessionEntryCandidatesInDatabase(
+          database,
+          group.requests.map((request) => request.sessionKeys),
+          group.projection,
+        );
+        for (const [ordinal, request] of group.requests.entries()) {
+          const result = grouped[ordinal]!;
+          results[request.index] = result;
+          if (result.ok) {
+            scopes[request.index]!.onReadSource?.(source);
           }
         }
       }, group.options);
@@ -223,4 +199,51 @@ export function loadExactSessionEntryCandidatesReadOnlyBatch(
     }
   }
   return results;
+}
+
+/** Decode one admitted physical store without changing exact per-request error isolation. */
+export function readExactSessionEntryCandidatesInDatabase(
+  database: Pick<OpenClawAgentDatabase, "agentId" | "db" | "path">,
+  requests: readonly (readonly string[])[],
+  projection: SessionEntryReadScope["projection"],
+): Array<Result<ExactSessionEntry[], unknown>> {
+  const entries = new Map<string, Result<ExactSessionEntry | undefined, unknown>>();
+  const keys = [...new Set(requests.flat())];
+  const cachedEntries =
+    projection === "list" ? readCachedExactSessionEntries(database, keys) : undefined;
+  let readPrepared: (sessionKey: string) => SessionEntry | undefined;
+  if (cachedEntries) {
+    readPrepared = (sessionKey) => cachedEntries.get(sessionKey);
+  } else {
+    const readRows = prepareExactSessionEntryRowReads(database, keys, projection);
+    readPrepared = (sessionKey) => readRows(sessionKey)?.entry;
+  }
+  const readEntry = (sessionKey: string): Result<ExactSessionEntry | undefined, unknown> => {
+    const cached = entries.get(sessionKey);
+    if (cached) {
+      return cached;
+    }
+    let result: Result<ExactSessionEntry | undefined, unknown>;
+    try {
+      const entry = readPrepared(sessionKey);
+      result = ok(entry ? { sessionKey, entry } : undefined);
+    } catch (error) {
+      result = err(error);
+    }
+    entries.set(sessionKey, result);
+    return result;
+  };
+  return requests.map((sessionKeys) => {
+    const matches: ExactSessionEntry[] = [];
+    for (const sessionKey of sessionKeys) {
+      const entry = readEntry(sessionKey);
+      if (!entry.ok) {
+        return err(entry.error);
+      }
+      if (entry.value) {
+        matches.push(entry.value);
+      }
+    }
+    return ok(matches);
+  });
 }
