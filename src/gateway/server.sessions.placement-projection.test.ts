@@ -370,7 +370,9 @@ test("sessions.list projects durable placement move progress", async () => {
   });
   expect(main?.placementMove).not.toHaveProperty("operationId");
   expect(
-    getPlacementMoves.mock.calls.map(([ids]) => ids).toSorted((a, b) => a.localeCompare(b)),
+    getPlacementMoves.mock.calls
+      .map(([ids]) => ids)
+      .toSorted((a, b) => a.join("\0").localeCompare(b.join("\0"))),
   ).toEqual([["sess-main"], ["sess-other"]]);
 });
 
