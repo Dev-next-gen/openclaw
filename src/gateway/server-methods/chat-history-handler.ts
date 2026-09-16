@@ -21,7 +21,7 @@ import {
   measureDiagnosticsTimelineSpanSync,
 } from "../../infra/diagnostics-timeline.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { scopeLegacySessionKeyToAgent } from "../../routing/session-key.js";
+import { isIncognitoSessionKey, scopeLegacySessionKeyToAgent } from "../../routing/session-key.js";
 import {
   boundInFlightRunSnapshotForChatHistory,
   resolveInFlightRunSnapshot,
@@ -35,6 +35,7 @@ import {
   resolveRequestedSessionAgentId,
   tryResolveSessionCompatibilityOwnerAgentId,
 } from "../session-request-agent.js";
+import { prepareProjectedSessionPresentation } from "../session-row-presentation.js";
 import { hiddenSessionNotFound } from "../session-sharing-policy.js";
 import {
   isGatewayAdmin,
@@ -42,8 +43,9 @@ import {
   resolveSessionVisibility,
 } from "../session-sharing.js";
 import { capArrayByJsonBytes } from "../session-transcript-readers.js";
+import { buildGatewaySessionRow } from "../session-utils-row.js";
+import { createGatewaySessionEntryReader } from "../session-utils-store-lookup.js";
 import {
-  buildGatewaySessionInfo,
   getSessionDefaults,
   loadGatewaySessionEntryReadOnly,
   resolveSessionModelRef,
@@ -71,7 +73,6 @@ import { readChatPendingInputs } from "./chat-pending-inputs.js";
 import { normalizeOptionalChatText as normalizeOptionalText } from "./chat-text-normalization.js";
 import { resolveVisibleActiveSessionRunState } from "./session-active-runs.js";
 import { resolveGatewayModelSelectionPolicy } from "./session-model-selection-policy.js";
-import { readSessionPlacementFields } from "./session-placement-read-projection.js";
 import type { GatewayRequestHandlerOptions, GatewayRequestHandlers } from "./types.js";
 import { resolveAuthenticatedProfileId } from "./users-profile-access.js";
 import { assertValidParams } from "./validation.js";
@@ -172,8 +173,6 @@ export async function handleChatHistoryRequest({
     cfg,
     agentId: sessionAgentId,
     storePath,
-    store,
-    readSource,
     entry,
     canonicalKey,
     legacyKey,
@@ -445,32 +444,65 @@ export async function handleChatHistoryRequest({
   const startupMetadata = method === "chat.startup" ? startupProjection?.metadata : undefined;
   const sessionModelCatalog = startupProjection?.sessionModelCatalog;
   const defaultModelCatalog = startupProjection?.defaultModelCatalog;
+  const rowProjection = context.getSessionRowProjection?.();
+  if (!rowProjection) {
+    respondChatHistoryUnavailable(
+      method,
+      respond,
+      "session rows are initializing; reload the conversation",
+    );
+    return;
+  }
+  do {
+    await rowProjection.ensureMaterialized();
+  } while (rowProjection.needsMaterialization);
   const currentSharing = readCurrentSharing();
   if (!currentSharing) {
     return;
   }
+  const incognito = entry?.incognito || isIncognitoSessionKey(canonicalKey);
   const sessionInfo = measureDiagnosticsTimelineSpanSync(
     `gateway.${method}.session_info`,
-    () =>
-      buildGatewaySessionInfo({
-        cfg,
-        storePath,
-        store,
-        readSource,
-        key: canonicalKey,
-        entry,
-        agentId: sessionAgentId,
-        modelCatalog: sessionModelCatalog,
-      }),
-    {
-      config: cfg,
-      phase: method,
-      attributes: {
-        storeEntries: Object.keys(store).length,
-      },
+    () => {
+      // Incognito history keeps its row metadata without retaining the session in the projection.
+      if (entry && incognito) {
+        return buildGatewaySessionRow({
+          cfg,
+          storePath,
+          store: selectedSession.store,
+          key: canonicalKey,
+          entry,
+          agentId: sessionAgentId,
+          modelCatalog: sessionModelCatalog,
+          modelSource: {
+            entry,
+            loadSessionEntry: createGatewaySessionEntryReader(selectedSession),
+          },
+          lightweightListRow: true,
+          skipTranscriptUsageFallback: true,
+        });
+      }
+      return (
+        prepareProjectedSessionPresentation(rowProjection, client).snapshot({
+          key: canonicalKey,
+          agentId: sessionAgentId,
+          storePath: selectedSession.readSource?.path ?? storePath,
+        }).row ?? undefined
+      );
     },
+    { config: cfg, phase: method },
   );
-  Object.assign(sessionInfo, currentSharing);
+  if (entry && !incognito && !sessionInfo) {
+    respondChatHistoryUnavailable(
+      method,
+      respond,
+      "session changed while reading history; reload the conversation",
+    );
+    return;
+  }
+  if (sessionInfo) {
+    Object.assign(sessionInfo, currentSharing);
+  }
   const activeRunAgentId = sessionAgentId;
   const activeRunState = resolveVisibleActiveSessionRunState({
     context,
@@ -482,17 +514,15 @@ export async function handleChatHistoryRequest({
     // History stays active until the terminal row is queryable or its write fails.
     includeTerminalPersistence: true,
   });
-  sessionInfo.hasActiveRun = activeRunState.active;
-  if (activeRunState.runIds !== undefined) {
+  if (sessionInfo) {
+    sessionInfo.hasActiveRun = activeRunState.active;
+  }
+  if (sessionInfo && activeRunState.runIds !== undefined) {
     sessionInfo.activeRunIds = activeRunState.runIds;
   }
-  if (activeRunState.active) {
+  if (sessionInfo && activeRunState.active) {
     sessionInfo.status = activeRunState.status ?? "running";
   }
-  // Clients merge this row into the same store sessions.list fills, so it must
-  // carry the placement facts that projection adds; without them the merge
-  // erases a live worker placement and its move intent.
-  Object.assign(sessionInfo, readSessionPlacementFields(context, entry?.sessionId));
   // An active embedded run can be owned by the embedded registry while absent
   // from the visible chat-abort controllers. The activeRunIds field stays
   // omitted to preserve the exact-chat-send identity contract (coordination
@@ -504,7 +534,7 @@ export async function handleChatHistoryRequest({
     canonicalSessionKey: canonicalKey,
     sessionId,
   });
-  if (Object.hasOwn(historyPage, "activeLeafEntryId")) {
+  if (sessionInfo && Object.hasOwn(historyPage, "activeLeafEntryId")) {
     sessionInfo.activeLeafEntryId = historyPage.activeLeafEntryId ?? null;
   }
   // Cursor responses publish sessionInfo only; the default-model projection is unused.
@@ -548,9 +578,12 @@ export async function handleChatHistoryRequest({
         ? resolveConfiguredThinkingDefault({ cfg, provider, model })
         : cfg.agents?.defaults?.thinkingDefault);
   }
-  const thinkingLevel = sessionInfo.thinkingLevel ?? sessionInfo.thinkingDefault;
+  const thinkingLevel =
+    sessionInfo?.thinkingLevel ?? sessionInfo?.thinkingDefault ?? defaults?.thinkingDefault;
   const verboseLevel = entry?.verboseLevel ?? cfg.agents?.defaults?.verboseDefault;
-  sessionInfo.verboseLevel = verboseLevel;
+  if (sessionInfo) {
+    sessionInfo.verboseLevel = verboseLevel;
+  }
   // Surface any run still streaming for this session+agent so a client that
   // switched away (and stopped receiving the run's per-agent-delivered events)
   // can restore the in-flight assistant text on switch-back.
@@ -567,7 +600,7 @@ export async function handleChatHistoryRequest({
       defaultAgentId: compatibilityOwnerAgentId,
     }) ?? embeddedRecovery;
   if (cursor !== undefined) {
-    if (!sessionId || !storePath || resolveClaudeCliBindingSessionId(entry)) {
+    if (!sessionInfo || !sessionId || !storePath || resolveClaudeCliBindingSessionId(entry)) {
       respond(true, { kind: "reset" });
       return;
     }
@@ -699,7 +732,17 @@ export const chatHistoryHandlers: GatewayRequestHandlers = {
       }
     }
     const { shortId, slugHint, agentId, limit, maxBytes } = opts.params;
+    const projection = opts.context.getSessionRowProjection?.();
+    if (!projection) {
+      respondChatHistoryUnavailable(
+        "chat.startup",
+        opts.respond,
+        "session rows are initializing; reload the conversation",
+      );
+      return;
+    }
     const resolution = await resolveSessionKeyFromResolveParams({
+      projection,
       cfg: opts.context.getRuntimeConfig(),
       client: opts.client,
       p: { shortId, slugHint, agentId, allowMissing: true },

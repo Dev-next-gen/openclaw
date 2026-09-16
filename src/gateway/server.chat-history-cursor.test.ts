@@ -30,6 +30,7 @@ import * as userProfiles from "../state/user-profiles.js";
 import { buildControlUiUserAvatarPath } from "./control-ui-contract.js";
 import * as managedOutgoingMedia from "./managed-image-attachments.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
+import { initializeSessionReadContext } from "./server-methods/sessions-read-cache.test-support.js";
 import type { GatewayRequestContext } from "./server-methods/shared-types.js";
 import { createTranscriptUpdateBroadcastHandler } from "./server-session-events.js";
 import { installGatewayTestHooks, testState, writeSessionStore } from "./test-helpers.js";
@@ -103,7 +104,11 @@ async function createCursorSession(initialEvents?: unknown[]) {
       }),
     ]) as Parameters<typeof replaceTranscriptEvents>[1],
   );
-  return { context: createDirectChatContext(), storePath };
+  const context = createDirectChatContext({
+    getRuntimeConfig: () => ({ session: { store: storePath } }),
+  });
+  await initializeSessionReadContext(context);
+  return { context, storePath };
 }
 
 async function callChat<T extends Record<string, unknown>>(
@@ -218,6 +223,7 @@ describe("chat.history cursor catch-up", () => {
     let projection = createSessionProjection({ sessionId, sessionKey }, cached.payload!.messages);
     const broadcast = vi.fn();
     const handler = createTranscriptUpdateBroadcastHandler({
+      getSessionRowProjection: context.getSessionRowProjection,
       broadcastToConnIds: broadcast,
       chatAbortControllers: context.chatAbortControllers,
       sessionEventSubscribers: { getAll: () => new Set<string>() },

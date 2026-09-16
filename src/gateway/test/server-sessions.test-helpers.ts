@@ -13,6 +13,7 @@ import type { InternalHookEvent } from "../../hooks/internal-hooks.js";
 import { resetSystemEventsForTest } from "../../infra/system-events.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
+import { initializeSessionReadContext } from "../server-methods/sessions-read-cache.test-support.js";
 import type { GatewayRequestContext } from "../server-methods/types.js";
 import { embeddedRunMock, agentDiscoveryMock, testState } from "../test-helpers.runtime-state.js";
 import * as gatewayTestHelpers from "../test-helpers.server.js";
@@ -636,6 +637,10 @@ export function expectNoSessionQueueCleanup() {
 type SessionsHandlers = Awaited<ReturnType<typeof getSessionsHandlers>>;
 type SessionsHandlerOptions = Parameters<SessionsHandlers[keyof SessionsHandlers]>[0];
 
+const defaultDirectContext = {};
+const directContexts = new Map<object, GatewayRequestContext>();
+beforeEach(() => directContexts.clear());
+
 export async function directSessionReq<TPayload = unknown>(
   method: keyof SessionsHandlers,
   params: Record<string, unknown>,
@@ -682,6 +687,29 @@ export async function directSessionReq<TPayload = unknown>(
   if (!handler) {
     throw new Error(`missing sessions handler for ${method}`);
   }
+  const contextFields = {
+    ...createDirectChatContext(),
+    broadcastToConnIds: vi.fn(),
+    chatAbortControllers: new Map(),
+    chatQueuedTurns: new Map(),
+    dedupe: new Map(),
+    getSessionEventSubscriberConnIds: () => new Set<string>(),
+    loadGatewayModelCatalog,
+    loadGatewayModelCatalogSnapshot,
+    readPreparedGatewayModelCatalog: async () => {
+      const catalog = await loadGatewayModelCatalogSnapshot();
+      return { entries: catalog.entries, routeVariants: catalog.routeVariants };
+    },
+    getRuntimeConfig,
+    ...opts?.context,
+  };
+  const contextKey = opts?.context ?? defaultDirectContext;
+  const context = directContexts.get(contextKey) ?? createDirectChatContext();
+  Object.assign(context, contextFields);
+  directContexts.set(contextKey, context);
+  if (["sessions.list", "sessions.describe", "sessions.resolve"].includes(method)) {
+    await initializeSessionReadContext(context);
+  }
   await handler({
     req: {} as never,
     params,
@@ -697,22 +725,7 @@ export async function directSessionReq<TPayload = unknown>(
         error,
       };
     },
-    context: {
-      ...createDirectChatContext(),
-      broadcastToConnIds: vi.fn(),
-      chatAbortControllers: new Map(),
-      chatQueuedTurns: new Map(),
-      dedupe: new Map(),
-      getSessionEventSubscriberConnIds: () => new Set<string>(),
-      loadGatewayModelCatalog,
-      loadGatewayModelCatalogSnapshot,
-      readPreparedGatewayModelCatalog: async () => {
-        const catalog = await loadGatewayModelCatalogSnapshot();
-        return { entries: catalog.entries, routeVariants: catalog.routeVariants };
-      },
-      getRuntimeConfig,
-      ...opts?.context,
-    } as never,
+    context,
     client: opts?.client ?? null,
     isWebchatConnect: opts?.isWebchatConnect ?? (() => false),
     sessionMutationAuthorization: opts?.sessionMutationAuthorization,

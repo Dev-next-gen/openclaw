@@ -11,6 +11,7 @@ import { consumeChannelAdmissionEvidence } from "../channels/message-access/admi
 import type { CronServiceState } from "../cron/service/state.js";
 import { tryFinishCronTaskRunWithoutHistory } from "../cron/service/task-runs.js";
 import {
+  type AgentEventPayload,
   emitAgentAuditEvent,
   emitAgentEvent,
   emitAgentEventForOwner,
@@ -48,6 +49,7 @@ import {
   createSessionEventSubscriberRegistry,
   createSessionMessageSubscriberRegistry,
 } from "./server-chat-state.js";
+import type { AgentEventHandlerOptions } from "./server-chat.js";
 import type { TaskEventPayload } from "./server-methods/task-summary.js";
 import {
   readTaskUpserts,
@@ -55,6 +57,7 @@ import {
   sessionTaskDefaults,
 } from "./server-runtime-subscriptions.task-ownership.test-support.js";
 import { lifecycleState, readLifecycleState } from "./server-runtime-subscriptions.test-support.js";
+import type { SessionRowProjection } from "./session-row-projection.js";
 import { TerminalSessionManager } from "./terminal/session-manager.js";
 import {
   agentTerminalOwner,
@@ -104,6 +107,28 @@ const transcriptBroadcastMocks = vi.hoisted(() => ({
   readMessageById: vi.fn(),
 }));
 const runtimeConfigState = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
+const observeActivitySummary = vi.hoisted(() =>
+  vi.fn<
+    (
+      options: Parameters<
+        typeof import("./session-activity-summaries.js").createSessionActivitySummaries
+      >[0],
+    ) => void
+  >(),
+);
+
+vi.mock("./session-activity-summaries.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./session-activity-summaries.js")>();
+  return {
+    ...actual,
+    createSessionActivitySummaries: (
+      options: Parameters<typeof actual.createSessionActivitySummaries>[0],
+    ) => {
+      observeActivitySummary(options);
+      return actual.createSessionActivitySummaries(options);
+    },
+  };
+});
 
 vi.mock("../config/io.js", () => ({
   getRuntimeConfig: () => runtimeConfigState.value,
@@ -245,6 +270,94 @@ describe("startGatewayEventSubscriptions", () => {
     (broadcast, terminalSessions = { closeTaskSessions: vi.fn(() => 1) }) => {
       unsubs = startGatewayEventSubscriptions({ ...createParams(), broadcast, terminalSessions });
       return { taskUnsub: unsubs.taskUnsub, closeTaskSessions: terminalSessions.closeTaskSessions };
+    },
+  );
+
+  it.each(["same-id reset", "replacement"])(
+    "does not attach a successor row after a queued %s",
+    async (change) => {
+      const prepared = createDeferred();
+      const original = { sessionId: "original" };
+      let current = original;
+      const projection = {
+        capture: () => current,
+        ensureMaterialized: () => prepared.promise,
+        isCurrent: (record: typeof original) => record === current,
+        snapshot: () => ({ row: { key: "agent:main:queued", sessionId: current.sessionId } }),
+      } as unknown as SessionRowProjection;
+      const delivered = vi.fn();
+      agentEventHandlerMocks.create.mockImplementation((options: AgentEventHandlerOptions) =>
+        Object.assign(
+          (event: AgentEventPayload) => {
+            delivered(
+              options.loadGatewaySessionLifecycleSnapshotForEvent?.("agent:main:queued", {
+                agentId: "main",
+                ownerEvent: event,
+              }).row,
+            );
+          },
+          { dispose: vi.fn() },
+        ),
+      );
+      unsubs = startGatewayEventSubscriptions({
+        ...createParams(),
+        getSessionRowProjection: () => projection,
+      });
+      emitAgentEvent({
+        runId: "queued-owner",
+        agentId: "main",
+        sessionKey: "agent:main:queued",
+        sessionId: "original",
+        stream: "lifecycle",
+        data: { phase: "start", startedAt: 1 },
+      });
+      current = { sessionId: change === "replacement" ? "successor" : "original" };
+      prepared.resolve();
+      await waitForFast(() => expect(delivered).toHaveBeenCalledWith(null));
+    },
+  );
+
+  it.each([false, true])(
+    "keeps activity-summary publication bound to its captured lifecycle (same-ID reset: %s)",
+    async (reset) => {
+      const prepared = createDeferred();
+      const target = { key: "agent:main:activity", agentId: "main" };
+      const original = { sessionId: "same-session", lifecycleRevision: "original" };
+      let current = original;
+      const projection = {
+        capture: () => current,
+        ensureMaterialized: () => prepared.promise,
+        isCurrent: (record: typeof original) => record === current,
+        snapshot: () => ({ row: { key: target.key, ...current } }),
+      } as unknown as SessionRowProjection;
+      const params = createParams();
+      unsubs = startGatewayEventSubscriptions({
+        ...params,
+        getSessionRowProjection: () => projection,
+      });
+      const onChanged = observeActivitySummary.mock.calls[0]?.[0].onChanged;
+      if (!onChanged) {
+        throw new Error("missing activity-summary publication callback");
+      }
+      onChanged(target);
+      expect(params.broadcast).not.toHaveBeenCalled();
+      if (reset) {
+        current = { ...original, lifecycleRevision: "replacement" };
+      }
+      prepared.resolve();
+      await unsubs.agentUnsub();
+      if (reset) {
+        expect(params.broadcast).not.toHaveBeenCalled();
+      } else {
+        expect(params.broadcast).toHaveBeenCalledExactlyOnceWith(
+          "sessions.changed",
+          expect.objectContaining({
+            reason: "activity-summary",
+            session: expect.objectContaining({ key: target.key, ...original }),
+          }),
+          { sessionKeys: [target.key], agentId: target.agentId, dropIfSlow: true },
+        );
+      }
     },
   );
 

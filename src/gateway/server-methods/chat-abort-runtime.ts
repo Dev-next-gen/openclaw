@@ -180,6 +180,21 @@ export function abortQueuedCollectorSession(
     };
     try {
       assertCurrent();
+      const projection = params.context.getSessionRowProjection?.();
+      if (projection) {
+        do {
+          await projection.ensureMaterialized();
+        } while (projection.needsMaterialization);
+      }
+      assertCurrent();
+      const agentId = resolveChatRunOwnerAgentId({
+        agentId: params.agentId,
+        sessionKey: params.sessionKey,
+        defaultAgentId: params.defaultAgentId,
+      });
+      const captured = agentId
+        ? projection?.capture({ agentId, key: params.sessionKey })
+        : undefined;
       await killSubagentRunAdmin(
         {
           cfg,
@@ -225,11 +240,16 @@ export function abortQueuedCollectorSession(
             // Publish while the kill owner still holds the exact session incarnation,
             // never after an awaited result can be overtaken by its replacement.
             if (aborted) {
-              emitSessionsChanged(params.context, {
-                sessionKey: params.sessionKey,
-                agentId: params.agentId,
-                reason: "abort",
-              });
+              emitSessionsChanged(
+                params.context,
+                {
+                  sessionKey: params.sessionKey,
+                  agentId: params.agentId,
+                  sessionId: params.sessionId,
+                  reason: "abort",
+                },
+                { preparedPublication: true },
+              );
             }
             outcome = {
               ok: true,
@@ -247,6 +267,17 @@ export function abortQueuedCollectorSession(
         },
         {
           assertCurrent,
+          preparePublication: {
+            needsPreparation: () => projection?.needsMaterialization === true,
+            prepare: async () => {
+              await projection?.ensureMaterialized();
+              if (captured && !projection?.isCurrent(captured)) {
+                throw new Error(
+                  "Queued collector session changed before cancellation publication; retry Stop.",
+                );
+              }
+            },
+          },
           beforeSessionKill: () => {
             // Resolve Gateway owners under the kill runtime's session fence.
             // Signal them only after this collector's FIFO reservation is held.

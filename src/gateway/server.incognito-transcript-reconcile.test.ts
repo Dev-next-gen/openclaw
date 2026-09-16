@@ -40,6 +40,7 @@ it("serves the reconciled incognito branch through authenticated Gateway history
           defaults: {
             workspace: state.workspaceDir,
             skipBootstrap: true,
+            model: { primary: "openai/gpt-5.5" },
             heartbeat: { every: "0m" },
           },
         },
@@ -104,9 +105,23 @@ it("serves the reconciled incognito branch through authenticated Gateway history
       expect(projection()).toEqual({ needs_rebuild: 0 });
       const history = await gateway.client.request<{
         sessionId: string;
+        sessionInfo?: {
+          key: string;
+          sessionId: string;
+          incognito: boolean;
+          modelProvider: string;
+          model: string;
+        };
         messages: Array<{ role: string; content: unknown }>;
       }>("chat.history", { agentId: "main", sessionKey: created.key, limit: 10 });
       expect(history.sessionId).toBe(created.sessionId);
+      expect(history.sessionInfo).toMatchObject({
+        key: created.key,
+        sessionId: created.sessionId,
+        incognito: true,
+        modelProvider: "openai",
+        model: "gpt-5.5",
+      });
       expect(history.messages.map(({ role, content }) => ({ role, content }))).toEqual([
         { role: "user", content: "root" },
         { role: "assistant", content: "active" },

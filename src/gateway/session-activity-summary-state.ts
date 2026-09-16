@@ -22,10 +22,8 @@ type PendingState = {
   state: SessionActivitySummary["state"];
 };
 const pending = new Map<string, PendingState & { owner: symbol }>();
-let version = 0;
 export const activitySummaryScope = (target: ActivitySummaryTarget) =>
   `${target.agentId}\0${target.key}`;
-export const readSessionActivitySummaryVersion = () => version;
 export const sessionActivitySummaryOwnerIsCurrent = (
   target: ActivitySummaryTarget,
   owner: symbol,
@@ -55,7 +53,6 @@ export function setSessionActivitySummaryState(
   } else {
     return false;
   }
-  version += 1;
   sessionChanges.emit({ sessionKey: target.key, agentId: target.agentId });
   return true;
 }

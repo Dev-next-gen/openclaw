@@ -125,10 +125,14 @@ it("retains exact placement/environment facts while presenting live disk and run
       expect(first.placement).toMatchObject({ diskSpace: { availableBytes: 6_000 } });
       finishPermissionChange();
       expect(facts.present().permissionModePending).toBe(false);
-      for (const read of reads) expect(read).not.toHaveBeenCalled();
+      for (const read of reads) {
+        expect(read).not.toHaveBeenCalled();
+      }
     } finally {
       finishPermissionChange();
-      for (const read of reads) read.mockRestore();
+      for (const read of reads) {
+        read.mockRestore();
+      }
     }
   });
 });
@@ -196,9 +200,13 @@ it("prepares board membership and recap freshness from the physical target and r
         updatedAt: 1,
         state: "current",
       });
-      for (const read of reads) expect(read).not.toHaveBeenCalled();
+      for (const read of reads) {
+        expect(read).not.toHaveBeenCalled();
+      }
     } finally {
-      for (const read of reads) read.mockRestore();
+      for (const read of reads) {
+        read.mockRestore();
+      }
     }
     await persistSessionTranscriptTurn(scope, {
       messages: [

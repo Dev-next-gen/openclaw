@@ -5,6 +5,7 @@ import type { AgentRuntimeIdentity } from "../agent-runtime-identity-token.js";
 import type { AuthenticatedGitHubIdentitySync } from "../github-user-identity.js";
 import type { GatewayOperatorRoleActor } from "../operator-role-actor.js";
 import type { PluginNodeCapabilityClient } from "../plugin-node-capability.js";
+import type { GatewayClient } from "../server-methods/client-types.js";
 import type { WorkerConnectionIdentity } from "../worker-environments/connection-identity.js";
 import type { GatewayConnectionTransport } from "./connection-transport.js";
 
@@ -53,6 +54,7 @@ export type GatewayWsClient = PluginNodeCapabilityClient & {
   authenticatedGitHubIdentitySync?: AuthenticatedGitHubIdentitySync;
   /** Lifecycle-prepared canonical recipient; never a scope or authorization grant. */
   preparedRecipientProfileId?: string;
+  preparedSessionProfile?: GatewayClient["preparedSessionProfile"];
   authenticatedUserProfile?: {
     profileId: string;
     displayName: string | null;

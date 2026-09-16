@@ -191,7 +191,13 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           ? requirePreparedTalkSessionTarget(sessionMutationAuthorization?.talkSessionTarget)
           : undefined;
         sessionMutationAuthorization?.assertCurrent();
+        const projection = context.getSessionRowProjection?.();
+        if (!projection) {
+          respondInvalidRequest(respond, "Session rows are initializing; try again");
+          return;
+        }
         const resolvedSession = await resolveSessionKeyFromResolveParams({
+          projection,
           cfg: runtimeConfig,
           client,
           p: {

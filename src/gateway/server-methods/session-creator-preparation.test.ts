@@ -26,10 +26,10 @@ import { GatewayClientRegistry } from "../server/client-registry.js";
 import type { GatewayWsClient } from "../server/ws-types.js";
 import { isSessionCreatorProfile, prepareSessionCreatorProfile } from "../session-creator.js";
 import { canReceiveSessionEvent, invalidateSessionSharingSnapshot } from "../session-sharing.js";
-import * as sessionUtils from "../session-utils.js";
 import { sessionCatalogHandlers } from "./session-catalog.js";
 import {
   identifiedClient,
+  initializeSessionReadContext,
   listSessions,
   requestContext,
   sessionReadHandlers,
@@ -187,25 +187,25 @@ describe("creator preparation at synchronous fan-out boundaries", () => {
   it("bounds list selection and sharing-role work and refreshes the next list after merge", async () => {
     await withCreatorRows(async ({ stateDir, callerId, keys }) => {
       const client = identifiedClient(callerId);
-      const list = () =>
-        listSessions({ client, context: requestContext({}), request: { limit: 100 } });
+      const context = requestContext({});
+      await initializeSessionReadContext(context);
+      const list = () => listSessions({ client, context, request: { limit: 100 } });
       profileAliases.readUserProfileAliases(callerId);
       const before = observeAliasRootProbes(stateDir);
       const foreign = await list();
       const beforeCount = before.finish("list-foreign").aliasRootProbes;
       expect(foreign.sessions).toHaveLength(100);
       expect(foreign.sessions.every((row) => row.sharingRole === "viewer")).toBe(true);
-      expect(beforeCount).toBeGreaterThan(0);
-      expect.soft(beforeCount).toBeLessThanOrEqual(3);
+      expect(beforeCount).toBe(0);
       linkEmail("creator@preparation.test", callerId);
       profileAliases.readUserProfileAliases(callerId);
+      await context.getSessionRowProjection!()!.ensureMaterialized();
       const after = observeAliasRootProbes(stateDir);
       const owned = await list();
       const afterCount = after.finish("list-merged").aliasRootProbes;
       expect(new Set(owned.sessions.map((row) => row.key))).toEqual(new Set(keys));
       expect(owned.sessions.every((row) => row.sharingRole === "owner")).toBe(true);
-      expect(afterCount).toBeGreaterThan(0);
-      expect(afterCount).toBeLessThanOrEqual(3);
+      expect(afterCount).toBe(0);
     });
   });
 
@@ -507,23 +507,22 @@ describe("creator preparation at synchronous fan-out boundaries", () => {
     }, 1);
   });
 
-  it("refreshes sharing roles after asynchronous row building", async () => {
+  it("refreshes sharing roles after awaiting resident row readiness", async () => {
     await withCreatorRows(async ({ callerId }) => {
-      const original = sessionUtils.listSessionsFromStoreAsync;
-      const rows = vi
-        .spyOn(sessionUtils, "listSessionsFromStoreAsync")
-        .mockImplementation((params) => {
-          const pending = original(params);
-          // The real builder has selected rows and yielded after its first ten projections.
+      const client = identifiedClient(callerId);
+      const context = requestContext({});
+      await initializeSessionReadContext(context);
+      const projection = context.getSessionRowProjection!()!;
+      const original = projection.ensureMaterialized;
+      const readiness = vi
+        .spyOn(projection, "ensureMaterialized")
+        .mockImplementationOnce(async () => {
+          await original();
+          // Identity changes while the request awaits readiness, before selection and presentation.
           linkEmail("creator@preparation.test", callerId);
-          return pending;
         });
-      const result = await listSessions({
-        client: identifiedClient(callerId),
-        context: requestContext({}),
-        request: { limit: 100 },
-      });
-      expect(rows).toHaveBeenCalledOnce();
+      const result = await listSessions({ client, context, request: { limit: 100 } });
+      expect(readiness).toHaveBeenCalled();
       expect(result.sessions).toHaveLength(100);
       expect(result.sessions.every((row) => row.sharingRole === "owner")).toBe(true);
     });

@@ -29,7 +29,7 @@ export type { AgentRunDelegatedAuthority } from "./agent-run-authority.types.js"
 export type { ProjectedAgentRunIndex } from "./agent-run-registry.types.js";
 
 /** Reads the process-local version of the active-run projection inputs. */
-export function readAgentRunIndexVersion(): number {
+function readAgentRunIndexVersion(): number {
   return getAgentRunRegistryState().version;
 }
 

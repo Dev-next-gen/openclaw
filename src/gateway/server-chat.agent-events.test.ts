@@ -97,8 +97,6 @@ vi.mock("./session-utils.js", () => {
   return {
     loadSessionEntry,
     loadGatewaySessionEntryReadOnly: loadSessionEntry,
-    loadGatewaySessionLifecycleSnapshot: (...args: unknown[]) =>
-      loadGatewaySessionLifecycleSnapshotMock(...args),
   };
 });
 
@@ -3365,7 +3363,9 @@ describe("agent event handler", () => {
       { ts: 1_234 },
     );
 
-    expect(loadGatewaySessionRow).toHaveBeenCalledWith("global", { agentId: "work" });
+    expect(loadGatewaySessionLifecycleSnapshotMock).toHaveBeenCalledWith("global", {
+      agentId: "work",
+    });
     expect(requireMockArg(broadcastToConnIds, 0, 0, "session tool event")).toBe("session.tool");
     expect(requireMockPayload(broadcastToConnIds, 0, 1, "session tool payload")).toEqual(
       expect.objectContaining({
@@ -5313,7 +5313,14 @@ describe("agent event handler", () => {
         agentId: "work",
       }),
     );
-    expect(loadGatewaySessionRow).toHaveBeenCalledWith("global", { agentId: "work" });
+    expect(loadGatewaySessionLifecycleSnapshotMock).toHaveBeenCalledWith("global", {
+      agentId: "work",
+      ownerEvent: expect.objectContaining({
+        runId: "run-global-work",
+        stream: "lifecycle",
+        data: { phase: "start" },
+      }),
+    });
     expect(broadcastToConnIds).toHaveBeenCalledWith(
       "sessions.changed",
       expect.objectContaining({

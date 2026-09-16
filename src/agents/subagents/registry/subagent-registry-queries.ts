@@ -3,7 +3,6 @@
  *
  * Combines snapshot traversal with current execution and reservation ownership.
  */
-import { runSynchronousWork, type SynchronousWork } from "../../../shared/synchronous-work.js";
 import type { DeliveryContext } from "../../../utils/delivery-context.types.js";
 import { isDeliverySuspended } from "./subagent-delivery-state.js";
 import type { SubagentRunReadRecord } from "./subagent-registry-read.types.js";
@@ -146,13 +145,6 @@ type SubagentRunReadIndexParams<T extends SubagentRunReadRecord> = {
 export function buildSubagentRunReadIndexFromRuns<T extends SubagentRunReadRecord>(
   params: SubagentRunReadIndexParams<T>,
 ): SubagentRunReadIndex<T> {
-  return runSynchronousWork(buildSubagentRunReadIndexWork(params));
-}
-
-export function buildSubagentRunReadIndexWork<T extends SubagentRunReadRecord>(
-  params: SubagentRunReadIndexParams<T>,
-  shouldYield?: () => boolean,
-): SynchronousWork<SubagentRunReadIndex<T>> {
   const { runs } = params;
   const now = params.now ?? Date.now();
   const inMemoryDisplayByChildSessionKey = new Map<string, T>();
@@ -187,50 +179,45 @@ export function buildSubagentRunReadIndexWork<T extends SubagentRunReadRecord>(
     recordLatestSubagentRun(inMemoryDisplayByChildSessionKey, childSessionKey, entry);
   }
 
-  // Classify once before yielding. Descendant queries still inspect live owners at use time.
+  // Capture display classification; descendant queries inspect live owners at use time.
   const retainedReadRuns = new Set<T>();
   for (const entry of runs.values()) {
     if (isRetainedReadRun(entry)) {
       retainedReadRuns.add(entry);
     }
   }
-  function* groupRuns(): SynchronousWork<void> {
-    for (const entry of runs.values()) {
-      if (shouldYield?.()) {
-        yield;
-      }
-      if (entry.collect && entry.groupId && entry.swarmRequesterSessionKey) {
-        const requester = entry.swarmRequesterSessionKey;
-        const members = swarmRunsByRequesterSessionKey.get(requester) ?? [];
-        members.push(entry);
-        swarmRunsByRequesterSessionKey.set(requester, members);
-      }
-      const childSessionKey = entry.childSessionKey.trim();
-      const controllerSessionKey = resolveControllerSessionKey(entry);
-      if (controllerSessionKey) {
-        let controllerRuns = runsByControllerSessionKey.get(controllerSessionKey);
-        if (!controllerRuns) {
-          controllerRuns = [];
-          runsByControllerSessionKey.set(controllerSessionKey, controllerRuns);
-        }
-        controllerRuns.push(entry);
-      }
-      if (!childSessionKey) {
-        continue;
-      }
-      recordLatestSubagentRun(latestRunsByChildSessionKey, childSessionKey, entry);
-
-      const requesterSessionKey = entry.requesterSessionKey;
-      if (!requesterSessionKey) {
-        continue;
-      }
-      let latestByChild = latestRunByRequesterAndChildSessionKey.get(requesterSessionKey);
-      if (!latestByChild) {
-        latestByChild = new Map<string, T>();
-        latestRunByRequesterAndChildSessionKey.set(requesterSessionKey, latestByChild);
-      }
-      recordLatestSubagentRun(latestByChild, childSessionKey, entry);
+  for (const entry of runs.values()) {
+    if (entry.collect && entry.groupId && entry.swarmRequesterSessionKey) {
+      const requester = entry.swarmRequesterSessionKey;
+      const members = swarmRunsByRequesterSessionKey.get(requester) ?? [];
+      members.push(entry);
+      swarmRunsByRequesterSessionKey.set(requester, members);
     }
+    const childSessionKey = entry.childSessionKey.trim();
+    const controllerSessionKey = resolveControllerSessionKey(entry);
+    if (controllerSessionKey) {
+      let controllerRuns = runsByControllerSessionKey.get(controllerSessionKey);
+      if (!controllerRuns) {
+        controllerRuns = [];
+        runsByControllerSessionKey.set(controllerSessionKey, controllerRuns);
+      }
+      controllerRuns.push(entry);
+    }
+    if (!childSessionKey) {
+      continue;
+    }
+    recordLatestSubagentRun(latestRunsByChildSessionKey, childSessionKey, entry);
+
+    const requesterSessionKey = entry.requesterSessionKey;
+    if (!requesterSessionKey) {
+      continue;
+    }
+    let latestByChild = latestRunByRequesterAndChildSessionKey.get(requesterSessionKey);
+    if (!latestByChild) {
+      latestByChild = new Map<string, T>();
+      latestRunByRequesterAndChildSessionKey.set(requesterSessionKey, latestByChild);
+    }
+    recordLatestSubagentRun(latestByChild, childSessionKey, entry);
   }
 
   const inputs = { runs, inMemoryRuns: [...inMemoryDisplayByChildSessionKey.values()] };
@@ -383,17 +370,14 @@ export function buildSubagentRunReadIndexWork<T extends SubagentRunReadRecord>(
       swarmRunsByRequesterSessionKey,
     };
   };
-  return (function* (): SynchronousWork<SubagentRunReadIndex<T>> {
-    yield* groupRuns();
-    for (const run of new Set([...runs.values(), ...inputs.inMemoryRuns])) {
-      const key = run.childSessionKey.trim();
-      const candidates = runsByChildSessionKey.get(key) ?? [];
-      candidates.push(run);
-      runsByChildSessionKey.set(key, candidates);
-    }
-    runsByChildSessionKey.delete("");
-    return atTime(now, retainedReadRuns);
-  })();
+  for (const run of new Set([...runs.values(), ...inputs.inMemoryRuns])) {
+    const key = run.childSessionKey.trim();
+    const candidates = runsByChildSessionKey.get(key) ?? [];
+    candidates.push(run);
+    runsByChildSessionKey.set(key, candidates);
+  }
+  runsByChildSessionKey.delete("");
+  return atTime(now, retainedReadRuns);
 }
 
 /**

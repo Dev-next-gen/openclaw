@@ -7,6 +7,8 @@ import { expect, test, vi } from "vitest";
 import * as agentScope from "../agents/agent-scope.js";
 import * as sessionsConfig from "../config/sessions.js";
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
+import * as sessionEntryReader from "../config/sessions/session-accessor.sqlite-entry.js";
+import * as sessionEntryStatus from "../config/sessions/session-accessor.sqlite-status.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
@@ -111,7 +113,7 @@ test("sessions.list keeps roster enumeration bounded as ordinary rows grow", asy
   expect(rosterReads[1]).toBeLessThanOrEqual(rosterReads[0]!);
 });
 
-test("sessions.list keeps cold and warm transcript title batches valid beyond the database handle cap", async () => {
+test("sessions.list retains transcript titles beyond the database handle cap", async () => {
   const stateDir = process.env.OPENCLAW_STATE_DIR;
   if (!stateDir) {
     throw new Error("OPENCLAW_STATE_DIR is required for gateway session tests");
@@ -149,36 +151,28 @@ test("sessions.list keeps cold and warm transcript title batches valid beyond th
     });
   }
 
-  const watermarkBatchSpy = vi.spyOn(sessionAccessor, "readSessionTranscriptWatermarkBatch");
+  const cfg = { session: { store: storeTemplate }, agents: testState.agentsConfig };
+  const projection = await createSessionRowProjection({ cfg });
   try {
-    for (const phase of ["cold", "warm"]) {
-      const result = await directSessionReq<SessionsListResult>("sessions.list", {
-        includeDerivedTitles: true,
-        includeLastMessage: true,
-        ...(phase === "warm" ? { limit: 100 } : {}),
-      });
-
-      expect(result.ok, `${phase} transcript title batch`).toBe(true);
-      expect(result.payload?.sessions, `${phase} transcript title batch`).toHaveLength(
-        agentIds.length,
+    for (const limit of [undefined, 100]) {
+      const result = await directSessionReq<SessionsListResult>(
+        "sessions.list",
+        { includeDerivedTitles: true, includeLastMessage: true, limit },
+        { context: { getRuntimeConfig: () => cfg, getSessionRowProjection: () => projection } },
       );
+
+      expect(result.ok).toBe(true);
+      expect(result.payload?.sessions).toHaveLength(agentIds.length);
       expect(
         result.payload?.sessions.every(
           (session) =>
             session.derivedTitle?.startsWith("Title ") &&
             session.lastMessagePreview?.startsWith("Reply "),
         ),
-        `${phase} transcript title batch`,
       ).toBe(true);
-      if (phase === "warm") {
-        expect(
-          watermarkBatchSpy.mock.calls.some(([scopes]) => scopes.length === agentIds.length),
-        ).toBe(true);
-      }
-      watermarkBatchSpy.mockClear();
     }
   } finally {
-    watermarkBatchSpy.mockRestore();
+    projection.dispose();
   }
 });
 
@@ -207,7 +201,6 @@ test("projection startup retains transcript titles for clean snapshots", async (
       session: { store: storePath },
     },
   });
-  const titleBatchSpy = vi.spyOn(sessionAccessor, "readSessionTranscriptTitleProbeBatch");
   const titlePageSpy = vi.spyOn(sessionAccessor, "readSessionTranscriptMessageEventPage");
   try {
     expect(
@@ -222,11 +215,9 @@ test("projection startup retains transcript titles for clean snapshots", async (
         lastMessagePreview: "Warm response",
       }),
     );
-    expect(titleBatchSpy).not.toHaveBeenCalled();
     expect(titlePageSpy).not.toHaveBeenCalled();
   } finally {
     projection.dispose();
-    titleBatchSpy.mockRestore();
     titlePageSpy.mockRestore();
   }
 });
@@ -300,29 +291,41 @@ test("sessions.list projects out prompt snapshots without changing full entry re
   expect(fullEntries[0]?.entry.skillsSnapshot).toBeDefined();
   expect(fullEntries[0]?.entry.systemPromptReport?.source).toBe("run");
 
-  const projections: Array<string | undefined> = [];
-  const originalReadOnly = sessionAccessor.listSessionEntriesReadOnly;
-  const originalWritable = sessionAccessor.listSessionEntriesCore;
-  const spies = [
-    vi.spyOn(sessionAccessor, "listSessionEntriesReadOnly").mockImplementation((scope) => {
-      projections.push(scope?.projection);
-      return originalReadOnly(scope);
-    }),
-    vi.spyOn(sessionAccessor, "listSessionEntriesCore").mockImplementation((scope) => {
-      projections.push(scope?.projection);
-      return originalWritable(scope);
-    }),
-  ];
+  const readonly = vi.spyOn(sessionEntryReader, "listSessionEntriesReadOnly");
+  const decode = vi.spyOn(sessionEntryStatus, "parseSessionEntryJson");
+  const cfg = {
+    agents: { list: [{ id: "main", default: true }] },
+    session: { store: storePath },
+  };
+  let projection: Awaited<ReturnType<typeof createSessionRowProjection>> | undefined;
   try {
-    const result = await directSessionReq("sessions.list", LIST_PARAMS);
+    projection = await createSessionRowProjection({ cfg });
+    expect(readonly).toHaveBeenCalledWith(
+      expect.objectContaining({ projection: "list", clone: false }),
+    );
+    expect(readonly.mock.calls.every(([scope]) => scope?.projection === "list")).toBe(true);
+    const resident = projection.describe({ agentId: "main", key: stored.session_key });
+    expect(resident?.storedEntry?.skillsSnapshot).toBeUndefined();
+    expect(resident?.storedEntry?.systemPromptReport).toBeUndefined();
+    readonly.mockClear();
+    decode.mockClear();
+
+    const result = await directSessionReq<SessionsListResult>("sessions.list", LIST_PARAMS, {
+      context: { getRuntimeConfig: () => cfg, getSessionRowProjection: () => projection },
+    });
     expect(result.ok).toBe(true);
-    expect(projections.length).toBeGreaterThan(0);
-    expect(projections).toEqual(projections.map(() => "list"));
+    expect(result.payload?.sessions.map((row) => row.sessionId)).toEqual(["sess-main"]);
+    expect(readonly).not.toHaveBeenCalled();
+    expect(decode).not.toHaveBeenCalled();
   } finally {
-    for (const spy of spies) {
-      spy.mockRestore();
-    }
+    projection?.dispose();
+    readonly.mockRestore();
+    decode.mockRestore();
   }
+
+  expect(sessionAccessor.listSessionEntriesReadOnly({ agentId: "main", storePath })).toEqual(
+    fullEntries,
+  );
 
   const listEntries = sessionAccessor.listSessionEntriesReadOnly({
     agentId: "main",

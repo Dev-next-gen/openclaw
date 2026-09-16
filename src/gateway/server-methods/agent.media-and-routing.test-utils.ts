@@ -15,6 +15,7 @@ import {
 import { isSessionWorkAdmissionActive } from "../../sessions/session-lifecycle-admission.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { createSyntheticPluginRuntimeClient } from "../server-plugin-runtime-client.js";
+import type { GatewaySessionRow } from "../session-utils.types.js";
 import { registerSubagentCompletionToolHandoff } from "../subagent-completion-tool-handoff.js";
 import {
   getAgentTestMocks,
@@ -1115,7 +1116,7 @@ describe("gateway agent handler", () => {
     });
     mocks.getLatestSubagentRunByChildSessionKey.mockReturnValueOnce(completedRun);
     mocks.replaceSubagentRunAfterSteer.mockReturnValueOnce(true);
-    mocks.loadGatewaySessionRow.mockReturnValueOnce({
+    const sessionRow = {
       key: childSessionKey,
       kind: "direct",
       updatedAt,
@@ -1124,7 +1125,7 @@ describe("gateway agent handler", () => {
       startedAt: 123,
       endedAt: undefined,
       runtimeMs: 10,
-    });
+    } satisfies GatewaySessionRow;
     mocks.agentCommand.mockResolvedValue({
       payloads: [{ text: "ok" }],
       meta: { durationMs: 100 },
@@ -1141,7 +1142,7 @@ describe("gateway agent handler", () => {
       {
         respond,
         context: {
-          ...makeContext(),
+          ...makeContext({ agentId: "main", row: sessionRow }),
           broadcastToConnIds,
           getSessionEventSubscriberConnIds: () => new Set(["conn-1"]),
         },
@@ -1192,7 +1193,7 @@ describe("gateway agent handler", () => {
       };
       return await updater(store);
     });
-    mocks.loadGatewaySessionRow.mockReturnValue({
+    const sessionRow = {
       key: "agent:main:main",
       kind: "direct",
       updatedAt,
@@ -1211,7 +1212,7 @@ describe("gateway agent handler", () => {
       lastThreadId: 42,
       totalTokens: 12,
       status: "running",
-    });
+    } satisfies GatewaySessionRow;
     mocks.agentCommand.mockResolvedValue({
       payloads: [{ text: "ok" }],
       meta: { durationMs: 100 },
@@ -1226,7 +1227,7 @@ describe("gateway agent handler", () => {
       },
       {
         context: {
-          ...makeContext(),
+          ...makeContext({ agentId: "main", row: sessionRow }),
           broadcastToConnIds,
           getSessionEventSubscriberConnIds: () => new Set(["conn-1"]),
         },

@@ -36,6 +36,7 @@ import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.
 import { resolveRuntimeServiceVersion } from "../version.js";
 import * as restartUpdateRun from "./server-restart-update-run.js";
 import { createTranscriptUpdateBroadcastHandler } from "./server-session-events.js";
+import { createSessionRowProjection } from "./session-row-projection.js";
 
 type RestartSentinel = NonNullable<
   Awaited<ReturnType<typeof import("../infra/restart-sentinel.js").readRestartSentinel>>
@@ -1209,7 +1210,15 @@ describe("scheduleRestartSentinelWake", () => {
       );
       const broadcastToConnIds = vi.fn();
       const subscribers = new Set(["control-ui-connection"]);
+      const rowProjection = await createSessionRowProjection({
+        cfg: { agents: { entries: { main: {} } }, session: { store: storePath } },
+      });
+      expect(rowProjection.capture({ agentId: "main", key: sessionKey })?.entry).toMatchObject({
+        sessionId,
+        lifecycleRevision: entry.lifecycleRevision,
+      });
       const publish = createTranscriptUpdateBroadcastHandler({
+        getSessionRowProjection: () => rowProjection,
         broadcastToConnIds,
         sessionEventSubscribers: { getAll: () => subscribers },
         sessionMessageSubscribers: { get: () => subscribers },
@@ -1315,6 +1324,7 @@ describe("scheduleRestartSentinelWake", () => {
         mocks.mergeDeliveryContext.mockImplementation(originalMerge);
         unsubscribe();
         await Promise.allSettled(publications);
+        rowProjection.dispose();
       }
     },
   );

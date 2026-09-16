@@ -49,6 +49,8 @@ export type GatewayClient = {
   /** Verified Tailscale provider identity; generic proxy identities must not infer this. */
   authenticatedUserIsTailscaleProvider?: boolean;
   authenticatedGitHubIdentitySync?: AuthenticatedGitHubIdentitySync;
+  /** Prepared at identity admission and profile publication, before session reads or events. */
+  preparedSessionProfile?: { profileId: string; aliases: ReadonlySet<string>; role: string | null };
   authenticatedUserProfile?: {
     profileId: string;
     displayName: string | null;

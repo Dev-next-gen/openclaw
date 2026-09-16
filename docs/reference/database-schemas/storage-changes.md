@@ -198,22 +198,16 @@ Only pending reads coalesce; completed results are not cached. Physical integrit
 verification remains with full registry restoration and Doctor, while known
 database failures and quarantine still refuse summary reads.
 
-`sessions.list` and `sessions.describe` load complete persisted subagent metadata
-in the shared-state worker through a read-only connection. The existing cache coalesces pending fills
-and applies intervening named updates and deletions before publishing its first
-complete snapshot. Full replacement, registry ownership changes, and database
-retirement fence obsolete replies. Loaded snapshots stay current through registry
-publication instead of periodic reloads: named writes patch rows, while full
-replacement and restore replace snapshots. Retention rules remain unchanged.
-Gateway, embedded, and TUI callers merge accepted rows
-with current host memory and scheduler facts before building the full topology.
-Session reads check the shared projection budget before accepting a snapshot,
-then capture persisted rows and live ownership in one synchronous continuation.
-Each resumed caller rechecks the shared budget before admission and cache
-acceptance. Pure topology grouping uses the same budget; a single snapshot
-capture cannot yield midway.
-Synchronous readers reuse the same SQL and row decoder; runtime reads do not
-repair storage.
+Gateway, embedded, and TUI session lists use resident materialized rows and the
+subagent registry's owner-maintained memory snapshot. Each durable session store
+is hydrated when first admitted, replaced, or reintroduced; departing stores lose
+their projected rows. Committed owner publications mark affected identities dirty,
+and bounded refresh batches yield through the shared session-list work budget.
+Clean list, describe, and event snapshot reads execute no SQLite statements.
+Refreshing a dirty row may use the existing exact-key readers for its cold facts;
+requests never rebuild the combined store or reload the subagent registry.
+Registry replacement and restoration replace its snapshot, while named writes
+patch it. Storage repair and retention remain with their existing owners.
 
 Gateway user-preference RPCs and Talk appearance reads resolve merged profile IDs
 and access preferences in the shared-state worker. Preference writes keep profile

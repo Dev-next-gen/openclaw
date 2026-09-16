@@ -141,8 +141,6 @@ import {
   registerSessionAutomationSource,
   unregisterSessionAutomationSource,
 } from "./session-automation-index.js";
-import { buildGatewaySessionEventFields } from "./session-event-payload.js";
-import { loadGatewaySessionRow } from "./session-utils.js";
 
 export type GatewaySystemJobReconciliationResult = "converged" | "retry-scheduled" | "superseded";
 
@@ -764,20 +762,32 @@ export function buildGatewayCronService(params: {
       defaultAgentId: cron.getDefaultAgentId(),
     });
     for (const sessionKey of boundKeys) {
-      // Emit even without a stored row: clients run a canonical list refresh on
-      // every sessions.changed, which also clears badges on prior bindings
-      // (e.g. after retargeting a job to a not-yet-created session).
-      const sessionRow = loadGatewaySessionRow(sessionKey);
-      params.broadcast(
-        "sessions.changed",
-        {
-          sessionKey,
-          reason: "cron-binding",
-          ts: Date.now(),
-          ...(sessionRow ? buildGatewaySessionEventFields({ sessionRow }) : {}),
-        },
-        { dropIfSlow: true },
-      );
+      const context = scheduledGatewayContextResolver?.();
+      const projection = context?.getSessionRowProjection?.();
+      const publish = () =>
+        params.broadcast(
+          "sessions.changed",
+          {
+            sessionKey,
+            reason: "cron-binding",
+            ts: Date.now(),
+          },
+          { dropIfSlow: true },
+        );
+      if (projection) {
+        void (async () => {
+          do {
+            await projection.ensureMaterialized();
+          } while (projection.needsMaterialization);
+          if (scheduledGatewayContextResolver?.() === context) {
+            publish();
+          }
+        })().catch((error: unknown) =>
+          cronLogger.warn({ error }, "Cron session publication failed"),
+        );
+      } else {
+        publish();
+      }
     }
   };
 

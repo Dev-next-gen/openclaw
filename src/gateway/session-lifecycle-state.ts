@@ -329,16 +329,6 @@ function acceptsCronRunContinuationLifecycleEvent(params: {
   return Boolean(marker?.phase === "continuing" && runId && marker.ownerRunId === runId);
 }
 
-// sessions.list cache fence input. The terminal entry write (status/endedAt/
-// runtimeMs) commits asynchronously after the run-index fence already bumped
-// at lifecycle end; without its own fence a list computed in that window
-// caches the pre-terminal row indefinitely.
-let lifecyclePersistenceVersion = 0;
-
-export function readSessionLifecyclePersistenceVersion(): number {
-  return lifecyclePersistenceVersion;
-}
-
 export async function persistGatewaySessionLifecycleEvent(params: {
   sessionKey: string;
   agentId?: string;
@@ -473,7 +463,6 @@ export async function persistGatewaySessionLifecycleEvent(params: {
     const message = `main-session restart recovery terminal: session=${sessionEntry.canonicalKey} run=${terminalRecovery.runId} status=${terminalRecovery.outcome.status} reason=${terminalRecovery.outcome.reason}`;
     restartRecoveryLog[terminalRecovery.outcome.status === "ok" ? "info" : "warn"](message);
   }
-  lifecyclePersistenceVersion += 1;
   if (persisted && failedRun) {
     const { runId, error } = failedRun;
     // Only accepted errors pay for branch navigation; assistant detection and

@@ -410,12 +410,7 @@ test("sessions.describe retains full target and child metadata without decoding 
         },
       },
     });
-    expect(projected).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionKey,
-        entry: expect.objectContaining({ skillsSnapshot }),
-      }),
-    );
+    expect(projected).not.toHaveBeenCalled();
     expect(unrelatedDecodes).toBe(0);
   } finally {
     projected.mockRestore();

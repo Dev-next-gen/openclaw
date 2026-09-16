@@ -234,17 +234,17 @@ With `diagnostics.enabled: true` and warning logging enabled, `sessions.list`
 handlers and `sessions.subscribe` snapshot handlers taking at least one second
 also emit `slow session list`. The `operation` field identifies which request
 produced the record. The record
-includes process/thread identity, the request trace, and `cacheRole`: a completed
-cache hit, an in-flight follower, a projection owner, or `unreached` if the handler
-failed before selecting a cache path. Followers can include `workTraceId` and
-`workSpanId` to identify the request producing their shared result. Successful
-list results report `selectedRowCount` for every cache role.
+includes process/thread identity, the request trace, and row counts:
+`selectedRowCount`, `dirtyRowCount`, `materializedRowCount`, and `reusedRowCount`.
+The latter two distinguish selected rows refreshed during this request from
+selected rows already resident when it began. Dirty counts describe pending
+owner work at the start of the request.
 
-Projection owners report phase totals, visibility-repair counts, synchronous
-preparation/row time, and `yieldWaitMs`/`yieldCount` for time spent awaiting the
-event loop. Hits and followers omit those projection counters. `rows` includes
-its synchronous and yielded intervals; do not add those details to the phase
-total again. `handlerElapsedMs` starts before parameter validation and excludes
+Records report phase totals, synchronous selection/row time, and
+`yieldWaitMs`/`yieldCount` for awaiting shared projection readiness. These waits
+can include coalesced work shared with other callers. Phase totals include their
+wait intervals; do not add the detailed counters to those totals again.
+`handlerElapsedMs` starts before parameter validation and excludes
 admission before the handler. The `response` phase includes the synchronous response callback. These are elapsed
 durations, not CPU time or proof of client receipt. No query text or session
 contents are included.

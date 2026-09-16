@@ -39,6 +39,7 @@ import {
 import { getPreparedModelRuntimeAuthMaterializations } from "../agents/prepared-model-runtime-auth.js";
 import { loadAgentRuntimePluginRegistryHandle } from "../agents/runtime-plugins.js";
 import { readToolValidationErrorSummary } from "../agents/tool-error-summary.js";
+import { bindEmbeddedSessionRowProjection } from "../agents/tools/embedded-gateway-stub.js";
 import { resolveTextCommand } from "../auto-reply/commands-registry.js";
 import { executeSessionGoalCommand, parseGoalCommand } from "../auto-reply/reply/commands-goal.js";
 import { resolveQueueSettingsCore } from "../auto-reply/reply/queue/settings.js";
@@ -76,14 +77,18 @@ import {
 import { buildModelsListResult } from "../gateway/server-methods/models-list-result.js";
 import { createGatewaySession } from "../gateway/session-create-service.js";
 import { performGatewaySessionReset } from "../gateway/session-reset-service.js";
-import { capArrayByJsonBytes } from "../gateway/session-transcript-readers.js";
-import { projectSessionPatchResult } from "../gateway/session-utils-model.js";
 import {
-  buildGatewaySessionInfo,
+  createSessionRowProjection,
+  type SessionRowProjection,
+} from "../gateway/session-row-projection.js";
+import { capArrayByJsonBytes } from "../gateway/session-transcript-readers.js";
+import { listProjectedSessions } from "../gateway/session-utils-list.js";
+import { projectSessionPatchResult } from "../gateway/session-utils-model.js";
+import { buildGatewaySessionRow } from "../gateway/session-utils-row.js";
+import { createGatewaySessionEntryReader } from "../gateway/session-utils-store-lookup.js";
+import {
   getSessionDefaults,
   listAgentsForGateway,
-  listSessionsFromStoreAsync,
-  loadCombinedSessionStoreForGatewayCore,
   loadSessionEntry,
   loadGatewaySessionEntryReadOnly,
   resolveCanonicalGatewaySessionStoreKey,
@@ -105,7 +110,11 @@ import {
   setEmbeddedQuestionBroker,
 } from "../infra/embedded-question-broker.js";
 import { logInfo, logWarn } from "../logger.js";
-import { agentSessionKeysMatchByRequestKey, normalizeAgentId } from "../routing/session-key.js";
+import {
+  agentSessionKeysMatchByRequestKey,
+  isIncognitoSessionKey,
+  normalizeAgentId,
+} from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
 import {
@@ -363,7 +372,9 @@ export class EmbeddedTuiBackend implements TuiBackend {
   private unsubscribePluginApprovals?: () => void;
   private unsubscribeQuestions?: () => void;
   private unsubscribeConfigWrites?: () => void;
-  // Resolves once the one-time session-key migration has run; store methods await it.
+  private sessionProjection?: Promise<SessionRowProjection>;
+  private unbindSessionProjection?: () => void;
+  // Store methods await migration and the shared resident session rows.
   private ready: Promise<void> = Promise.resolve();
 
   start() {
@@ -394,7 +405,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
     });
     this.preparedModelRuntime.publish(config);
     // Local mode shares the Gateway's session-store readiness checks.
-    this.ready = (async () => {
+    this.sessionProjection = (async () => {
       const { runSessionStartupMigration } =
         await import("../config/sessions/startup-migration.js");
       await runSessionStartupMigration({
@@ -402,7 +413,10 @@ export class EmbeddedTuiBackend implements TuiBackend {
         env: process.env,
         log: embeddedSessionStartupMigrationLog,
       });
+      return createSessionRowProjection({ cfg: getRuntimeConfig(), getConfig: getRuntimeConfig });
     })();
+    this.ready = this.sessionProjection.then(() => {});
+    this.unbindSessionProjection = bindEmbeddedSessionRowProjection(this.sessionProjection);
     queueMicrotask(() => {
       this.onConnected?.();
     });
@@ -438,6 +452,14 @@ export class EmbeddedTuiBackend implements TuiBackend {
         }
       }
     }
+    this.unbindSessionProjection?.();
+    this.unbindSessionProjection = undefined;
+    const projection = this.sessionProjection;
+    this.sessionProjection = undefined;
+    await projection?.then(
+      (value) => value.dispose(),
+      () => {},
+    );
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.pendingLifecycleErrors.forEach(clearTimeout);
@@ -636,6 +658,10 @@ export class EmbeddedTuiBackend implements TuiBackend {
     await this.ready;
     await this.preparedModelRuntime.waitUntilReady();
     const loadOptions = opts.agentId ? { agentId: opts.agentId } : undefined;
+    const selected = loadGatewaySessionEntryReadOnly(opts.sessionKey, {
+      ...loadOptions,
+      includeStoreChildEntries: true,
+    });
     const {
       cfg,
       agentId: sessionAgentId,
@@ -644,10 +670,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
       readSource,
       entry,
       canonicalKey,
-    } = loadGatewaySessionEntryReadOnly(opts.sessionKey, {
-      ...loadOptions,
-      includeStoreChildEntries: true,
-    });
+    } = selected;
     const sessionId = entry?.sessionId;
     const runtimePluginsPrewarm = ensureEmbeddedHistoryRuntimePluginsLoaded({
       cfg,
@@ -716,27 +739,52 @@ export class EmbeddedTuiBackend implements TuiBackend {
     }
 
     const defaults = getSessionDefaults(cfg, undefined, { allowPluginNormalization: false });
-    const sessionInfo = buildGatewaySessionInfo({
-      cfg,
-      storePath,
-      store,
-      readSource,
+    const projection = await this.sessionProjection;
+    if (projection) {
+      do {
+        await projection.ensureMaterialized();
+      } while (projection.needsMaterialization);
+    }
+    const target = {
       key: canonicalKey,
-      entry,
       agentId: sessionAgentId,
-    });
-    sessionInfo.thinkingLevel = thinkingLevel;
-    sessionInfo.verboseLevel = entry?.verboseLevel ?? cfg.agents?.defaults?.verboseDefault;
+      storePath: readSource?.path ?? storePath,
+    };
+    const current = projection?.describe(target);
+    const sessionInfo =
+      entry && (entry.incognito || isIncognitoSessionKey(canonicalKey))
+        ? buildGatewaySessionRow({
+            cfg,
+            storePath,
+            store,
+            key: canonicalKey,
+            entry,
+            agentId: sessionAgentId,
+            modelSource: { entry, loadSessionEntry: createGatewaySessionEntryReader(selected) },
+            lightweightListRow: true,
+            skipTranscriptUsageFallback: true,
+          })
+        : entry &&
+            current &&
+            current.entry.sessionId === sessionId &&
+            current.entry.lifecycleRevision === entry.lifecycleRevision
+          ? (projection?.snapshot(target).row ?? undefined)
+          : undefined;
+    const verboseLevel = entry?.verboseLevel ?? cfg.agents?.defaults?.verboseDefault;
+    if (sessionInfo) {
+      sessionInfo.thinkingLevel = thinkingLevel;
+      sessionInfo.verboseLevel = verboseLevel;
+    }
 
     return {
       sessionKey: opts.sessionKey,
       sessionId,
       messages,
       defaults,
-      sessionInfo,
+      ...(sessionInfo ? { sessionInfo } : {}),
       thinkingLevel,
       fastMode: entry?.fastMode,
-      verboseLevel: sessionInfo.verboseLevel,
+      verboseLevel,
       runtimePluginsPrewarm,
       ...(inFlightRun ? { inFlightRun } : {}),
     };
@@ -744,16 +792,13 @@ export class EmbeddedTuiBackend implements TuiBackend {
 
   async listSessions(opts?: Parameters<TuiBackend["listSessions"]>[0]): Promise<TuiSessionList> {
     await this.ready;
-    const cfg = getRuntimeConfig();
-    const { storePath, store, targetsBySessionKey } = loadCombinedSessionStoreForGatewayCore(cfg, {
-      agentId: opts?.agentId,
-      projection: "list",
-    });
-    return (await listSessionsFromStoreAsync({
-      cfg,
-      storePath,
-      store,
-      targetsBySessionKey,
+    const publication = this.sessionProjection;
+    const projection = await publication;
+    if (!projection || publication !== this.sessionProjection) {
+      throw new Error("Embedded session projection is unavailable");
+    }
+    return (await listProjectedSessions({
+      projection,
       opts: opts ?? {},
     })) as TuiSessionList;
   }

@@ -53,6 +53,7 @@ type GatewayRequestContextRuntime = Pick<
   | "readPreparedGatewayModelCatalog"
   | "readPreparedGatewayModelCatalogBatch"
   | "getRuntimeSnapshot"
+  | "getSessionRowProjection"
   | "broadcast"
   | "broadcastToConnIds"
   | "nodeSendToSession"
@@ -237,6 +238,7 @@ export function createGatewayRequestContext(
   const scopeUpgradeCoordinator = new ScopeUpgradeCoordinator();
   const context: GatewayRequestContext = {
     trackExecution: (run) => connectionWork.track(run),
+    getSessionRowProjection: runtime.getSessionRowProjection,
     deps: runtime.deps,
     configRevisionProjector: params.configRevisionProjector,
     // Keep cron reads live so config hot reload can swap cron/store state without rebuilding

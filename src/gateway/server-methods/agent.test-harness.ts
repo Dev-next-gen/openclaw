@@ -17,6 +17,7 @@ import type {
   stageSessionPendingInput,
 } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { buildProjectedAgentRunIndex } from "../../infra/agent-run-registry.js";
 import { resetDiagnosticEventsForTest } from "../../infra/diagnostic-events.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import {
@@ -26,6 +27,7 @@ import {
 import { captureEnv, setTestEnvValue } from "../../test-utils/env.js";
 import { installInMemoryTaskRegistryRuntime } from "../../test-utils/task-registry-runtime.js";
 import { createChatRunState } from "../server-chat-state.js";
+import type { GatewaySessionRow } from "../session-utils.types.js";
 import { agentIdentityHandlers } from "./agent-identity.js";
 import { agentHandlers } from "./agent.js";
 import { flushPendingSessionsChangedEvents } from "./session-change-event.js";
@@ -43,7 +45,6 @@ export const REAL_PNG_DATA_URL = `data:image/png;base64,${REAL_PNG.toString("bas
 
 const mocks = vi.hoisted(() => ({
   loadSessionEntry: vi.fn(),
-  loadGatewaySessionRow: vi.fn<typeof import("../session-utils.js").loadGatewaySessionRow>(),
   updateSessionStore: vi.fn(),
   applySessionEntryReplacements: vi.fn(),
   patchSessionEntryTarget: vi.fn(),
@@ -119,7 +120,6 @@ vi.mock("../session-utils.js", async () => {
       const loaded = mocks.loadSessionEntry(...args) as ReturnType<typeof actual.loadSessionEntry>;
       return { ...loaded, cfg: resolveAgentTestConfig(loaded.cfg) };
     },
-    loadGatewaySessionRow: mocks.loadGatewaySessionRow,
   };
 });
 
@@ -402,7 +402,10 @@ vi.mock("../../channels/message/runtime.js", async () => {
   };
 });
 
-export const makeContext = (): GatewayRequestContext =>
+export const makeContext = (session?: {
+  agentId: string;
+  row: GatewaySessionRow;
+}): GatewayRequestContext =>
   ({
     trackExecution: trackAsyncWork,
     dedupe: new Map(),
@@ -418,6 +421,16 @@ export const makeContext = (): GatewayRequestContext =>
     broadcastToConnIds: vi.fn(),
     getSessionEventSubscriberConnIds: () => new Set(),
     getRuntimeConfig: () => resolveAgentTestConfig(),
+    getSessionRowProjection: () => ({
+      get state() {
+        return { rowContext: { projectedAgentRuns: buildProjectedAgentRunIndex() } };
+      },
+      capture: () => undefined,
+      ensureMaterialized: async () => {},
+      snapshot: ({ key, agentId }: { key: string; agentId: string }) => ({
+        row: session?.agentId === agentId && session.row.key === key ? session.row : null,
+      }),
+    }),
   }) as unknown as GatewayRequestContext;
 
 type AgentHandler = NonNullable<typeof agentHandlers.agent>;
@@ -1146,11 +1159,10 @@ export function restoreAgentTaskRegistryRuntimeAfterTests(): void {
   resetTaskRegistryForTests({ persist: false });
 }
 
-export const describe0AfterEach0 = () => {
+export const describe0AfterEach0 = async () => {
   mocks.userTurnStorePath = undefined;
   // Drain deferred broadcasts before retiring the test-owned row and runtime state.
-  flushPendingSessionsChangedEvents();
-  mocks.loadGatewaySessionRow.mockReset();
+  await flushPendingSessionsChangedEvents();
   envSnapshot.restore();
   resetDetachedTaskLifecycleRuntimeForTests();
   resetDiagnosticEventsForTest();
@@ -1183,8 +1195,8 @@ export const describe0AfterEach0 = () => {
   vi.useRealTimers();
 };
 
-function resetIntegrationState() {
-  flushPendingSessionsChangedEvents();
+async function resetIntegrationState() {
+  await flushPendingSessionsChangedEvents();
   envSnapshot.restore();
   resetDetachedTaskLifecycleRuntimeForTests();
   resetAgentTaskRegistryForTests();
@@ -1192,7 +1204,6 @@ function resetIntegrationState() {
   applyGatewaySubagentRegistryTestDeps();
   mocks.agentCommand.mockReset();
   mocks.loadConfigReturn = {};
-  mocks.loadGatewaySessionRow.mockReset();
   mocks.loadSessionEntry.mockReset();
   mocks.updateSessionStore.mockReset();
   resetSessionAccessorMocks();
@@ -1214,11 +1225,11 @@ function resetIntegrationState() {
 }
 
 export const describe1BeforeEach0 = () => {
-  resetIntegrationState();
+  return resetIntegrationState();
 };
 
 export const describe1AfterEach1 = () => {
-  resetIntegrationState();
+  return resetIntegrationState();
 };
 
 export function prime(sessionId = "existing-session-id", cfg: Record<string, unknown> = {}) {

@@ -43,8 +43,6 @@ export const vitestWorkerDeclarationEntries = {
   "agents/command/cli-compaction-runtime.test-support":
     "src/agents/command/cli-compaction-runtime.test-support.ts",
   "cron/owner-hardening-runtime.test-support": "src/cron/owner-hardening-runtime.test-support.ts",
-  "gateway/server-methods/sessions-list-cache-retention-entrypoint.test-support":
-    "src/gateway/server-methods/sessions-list-cache-retention-entrypoint.test-support.ts",
   "gateway/session-child-cache-retention-entrypoint.test-support":
     "src/gateway/session-child-cache-retention-entrypoint.test-support.ts",
   "gateway/session-title-retention.test-support":

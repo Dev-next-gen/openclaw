@@ -39,7 +39,7 @@ import { withStateDirEnv as withRawStateDirEnv } from "../test-helpers/state-dir
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
 import type { GatewayModelCatalogSnapshot } from "./server-model-catalog.types.js";
 import { registerSessionAutomationSource } from "./session-automation-index.js";
-import { buildGatewaySessionEventFields } from "./session-event-payload.js";
+import { buildGatewaySessionSnapshot } from "./session-event-payload.js";
 import { projectSessionActor } from "./session-identity-projection.js";
 import { buildSessionRowFixture, listSessionFixture } from "./session-list.test-support.js";
 import { resolveSessionStoreAgentId, resolveSessionStoreKey } from "./session-store-key.js";
@@ -149,7 +149,7 @@ test("projects a channel avatar route without exposing its media-store reference
   );
   expect(row.origin).toEqual({ provider: "discord", to: "user:user-1" });
   expect(JSON.stringify(row)).not.toContain(localReference);
-  expect(buildGatewaySessionEventFields({ sessionRow: row })).toMatchObject({
+  expect(buildGatewaySessionSnapshot({ sessionRow: row })).toMatchObject({
     channelAvatarUrl: row.channelAvatarUrl,
   });
 
@@ -577,7 +577,7 @@ describe("gateway session utils", () => {
     });
 
     expect(row.swarmGroupId).toBe("swarm:agent:main:parent:turn-42");
-    expect(buildGatewaySessionEventFields({ sessionRow: row }).swarmGroupId).toBe(
+    expect(buildGatewaySessionSnapshot({ sessionRow: row }).swarmGroupId).toBe(
       "swarm:agent:main:parent:turn-42",
     );
   });
@@ -593,9 +593,7 @@ describe("gateway session utils", () => {
     });
 
     expect(row.toolOverrides).toEqual(toolOverrides);
-    expect(buildGatewaySessionEventFields({ sessionRow: row }).toolOverrides).toEqual(
-      toolOverrides,
-    );
+    expect(buildGatewaySessionSnapshot({ sessionRow: row }).toolOverrides).toEqual(toolOverrides);
   });
 
   test("projects restart recovery tombstones", () => {
@@ -617,7 +615,7 @@ describe("gateway session utils", () => {
     });
 
     expect(row.restartRecoveryStatus).toBe("tombstoned");
-    expect(buildGatewaySessionEventFields({ sessionRow: row }).restartRecoveryStatus).toBe(
+    expect(buildGatewaySessionSnapshot({ sessionRow: row }).restartRecoveryStatus).toBe(
       "tombstoned",
     );
   });
@@ -631,7 +629,7 @@ describe("gateway session utils", () => {
       entry: {} as SessionEntry,
     });
 
-    expect(buildGatewaySessionEventFields({ sessionRow: row }).controlOwnerSessionKey).toBeNull();
+    expect(buildGatewaySessionSnapshot({ sessionRow: row }).controlOwnerSessionKey).toBeNull();
   });
 
   test("projects only unexpired agent status", () => {
@@ -679,7 +677,7 @@ describe("gateway session utils", () => {
       updatedAt: observerDigest.updatedAt,
       revision: observerDigest.revision,
     });
-    expect(buildGatewaySessionEventFields({ sessionRow: row }).observerDigest).toEqual(
+    expect(buildGatewaySessionSnapshot({ sessionRow: row }).observerDigest).toEqual(
       row.observerDigest,
     );
   });
@@ -706,7 +704,7 @@ describe("gateway session utils", () => {
     });
 
     expect(row.observerDigest).toBeUndefined();
-    expect(buildGatewaySessionEventFields({ sessionRow: row }).observerDigest).toBeNull();
+    expect(buildGatewaySessionSnapshot({ sessionRow: row }).observerDigest).toBeNull();
   });
 
   test("session lists apply a bounded default and expose truncation metadata", async () => {
@@ -1432,7 +1430,7 @@ describe("gateway session utils", () => {
         skipTranscriptUsageFallback: true,
       });
       expect(bound.hasAutomation).toBe(true);
-      expect(buildGatewaySessionEventFields({ sessionRow: bound }).hasAutomation).toBe(true);
+      expect(buildGatewaySessionSnapshot({ sessionRow: bound }).hasAutomation).toBe(true);
 
       const plain = buildGatewaySessionRow({
         cfg,
@@ -1443,7 +1441,7 @@ describe("gateway session utils", () => {
         skipTranscriptUsageFallback: true,
       });
       expect(plain.hasAutomation).toBeUndefined();
-      expect(buildGatewaySessionEventFields({ sessionRow: plain }).hasAutomation).toBe(false);
+      expect(buildGatewaySessionSnapshot({ sessionRow: plain }).hasAutomation).toBe(false);
     } finally {
       registerSessionAutomationSource(null);
     }
@@ -1467,12 +1465,12 @@ describe("gateway session utils", () => {
     });
 
     expect(failed.lastRunError).toBe("Provider credits exhausted");
-    expect(buildGatewaySessionEventFields({ sessionRow: failed }).lastRunError).toBe(
+    expect(buildGatewaySessionSnapshot({ sessionRow: failed }).lastRunError).toBe(
       "Provider credits exhausted",
     );
 
     const cleared = { ...failed, status: "running" as const, lastRunError: undefined };
-    expect(buildGatewaySessionEventFields({ sessionRow: cleared }).lastRunError).toBeNull();
+    expect(buildGatewaySessionSnapshot({ sessionRow: cleared }).lastRunError).toBeNull();
   });
 
   test("session rows and update events project the exact settled run identity", () => {
@@ -1492,10 +1490,10 @@ describe("gateway session utils", () => {
     });
 
     expect(settled.lastRunId).toBe("run-settled");
-    expect(buildGatewaySessionEventFields({ sessionRow: settled }).lastRunId).toBe("run-settled");
+    expect(buildGatewaySessionSnapshot({ sessionRow: settled }).lastRunId).toBe("run-settled");
 
     const running = { ...settled, status: "running" as const, lastRunId: undefined };
-    expect(buildGatewaySessionEventFields({ sessionRow: running }).lastRunId).toBeNull();
+    expect(buildGatewaySessionSnapshot({ sessionRow: running }).lastRunId).toBeNull();
   });
 
   test.each([
@@ -1917,7 +1915,7 @@ describe("gateway session utils", () => {
         opts: { search: "openai/gpt-5.6-luna" },
       });
       expect(matches.sessions.map((row) => row.key)).toEqual([nativeKey]);
-      expect(buildGatewaySessionEventFields({ sessionRow: nativeRow })).toMatchObject({
+      expect(buildGatewaySessionSnapshot({ sessionRow: nativeRow })).toMatchObject({
         modelProvider: "openai",
         model: "gpt-5.6-luna",
       });

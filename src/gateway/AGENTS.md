@@ -63,7 +63,14 @@ runtime when they only need plugin-owned static descriptors.
 
 - `session-row-projection.ts` owns resident materialized session rows. Owner publications through `sessionChanges` invalidate exact session identities; SQLite publications run after commit, and reads retain fresh sharing identity after yields.
 - Startup is per physical store: first admission, replacement, or reappearance after a hot `session.store` change hydrates that store once through the existing loader. Remove rows when their store leaves the topology. Incognito stores stay excluded across database generations.
+- Preserve the existing partial ACP-key repair at physical admission; clean reads consume its prepared result.
 - After hydration, clean list/describe/event snapshots execute no SQLite statements. Dirty rows may acquire their cold inputs through existing exact-key readers with their existing transcript/usage bounds. Never scan an already resident store to serve a request.
+- The profile owner retains durable display facts and merge aliases while a projection is active. Its committed writes update exact catalog keys before publishing through `sessionChanges`; physical shared-store admission hydrates the catalog once. Person-reference selection reads that catalog, including profiles without sessions.
+- Prepare federation scopes on topology publication. Resolve sentinel precedence before viewer/activity filtering; model inheritance and child links use the same physical parent. A list awaits projection readiness, then selects, authorizes, presents, and replies synchronously with the current viewer and clock; do not insert a result-promise await before the RPC response.
+- Recheck `needsMaterialization` in the consuming frame after readiness awaits: a commit can arrive as a promise settles. Successful drains join subsequent dirty work; failed refreshes keep their keys dirty for the next signal or read.
+- Queued events capture the projection generation before awaited work and reject a replaced identity before publishing. Keyed mutations use the shared per-connection snapshot presenter; broad invalidations remain keyless. Incognito history uses PR 1's direct builder outside the resident roster, without retaining incognito rows.
+- Cancellation receipts prepare rows inside the existing kill hold, revalidate the run and captured session generation, then publish synchronously before releasing ownership. Ordinary events retain coalesced publication.
+- Prepared event authorization belongs to `sessions.changed` and `session.message`, whose producers await row readiness. Synchronous board/progress events retain the sharing owner's committed reader so a dirty row cannot suppress an authorized delivery.
 
 ## Verification
 

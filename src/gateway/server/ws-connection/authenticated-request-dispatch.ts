@@ -21,7 +21,10 @@ import {
 } from "../../../infra/diagnostic-trace-context.js";
 import { runOutsideGatewayRootWorkAdmission } from "../../../process/gateway-work-admission.js";
 import { createLazyPromise } from "../../../shared/lazy-runtime.js";
-import { createExpectedProfileBinding } from "../../expected-profile.js";
+import {
+  createExpectedProfileBinding,
+  resolvePreparedSessionProfileId,
+} from "../../expected-profile.js";
 import type { GatewayRequestEntry } from "../../server-request-entry.js";
 import { classifyGatewayStaleInstall } from "../../stale-install.js";
 import { formatForLog, logWs } from "../../ws-log.js";
@@ -107,7 +110,13 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
     const diagnostics = createGatewayRpcDiagnostics(req.method, getMethodRegistry, extraHandlers);
     logWs("in", "req", { connId, id: req.id, method: req.method });
     const context = buildRequestContext();
-    const expectedProfileBinding = createExpectedProfileBinding(req.expectedProfileId, client);
+    const expectedProfileBinding = createExpectedProfileBinding(
+      req.expectedProfileId,
+      client,
+      req.method === "sessions.list" || req.method === "sessions.describe"
+        ? () => resolvePreparedSessionProfileId(client)
+        : undefined,
+    );
     const hasCurrentClientAuthority = () => {
       if (closeInvalidatedClient(client, req.method)) {
         return false;

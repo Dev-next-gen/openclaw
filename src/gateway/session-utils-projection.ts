@@ -1,9 +1,4 @@
-import { expectDefined } from "@openclaw/normalization-core";
-import {
-  readAcpSessionMeta,
-  readAcpSessionMetaForEntry,
-  readAcpSessionMetaBatch,
-} from "../acp/runtime/session-meta.js";
+import { readAcpSessionMeta, readAcpSessionMetaForEntry } from "../acp/runtime/session-meta.js";
 import { resolveCurrentSessionAgentRuntimeMetadata } from "../agents/agent-runtime-metadata.js";
 import { findModelCatalogEntry } from "../agents/model-catalog-lookup.js";
 import { selectModelCatalogRuntimeEntry } from "../agents/model-catalog-view.js";
@@ -12,13 +7,9 @@ import { resolveSessionModelIdentityRef } from "../agents/session-model-ref.js";
 import { buildSubagentSessionListReadIndex } from "../agents/subagents/registry/subagent-registry-read.js";
 import { captureRuntimeStateEnvironment } from "../config/paths.js";
 import { resolveSessionStorePathCore, type SessionEntry } from "../config/sessions.js";
-import type { GatewayStoredSessionTargets } from "../config/sessions/combined-store-gateway.js";
 import { resolveConcreteSessionStorePath } from "../config/sessions/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
-import type { SynchronousWork } from "../shared/synchronous-work.js";
-import type { SessionEntryPair } from "./session-list-order.js";
-import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import { readRecentSessionUsageFromTranscript as readScopedRecentSessionUsageFromTranscript } from "./session-transcript-usage.js";
 import {
   createSessionRowModelCacheKey,
@@ -160,47 +151,6 @@ export function resolveTranscriptUsageFallbacks(params: {
     }
   }
   return fallbacks;
-}
-
-export function* populateSessionListAcpMetadataWork(params: {
-  cfg: OpenClawConfig;
-  entries: readonly SessionEntryPair[];
-  targetsBySessionKey: GatewayStoredSessionTargets;
-  rowContext?: SessionListRowContext;
-}): SynchronousWork<void> {
-  const metadataByEntry = params.rowContext?.acpSessionMetaByEntry;
-  if (!metadataByEntry || params.entries.length === 0) {
-    return;
-  }
-  // Ordinary rows need two database keys each; keep preparation and its reads bounded.
-  const batchSize = 250;
-  for (let start = 0; start < params.entries.length; start += batchSize) {
-    const entries = params.entries
-      .slice(start, start + batchSize)
-      .filter(([, entry]) => !metadataByEntry.has(entry))
-      .map(([key, entry]) => {
-        const target = expectDefined(params.targetsBySessionKey.get(key), "ACP row owner");
-        const agentId = target.agentId;
-        return {
-          sessionKey: resolveStoredSessionKeyForAgentStore({
-            cfg: params.cfg,
-            agentId,
-            sessionKey: target.storeKey ?? key,
-          }),
-          agentId,
-          entry,
-        };
-      });
-    if (entries.length > 0) {
-      const metadata = readAcpSessionMetaBatch({ entries, cfg: params.cfg });
-      // Record absent metadata too, so selected rows do not repeat missing-store reads.
-      for (const { entry } of entries) {
-        metadataByEntry.set(entry, metadata.get(entry));
-      }
-    }
-    // The database read scope closes before the caller can yield to another request.
-    yield;
-  }
 }
 
 /** Runtime ownership is independent of whether the model itself can change. */

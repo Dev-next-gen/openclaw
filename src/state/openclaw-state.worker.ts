@@ -3,7 +3,6 @@ import {
   listNativeHookRelayBridgeSnapshotsInDatabase,
 } from "../agents/harness/native-hook-relay-store.kernel.js";
 import { executeNativeHookRelayMutation } from "../agents/harness/native-hook-relay-store.worker.js";
-import { loadSubagentSessionListRunsFromSqlite } from "../agents/subagents/registry/subagent-registry.store.sqlite.js";
 import { readClawInstallSchemaVersionRows } from "../claws/provenance-runtime-read.kernel.js";
 import { readSqliteDatabaseBloat } from "../commands/doctor-db-bloat.read.js";
 import {
@@ -167,12 +166,6 @@ function createSharedStateWorkerBackend(
           path: context.databasePath,
           env: getSqliteWorkerStateContext().environment,
         });
-      }
-      if (command.type === "subagents.sessionList") {
-        return withExistingOpenClawStateDatabaseReadOnly(
-          (database) => loadSubagentSessionListRunsFromSqlite(undefined, database),
-          { path: context.databasePath, env: getSqliteWorkerStateContext().environment },
-        );
       }
       if (command.type === "nativeHookRelay.read") {
         return withOpenClawStateDatabaseReadOnly(

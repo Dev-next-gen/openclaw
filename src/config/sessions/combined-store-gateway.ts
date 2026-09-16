@@ -353,6 +353,28 @@ function mergeOpenIncognitoStores(params: {
   return storePaths;
 }
 
+export function isConfiguredGatewaySessionEntry(
+  cfg: OpenClawConfig,
+  configuredAgentIds: ReadonlySet<string>,
+  key: string,
+  entry: SessionEntry,
+): boolean {
+  const isConfiguredSessionKey = (candidate: string | undefined) => {
+    const normalizedKey = normalizeOptionalString(candidate);
+    return Boolean(
+      normalizedKey &&
+      configuredAgentIds.has(normalizeAgentId(resolveSessionStoreAgentId(cfg, normalizedKey))),
+    );
+  };
+  return (
+    key === "global" ||
+    key === "unknown" ||
+    isConfiguredSessionKey(key) ||
+    isConfiguredSessionKey(entry.spawnedBy) ||
+    isConfiguredSessionKey(entry.parentSessionKey)
+  );
+}
+
 function filterCombinedStoreToConfiguredAgents(params: {
   cfg: OpenClawConfig;
   configuredAgentIds: ReadonlySet<string>;
@@ -360,23 +382,14 @@ function filterCombinedStoreToConfiguredAgents(params: {
   targetsBySessionKey: Map<string, GatewayStoredSessionTarget>;
   modelSources: ReturnType<typeof createSessionModelSources>;
 }): void {
-  const isConfiguredSessionKey = (key: string | undefined) => {
-    const normalizedKey = normalizeOptionalString(key);
-    if (!normalizedKey) {
-      return false;
-    }
-    // Stored keys already carry canonical owners; incoming aliases can retarget retired lineage.
-    const agentId = resolveSessionStoreAgentId(params.cfg, normalizedKey);
-    return params.configuredAgentIds.has(normalizeAgentId(agentId));
-  };
   for (const [key, entry] of Object.entries(params.store)) {
     const storeKey = params.targetsBySessionKey.get(key)?.storeKey ?? key;
-    const keep =
-      storeKey === "global" ||
-      storeKey === "unknown" ||
-      isConfiguredSessionKey(key) ||
-      isConfiguredSessionKey(entry.spawnedBy) ||
-      isConfiguredSessionKey(entry.parentSessionKey);
+    const keep = isConfiguredGatewaySessionEntry(
+      params.cfg,
+      params.configuredAgentIds,
+      storeKey,
+      entry,
+    );
     if (!keep) {
       params.modelSources.remove(
         expectDefined(params.targetsBySessionKey.get(key), "filtered row target"),
