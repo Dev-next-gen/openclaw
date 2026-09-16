@@ -264,6 +264,15 @@ suite.define(() => {
           controlUiEnabled: false,
         });
         await writeFile(path.join(gateway.gateway.workspaceDir, "slides.pptx"), await createPptx());
+        expect(await gateway.gateway.call("config.get", {})).toMatchObject({
+          config: {
+            agents: {
+              entries: {
+                qa: { model: { primary: "mock-openai/gpt-5.6-luna" } },
+              },
+            },
+          },
+        });
 
         await suite.withPage(
           {
@@ -285,7 +294,7 @@ suite.define(() => {
               },
               { gatewayUrl: gateway.gateway.wsUrl, token: gateway.gateway.token },
             );
-            await page.goto(new URL("chat", suite.server.baseUrl).href);
+            await page.goto(controlUiSessionUrl(suite.server.baseUrl, "agent:qa:main"));
             const composer = page.locator(".agent-chat__composer-combobox textarea");
             await composer.fill("Reply exactly `Slides ready\nMEDIA:./slides.pptx`");
             await page.getByRole("button", { name: "Send message" }).click();
