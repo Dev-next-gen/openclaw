@@ -59,6 +59,10 @@ export async function dispatchGatewayMethod(
   return await dispatchGatewayMethodInProcessRaw(method, params, {
     disableSyntheticClient: true,
     requireScopedClient: true,
+    ...(scope.signal ? { signal: scope.signal } : {}),
+    ...(scope.hasCurrentClientAuthority
+      ? { hasCurrentClientAuthority: scope.hasCurrentClientAuthority }
+      : {}),
     ...(options?.expectFinal !== undefined ? { expectFinal: options.expectFinal } : {}),
     ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
   });

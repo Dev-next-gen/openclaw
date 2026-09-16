@@ -461,16 +461,27 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     });
   }
 
-  const { collectPluginToolAllowlistWarnings } =
-    await import("./doctor/shared/plugin-tool-allowlist-warnings.js");
+  const [
+    { collectPluginToolAllowlistWarnings },
+    { collectGitHubUpgradeWarnings },
+    { normalizePluginsConfig },
+  ] = await Promise.all([
+    import("./doctor/shared/plugin-tool-allowlist-warnings.js"),
+    import("../../extensions/github/api.js"),
+    import("../plugins/config-state.js"),
+  ]);
   const pluginToolAllowlistWarnings = runWithCurrentPluginMetadata(state.candidate, () =>
     collectPluginToolAllowlistWarnings({
       cfg: state.candidate,
       env: process.env,
     }),
   );
-  if (pluginToolAllowlistWarnings.length > 0) {
-    note(sanitizeDoctorNote(pluginToolAllowlistWarnings.join("\n")), "Doctor warnings");
+  const pluginWarnings = [
+    ...pluginToolAllowlistWarnings,
+    ...collectGitHubUpgradeWarnings(normalizePluginsConfig(state.candidate.plugins)),
+  ];
+  if (pluginWarnings.length > 0) {
+    note(sanitizeDoctorNote(pluginWarnings.join("\n")), "Doctor warnings");
   }
 
   const hasConfiguredChannels =

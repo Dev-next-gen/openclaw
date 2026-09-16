@@ -384,6 +384,10 @@ plugin-specific prefix; core admin namespaces such as `config.*`,
 and resolve to `operator.admin`. The
 `openclaw/plugin-sdk/gateway-method-runtime` bridge is reserved for authenticated plugin HTTP routes and registered RPC
 handlers that declare `contracts.gatewayMethodDispatch: ["authenticated-request"]`.
+Nested RPC dispatch retains the original authenticated client, live authority
+check, and request-owned cancellation signal. It still checks the target method's
+required scopes and rechecks caller authority at the mutation commit boundary;
+the contract never supplies a synthetic client or additional scopes.
 
 For the full import map, see [Plugin SDK overview](/plugins/sdk-overview).
 

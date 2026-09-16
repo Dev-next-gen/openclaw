@@ -1546,6 +1546,17 @@ describe("doctor config flow", () => {
     runDoctorConfigPreflightOptionsMock.mockClear();
   });
 
+  it("explains GitHub preview recovery without expanding the plugin allowlist", async () => {
+    const config = { plugins: { allow: ["telegram"] } };
+    const warnings = await collectDoctorWarnings(config);
+    expect(warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('append "github" to the existing allowlist'),
+      ]),
+    );
+    expect(config.plugins.allow).toEqual(["telegram"]);
+  });
+
   it("preserves invalid config for doctor repairs", async () => {
     const result = await runDoctorConfigWithInput({
       config: {

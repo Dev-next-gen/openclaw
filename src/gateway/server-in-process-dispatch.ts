@@ -25,6 +25,7 @@ type InProcessGatewayDispatchOptions = {
   sessionMutationCommitGuard?: () => void;
   timeoutMs?: number;
   signal?: AbortSignal;
+  hasCurrentClientAuthority?: GatewayRequestOptions["hasCurrentClientAuthority"];
 };
 
 export function unwrapGatewayMethodDispatchResponse(
@@ -211,6 +212,9 @@ export async function dispatchGatewayRequestInProcessRaw(
           context: options.context,
           methodRegistry: options.methodRegistry,
           sessionMutationCommitGuard: options.sessionMutationCommitGuard,
+          ...(options.hasCurrentClientAuthority
+            ? { hasCurrentClientAuthority: options.hasCurrentClientAuthority }
+            : {}),
           ...(options.signal ? { signal: options.signal } : {}),
         })
           .then(() => {

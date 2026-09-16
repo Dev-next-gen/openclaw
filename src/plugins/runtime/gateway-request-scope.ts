@@ -57,6 +57,9 @@ type PluginRuntimeGatewayRequestScope = {
   context?: GatewayRequestContext;
   resolveGatewayContext?: GatewayContextResolver;
   client?: GatewayRequestOptions["client"];
+  /** Original request-owned cancellation and live transport authority, never wire data. */
+  signal?: GatewayRequestOptions["signal"];
+  hasCurrentClientAuthority?: GatewayRequestOptions["hasCurrentClientAuthority"];
   isWebchatConnect: GatewayRequestOptions["isWebchatConnect"];
   pluginId?: string;
   pluginSource?: string;

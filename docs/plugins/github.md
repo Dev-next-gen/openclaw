@@ -13,6 +13,21 @@ The bundled GitHub plugin adds public-repository link previews and a read-only
 reader to the [Control UI](/web/control-ui). It is separate from the
 [GitHub Copilot model provider](/providers/github-copilot).
 
+## Upgrading with an existing plugin allowlist
+
+GitHub previews that previously lived in core now belong to the bundled
+`github` plugin. A nonempty `plugins.allow` list remains authoritative: if it
+omits `github`, both hovercards and the reader stay unavailable, and links open
+externally. OpenClaw does **not** add a plugin to an existing allowlist during
+an upgrade or Doctor repair.
+
+To restore previews, append `github` to your **existing** `plugins.allow` list
+without removing its other entries, then enable GitHub in **Plugins**. Keep
+`plugins.deny` and explicit disabled entries consistent with your choice. Doctor
+explains this recovery when an implicit allowlist exclusion blocks the feature.
+To intentionally keep it off and silence that notice, set
+`plugins.entries.github.enabled: false`.
+
 ## Read an item beside chat
 
 The plugin is enabled by default. Connect to the Gateway, then click a public
@@ -29,8 +44,12 @@ responsive layout; on a phone it can sit below chat or expand with the panel.
 The reader includes descriptions, discussion comments, published inline PR
 review comments with file and diff context, commit comments, and expandable
 file diffs. Markdown images and standalone HTML image attachments can display
-inline. Image hosts must support anonymous CORS; unavailable images retain a
-full-size external link. Remote content cannot run scripts or app widgets.
+inline. The Gateway image policy permits GitHub user-attachment URLs and its
+`user-images.githubusercontent.com` and `private-user-images.githubusercontent.com`
+attachment hosts. They must support anonymous CORS; requests send no credentials
+or referrer. Other or unavailable images retain a full-size external link.
+Script and connection policies are unchanged; remote content cannot run scripts
+or app widgets.
 
 ## Enable or disable the plugin
 

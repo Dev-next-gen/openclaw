@@ -90,7 +90,8 @@ export function buildControlUiCspHeader(opts?: {
     "frame-src 'self' http: https:",
     `script-src ${scriptTokens.join(" ")}`,
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-    "img-src 'self' data: blob: https://gravatar.com https://avatars.githubusercontent.com",
+    // Reader attachments remain anonymous images, not script or connection destinations.
+    "img-src 'self' data: blob: https://gravatar.com https://avatars.githubusercontent.com https://github.com/user-attachments/ https://user-images.githubusercontent.com https://private-user-images.githubusercontent.com",
     "media-src 'self' data: blob:",
     "font-src 'self' https://fonts.gstatic.com",
     "worker-src 'self'",

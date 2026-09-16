@@ -1,6 +1,10 @@
 import path from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  buildControlUiCspHeader,
+  computeInlineScriptHashes,
+} from "../../../src/gateway/control-ui-csp.js";
 import type {
   ControlUiLinkReaderDocument,
   ControlUiLinkReaderDescriptor,
@@ -153,6 +157,24 @@ describe("GitHub side panel", () => {
         }),
       );
       const page = await context.newPage();
+      // Apply the Gateway owner's real HTTP policy to the shipped browser bundle.
+      await page.route(server.baseUrl + "**", async (route) => {
+        if (route.request().resourceType() !== "document") {
+          await route.continue();
+          return;
+        }
+        const response = await route.fetch();
+        const html = await response.text();
+        await route.fulfill({
+          response,
+          headers: {
+            ...response.headers(),
+            "content-security-policy": buildControlUiCspHeader({
+              inlineScriptHashes: computeInlineScriptHashes(html),
+            }),
+          },
+        });
+      });
       const png = await page.evaluate(() => {
         const canvas = document.createElement("canvas");
         canvas.width = 320;
@@ -211,6 +233,13 @@ describe("GitHub side panel", () => {
         .filter({ hasText: "without losing this conversation" });
       const issueLink = chat.getByRole("link", { name: "issue", exact: true });
       await issueLink.waitFor();
+      await page.evaluate(() => {
+        document.addEventListener("securitypolicyviolation", (event) => {
+          if (event.effectiveDirective === "img-src") {
+            document.body.setAttribute("data-reader-image-csp-blocked", event.blockedURI);
+          }
+        });
+      });
       await capture(page, "github-before", artifacts);
       await issueLink.click();
       const panel = page.locator("openclaw-link-reader-panel");
@@ -246,6 +275,7 @@ describe("GitHub side panel", () => {
         )
         .toBe(2);
       expect(mediaRequests.every((headers) => !headers.cookie && !headers.referer)).toBe(true);
+      expect(await page.locator("body").getAttribute("data-reader-image-csp-blocked")).toBeNull();
       await expect.poll(() => panelHeader.getByRole("tab").count()).toBe(1);
       await capture(page, "github-issue-light", artifacts);
       await active.getByRole("link", { name: "Related pull request", exact: true }).click();

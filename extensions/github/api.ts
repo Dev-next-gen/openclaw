@@ -29,3 +29,4 @@ export type {
   ControlUiGitHubPreviewTarget,
 } from "./src/preview.js";
 export type { ControlUiGitHubPreview } from "./src/preview-contract.js";
+export { collectGitHubUpgradeWarnings } from "./src/upgrade.js";
