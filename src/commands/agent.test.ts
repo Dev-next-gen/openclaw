@@ -512,8 +512,7 @@ function createDefaultAgentResult(params?: {
 }
 
 function getLastEmbeddedCall() {
-  const calls = vi.mocked(runEmbeddedAgent).mock.calls;
-  return calls[calls.length - 1]?.[0];
+  return vi.mocked(runEmbeddedAgent).mock.calls.at(-1)?.[0];
 }
 
 function expectLastRunProviderModel(provider: string, model: string): void {

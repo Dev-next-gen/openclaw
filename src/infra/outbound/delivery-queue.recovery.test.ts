@@ -1332,10 +1332,9 @@ describe("delivery-queue recovery", () => {
       retryCount: 0,
       availableAt: Date.now() - 1,
     });
-    const reconcileUnknownSend = vi
-      .fn()
-      .mockResolvedValue(reconciledSent("reconciled-permanent-message"));
-    installUnknownSendAdapter(reconcileUnknownSend);
+    const reconcileUnknownSend = installUnknownSendResult(
+      reconciledSent("reconciled-permanent-message"),
+    );
     const deliver = vi.fn();
     const { result } = await runRecovery({ deliver });
     expect(result).toMatchObject({ recovered: 1, failed: 0 });
