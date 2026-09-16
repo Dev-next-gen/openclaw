@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS } from "openclaw/plugin-sdk/channel-outbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
@@ -266,6 +267,7 @@ describe("Telegram durable ingress coalescing", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await Promise.all(
       activeResources.map(async ({ monitor, telegramTransport, abortController }) => {
         abortController.abort(new Error("test cleanup"));
@@ -383,6 +385,12 @@ describe("Telegram durable ingress coalescing", () => {
     const { monitor, telegramTransport } = await createMonitor();
     const messageCount = 24;
     const updateIds = Array.from({ length: messageCount }, (_, index) => 501 + index);
+    const firstDispatch = createDeferred<void>();
+    downstreamTurns.mockImplementationOnce(async () => {
+      firstDispatch.resolve();
+      return { queuedFinal: false, counts: { block: 0, final: 0, tool: 0 } };
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
     monitor.start();
 
     for (let index = 0; index < messageCount; index += 1) {
@@ -393,12 +401,17 @@ describe("Telegram durable ingress coalescing", () => {
           text: `sustained-forward-${String(index).padStart(2, "0")}`,
         }),
       );
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 20);
-      });
+      // Durable admission can precede buffer entry while the handler hydrates state.
+      await monitor.waitForIdle();
+      await vi.advanceTimersByTimeAsync(20);
+      if (index === 19) {
+        // Hold the 400 ms clock boundary while the flushed turn finishes real I/O.
+        await firstDispatch.promise;
+        expect(downstreamTurns.mock.calls.length).toBeGreaterThan(0);
+      }
     }
 
-    expect(downstreamTurns.mock.calls.length).toBeGreaterThan(0);
+    await vi.advanceTimersByTimeAsync(80);
 
     await vi.waitFor(
       () => {
@@ -559,12 +572,12 @@ describe("Telegram durable ingress coalescing", () => {
     });
     await vi.waitFor(async () => {
       expect(await queue.listPending({ limit: "all" })).toEqual([]);
+      expect(
+        downstreamTurns.mock.calls.some(([turn]) =>
+          (turn.BodyForAgent ?? turn.Body ?? "").includes("after"),
+        ),
+      ).toBe(true);
     });
-    expect(
-      downstreamTurns.mock.calls.some(([turn]) =>
-        (turn.BodyForAgent ?? turn.Body ?? "").includes("after"),
-      ),
-    ).toBe(true);
 
     await monitor.stop();
     await telegramTransport.close();

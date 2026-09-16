@@ -8,7 +8,7 @@ import type {
 import type { CronDeliveryPreview, CronJob } from "../../cron/types.js";
 import type { GatewayRpcOpts } from "../gateway-rpc.js";
 import { callGatewayFromCli } from "../gateway-rpc.js";
-import { CronCliError } from "./cron-cli-error.js";
+import { createCronAmbiguousNameError } from "./shared.js";
 
 const CRON_LIST_PAGE_SIZE = 200;
 const CRON_LIST_MAX_PAGES = 50;
@@ -249,9 +249,7 @@ export async function findCronJobByIdOrName(
       (candidate) => normalizeLowercaseStringOrEmpty(candidate.name) === needle,
     );
     if (matches.length > 1) {
-      throw new CronCliError(
-        "Multiple automations match this name. Use a job ID from `openclaw cron list --all`.",
-      );
+      throw createCronAmbiguousNameError(matches);
     }
     job = matches[0];
   }
