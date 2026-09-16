@@ -186,6 +186,11 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
     entry: legacyFinalizerBuildSources,
     outDir: path.join(outDir, "legacy-finalizer"),
     root,
+    deps: {
+      ...config.deps,
+      // Preserved TypeBox modules reorder its cyclic initialization; retain the native package.
+      neverBundle: [/^typebox(?:\/|$)/u],
+    },
     // Load hooks forward the complete original namespaces through query imports.
     unbundle: true,
     treeshake: false,
