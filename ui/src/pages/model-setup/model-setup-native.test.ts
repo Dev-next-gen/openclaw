@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayEventListener } from "../../api/gateway.ts";
 import type { ModelCatalogResult } from "../../api/types.ts";
 import { i18n } from "../../i18n/index.ts";
@@ -29,8 +30,11 @@ function nativeCatalog(available = true): ModelCatalogResult {
   };
 }
 
-async function fixture(catalog: ModelCatalogResult = nativeCatalog()) {
-  const base = createFirstRunContext();
+async function fixture(
+  catalog: ModelCatalogResult = nativeCatalog(),
+  beforeRefresh?: () => Promise<void>,
+) {
+  const base = createFirstRunContext(undefined, beforeRefresh);
   const agents = createAgentCapability(base.context.gateway);
   Object.assign(base.context, { agents });
   const listeners = new Set<GatewayEventListener>();
@@ -39,16 +43,23 @@ async function fixture(catalog: ModelCatalogResult = nativeCatalog()) {
     return () => listeners.delete(listener);
   });
   base.request.mockImplementation(async (method) => {
-    if (method === "models.list") return catalog;
-    if (method === "agents.update") return { ok: true, agentId: "main" };
-    if (method === "agents.list")
+    if (method === "models.list") {
+      return catalog;
+    }
+    if (method === "agents.update") {
+      return { ok: true, agentId: "main" };
+    }
+    if (method === "agents.list") {
       return {
         defaultId: "main",
         mainKey: "main",
         scope: "per-sender",
         agents: [{ id: "main", model: "acp-opencode/fixture-model" }],
       };
-    if (method === "openclaw.setup.detect") return detection;
+    }
+    if (method === "openclaw.setup.detect") {
+      return detection;
+    }
     throw new Error(`Unexpected request: ${method}`);
   });
   const mounted = await mountPage(base.context, {
@@ -75,6 +86,28 @@ afterEach(() => {
 });
 
 describe("Model Setup native Use", () => {
+  it("does not refresh or navigate after a pending Use loses its mounted page", async () => {
+    const entered = createDeferred();
+    const release = createDeferred();
+    const { page, context, agents } = await fixture(nativeCatalog(), async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    const refresh = vi.spyOn(agents, "refreshList");
+    await waitForFast(() => expect(page.querySelector('[role="option"]')).not.toBeNull());
+    page.querySelector<HTMLElement>('[role="option"]')!.click();
+    await page.updateComplete;
+    page.querySelector<HTMLButtonElement>("[data-native-model-setup] button.primary")!.click();
+    await entered.promise;
+    const mutation = vi.mocked(context.runtimeConfig.runExternalMutation).mock.results[0]!;
+    page.remove();
+    release.resolve();
+    await mutation.value;
+    await Promise.resolve();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(context.navigate).not.toHaveBeenCalled();
+    agents.dispose();
+  });
   it("selects through the shared picker and writes the exact tuple without verification", async () => {
     const { page, request, context, agents } = await fixture();
     await waitForFast(() =>
@@ -126,8 +159,9 @@ describe("Model Setup native Use", () => {
     const scope = { view: "all" as const, agentId: "main" };
     const ready = nativeCatalog();
     publishModelCatalogResult(beginModelCatalogRead(client, scope), scope, ready);
-    for (const listener of listeners)
+    for (const listener of listeners) {
       listener({ type: "event", event: "models.snapshot", payload: { scope, catalog: ready } });
+    }
     await waitForFast(() =>
       expect(
         page.querySelector('[role="option"][data-value="acp-opencode/fixture-model"]'),

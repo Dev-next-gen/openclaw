@@ -4,7 +4,6 @@ import type { PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type {
-  ModelCatalogEntry,
   SystemAgentSetupActivateParams,
   SystemAgentSetupActivateResult,
   SystemAgentSetupDetectResult,
@@ -13,11 +12,6 @@ import { applicationContext, type ApplicationContext } from "../../app/context.t
 import { hasOperatorAdminAccess } from "../../app/operator-access.ts";
 import { t } from "../../i18n/index.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
-import {
-  loadModelCatalog,
-  modelCatalogRefreshError,
-  subscribeModelCatalogChanges,
-} from "../../lib/model-catalog-store.ts";
 import { resolveScrollBehavior } from "../../lib/scroll-behavior.ts";
 import { readSessionDefaults } from "../../lib/sessions/session-key.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
@@ -77,13 +71,7 @@ export class ModelSetupPage extends OpenClawLightDomElement {
   @state() private iconUrls: Record<string, string> = {};
   @state() private setupRefreshWarning: string | null = null;
   @state() private cancellationNotice: string | null = null;
-  @state() private nativeModels: ModelCatalogEntry[] = [];
-  @state() private nativeModel = "";
-  @state() private nativeModelError: string | null = null;
-  @state() private nativeModelSaving = false;
-  private nativeModelsAbort: AbortController | null = null;
-  private nativeModelsUnsubscribe: (() => void) | null = null;
-  @state() private nativeModelsStatus: "idle" | "loading" | "ready" = "idle";
+  @state() private nativeModelState = { count: 0, saving: false };
 
   private get agentSelection() {
     return modelSetupAgentSelection(this.context, this.routeData?.firstRun === true);
@@ -344,15 +332,6 @@ export class ModelSetupPage extends OpenClawLightDomElement {
     this.resetVerify();
     this.iconLoader.reset();
     this.pendingPrepareOption = null;
-    this.nativeModels = [];
-    this.nativeModel = "";
-    this.nativeModelError = null;
-    this.nativeModelSaving = false;
-    this.nativeModelsAbort?.abort();
-    this.nativeModelsAbort = null;
-    this.nativeModelsUnsubscribe?.();
-    this.nativeModelsUnsubscribe = null;
-    this.nativeModelsStatus = "idle";
     void this.wizard.cancel();
   }
 
@@ -378,117 +357,6 @@ export class ModelSetupPage extends OpenClawLightDomElement {
     await this.detectTask.run([client, this.agentSelection.state.selectedId, token]);
     const outcome = this.detectTask.value;
     return outcome?.token === token && "value" in outcome ? outcome.value : null;
-  }
-
-  private async useNativeModel(): Promise<void> {
-    const connection = this.observedConnection;
-    const client = this.context.gateway.snapshot.client;
-    const agentId =
-      this.agentSelection.state.selectedId ??
-      readSessionDefaults(this.context.gateway.snapshot)?.defaultAgentId;
-    const model = this.nativeModels.find(
-      (entry) => `${entry.provider}/${entry.id}` === this.nativeModel,
-    );
-    if (
-      !this.canUseSetup(client) ||
-      !agentId ||
-      model?.available !== true ||
-      this.actionsDisabled() ||
-      this.firstRun.unresolved
-    ) {
-      return;
-    }
-    this.nativeModelSaving = true;
-    this.nativeModelError = null;
-    const modelRef = `${model.provider}/${model.id}`;
-    try {
-      const mutation = await this.context.runtimeConfig.runExternalMutation(
-        (mutationClient) =>
-          mutationClient.request("agents.update", {
-            agentId,
-            model: modelRef,
-            agentRuntime: model.agentRuntime?.id,
-          }),
-        { canDispatch: () => this.observedConnection === connection && this.canUseSetup(client) },
-      );
-      if (this.observedConnection !== connection) {
-        return;
-      }
-      if (!mutation.ok) {
-        this.nativeModelError = mutation.error;
-        return;
-      }
-      if (!mutation.refresh.ok) {
-        this.nativeModelError = mutation.refresh.error;
-        return;
-      }
-      await this.context.agents.refreshList();
-      if (this.observedConnection === connection) {
-        this.context.navigate("chat");
-      }
-    } catch (error) {
-      if (this.observedConnection === connection) {
-        this.nativeModelError = formatModelSetupError(error);
-      }
-    } finally {
-      if (this.observedConnection === connection) {
-        this.nativeModelSaving = false;
-      }
-    }
-  }
-
-  private async loadNativeModels(refresh = true): Promise<void> {
-    const client = this.context.gateway.snapshot.client;
-    if (!this.canUseSetup(client)) {
-      return;
-    }
-    const scope = {
-      view: "all" as const,
-      agentId: this.agentSelection.state.selectedId ?? undefined,
-    };
-    this.nativeModelsUnsubscribe ??= subscribeModelCatalogChanges(
-      this.context.gateway,
-      () => void this.loadNativeModels(false),
-      scope,
-    );
-    const connection = this.observedConnection;
-    this.nativeModelsAbort?.abort();
-    const controller = new AbortController();
-    this.nativeModelsAbort = controller;
-    this.nativeModelError = null;
-    this.nativeModelsStatus = "loading";
-    try {
-      const catalog = await loadModelCatalog(client, {
-        ...scope,
-        refresh,
-        signal: controller.signal,
-      });
-      if (this.observedConnection !== connection || controller.signal.aborted) {
-        return;
-      }
-      this.nativeModels = catalog.models.filter(
-        (model) =>
-          model.agentRuntime &&
-          model.agentRuntime.id !== "openclaw" &&
-          model.apiKeySupported === false,
-      );
-      this.nativeModelsStatus = catalog.pendingProviders?.length ? "loading" : "ready";
-      this.nativeModelError = modelCatalogRefreshError(catalog);
-      if (
-        !this.nativeModels.some((model) => `${model.provider}/${model.id}` === this.nativeModel)
-      ) {
-        this.nativeModel = "";
-      }
-    } catch (error) {
-      if (this.observedConnection === connection && !controller.signal.aborted) {
-        this.nativeModelsStatus = "ready";
-        this.nativeModelError = formatModelSetupError(error);
-      }
-    } finally {
-      if (this.nativeModelsAbort === controller) {
-        this.nativeModelsAbort = null;
-      }
-    }
   }
 
   private canVerify(client: GatewayBrowserClient | null): client is GatewayBrowserClient {
@@ -768,7 +636,7 @@ export class ModelSetupPage extends OpenClawLightDomElement {
   private actionsDisabled(): boolean {
     return (
       this.login.busy ||
-      this.nativeModelSaving ||
+      this.nativeModelState.saving ||
       this.activationState.phase === "testing" ||
       this.verifyState.phase === "checking" ||
       this.wizardMutationActive ||
@@ -814,14 +682,8 @@ export class ModelSetupPage extends OpenClawLightDomElement {
       manualError: this.manualError,
       moreSignInOpen: this.moreSignInOpen,
       nativeSessionCatalogsEnabled: this.nativeSessionCatalogsEnabled,
-      nativeModels: this.nativeModels,
-      nativeModel: this.nativeModel,
-      nativeModelError: this.nativeModelError,
-      nativeModelSaving: this.nativeModelSaving,
-      nativeModelsStatus: this.nativeModelsStatus,
-      onNativeModelChange: (model) => (this.nativeModel = model),
-      onUseNativeModel: () => void this.useNativeModel(),
-      onNativeModelsOpen: () => void this.loadNativeModels(),
+      nativeModelState: this.nativeModelState,
+      onNativeModelStateChange: (next) => (this.nativeModelState = next),
       onNativeSessionCatalogsChange: (enabled) => (this.nativeSessionCatalogsEnabled = enabled),
       firstRun: this.routeData?.firstRun === true,
       iconUrls: this.iconUrls,

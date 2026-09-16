@@ -1,9 +1,7 @@
 import { html, nothing, type TemplateResult } from "lit";
-import type { ModelCatalogEntry, SystemAgentSetupDetectResult } from "../../api/types.ts";
+import type { SystemAgentSetupDetectResult } from "../../api/types.ts";
 import { subtitleForRoute, titleForRoute } from "../../app-navigation.ts";
 import { icons } from "../../components/icons.ts";
-import { renderModelPicker } from "../../components/model-picker.ts";
-import { providerDisplayLabel } from "../../components/provider-icon.ts";
 import { renderLearnMoreLink } from "../../components/settings-ui.ts";
 import { renderSettingsWorkspace } from "../../components/settings-workspace.ts";
 import { t } from "../../i18n/index.ts";
@@ -12,6 +10,7 @@ import "../../styles/model-setup.css";
 import type { ModelProviderLoginController } from "../model-providers/login-controller.ts";
 import { renderModelSetupFailure, renderConfiguredModel } from "./configured-model.ts";
 import { renderProviderIcon } from "./model-setup-icon-loader.ts";
+import { renderNativeModelSetup } from "./native-model-setup.ts";
 import { listModelSetupPrepareOptions, type ModelSetupPrepareOption } from "./prepare-options.ts";
 import { manualProviderName, renderManualProviderPicker } from "./provider-picker.ts";
 import type {
@@ -53,14 +52,8 @@ type ModelSetupViewProps = {
   firstRun: boolean;
   nativeSessionCatalogsEnabled?: boolean;
   onNativeSessionCatalogsChange?: (enabled: boolean) => void;
-  nativeModels?: readonly ModelCatalogEntry[];
-  nativeModel?: string;
-  nativeModelError?: string | null;
-  nativeModelSaving?: boolean;
-  nativeModelsStatus?: "idle" | "loading" | "ready";
-  onNativeModelChange?: (model: string) => void;
-  onUseNativeModel?: () => void;
-  onNativeModelsOpen?: () => void;
+  nativeModelState?: { count: number; saving: boolean };
+  onNativeModelStateChange?: (state: { count: number; saving: boolean }) => void;
   iconUrls: Readonly<Record<string, string>>;
   onDetect: () => void;
   onVerify: () => void;
@@ -163,11 +156,9 @@ function renderCandidateRows(props: ModelSetupViewProps, result: SystemAgentSetu
 }
 
 function renderEmptyState(props: ModelSetupViewProps, result: SystemAgentSetupDetectResult) {
-  if (props.nativeModels?.length) {
-    return nothing;
-  }
   const installs = result.recommendedInstalls ?? [];
   if (
+    props.nativeModelState?.count ||
     result.candidates.length > 0 ||
     (result.authOptions?.length ?? 0) > 0 ||
     installs.length === 0
@@ -490,10 +481,6 @@ function renderNativeSessionDiscovery(
 }
 
 function renderReady(props: ModelSetupViewProps, result: SystemAgentSetupDetectResult) {
-  const onContinue =
-    props.firstRun && result.setupComplete && props.activation.phase !== "success"
-      ? props.onOpenChat
-      : undefined;
   const current = result.configuredModel
     ? renderConfiguredModel({
         result,
@@ -501,60 +488,23 @@ function renderReady(props: ModelSetupViewProps, result: SystemAgentSetupDetectR
         canVerify: props.canVerify,
         actionsDisabled: props.actionsDisabled,
         onVerify: props.onVerify,
-        onContinue,
+        onContinue:
+          props.firstRun && result.setupComplete && props.activation.phase !== "success"
+            ? props.onOpenChat
+            : undefined,
       })
     : nothing;
-  if (!props.canAdmin) {
+  if (!props.canAdmin || props.gatewayTooOld) {
     return html`${current}
-      <div class="callout warning" role="note">${t("modelSetup.access.adminRequired")}</div>`;
-  }
-  if (props.gatewayTooOld) {
-    return html`${current}
-      <div class="callout warning" role="note">${t("modelSetup.access.gatewayTooOld")}</div>`;
+      <div class="callout warning" role="note">
+        ${t(!props.canAdmin ? "modelSetup.access.adminRequired" : "modelSetup.access.gatewayTooOld")}
+      </div>`;
   }
   return html`
     ${current} ${renderNativeSessionDiscovery(props, result)} ${renderEmptyState(props, result)}
-    ${renderNativeModels(props)} ${renderCandidateRows(props, result)}
-    ${renderUnavailable(props, result)} ${renderPrepare(props, result)}
-    ${renderSignIn(props, result)} ${renderManual(props, result)}
-  `;
-}
-
-function renderNativeModels(props: ModelSetupViewProps) {
-  const models = props.nativeModels ?? [];
-  const selected = models.find((model) => `${model.provider}/${model.id}` === props.nativeModel);
-  return html`
-    <section class="settings-section" data-native-model-setup>
-      <div class="settings-section__header"><h2>${t("modelSetup.nativeModels.title")}</h2></div>
-      <p class="muted">${t("modelSetup.nativeModels.body")}</p>
-      ${props.nativeModelsStatus === "loading" ? html`<p role="status">${t("modelSetup.nativeModels.loading")}</p>` : nothing}
-      ${props.nativeModelsStatus === "ready" && models.length === 0 && !props.nativeModelError ? html`<p role="status">${t("modelSetup.nativeModels.empty")}</p>` : nothing}
-      ${renderModelPicker({
-        label: t("modelSetup.nativeModels.choose"),
-        value: props.nativeModel ?? "",
-        options: models.map((model) => ({
-          value: `${model.provider}/${model.id}`,
-          label: model.name,
-          provider: model.provider,
-          detail:
-            model.available === true
-              ? providerDisplayLabel(model.provider)
-              : t("modelSetup.nativeModels.signIn"),
-          disabled: model.available !== true,
-        })),
-        disabled: props.actionsDisabled || props.activationUnresolved,
-        onChange: (value) => props.onNativeModelChange?.(value),
-        onOpen: props.onNativeModelsOpen,
-      })}
-      <button
-        class="btn primary"
-        ?disabled=${props.actionsDisabled || props.activationUnresolved || selected?.available !== true}
-        @click=${props.onUseNativeModel}
-      >
-        ${t(props.nativeModelSaving ? "modelSetup.nativeModels.saving" : "modelSetup.nativeModels.use")}
-      </button>
-      ${props.nativeModelError ? html`<div class="callout danger" role="alert">${props.nativeModelError}</div>` : nothing}
-    </section>
+    ${renderNativeModelSetup(props.firstRun, props.actionsDisabled || props.activationUnresolved === true, props.onNativeModelStateChange)}
+    ${renderCandidateRows(props, result)} ${renderUnavailable(props, result)}
+    ${renderPrepare(props, result)} ${renderSignIn(props, result)} ${renderManual(props, result)}
   `;
 }
 
