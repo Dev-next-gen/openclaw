@@ -6,7 +6,7 @@ import { performance } from "node:perf_hooks";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import type { Worker, WorkerOptions } from "node:worker_threads";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import type { OpenClawAgentDatabaseClaim } from "../../state/openclaw-agent-db-identity.js";
 import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "../../state/openclaw-agent-db-lease.js";
@@ -27,6 +27,7 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
 import {
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
@@ -75,13 +76,15 @@ function fullChecks() {
   return Atomics.load(new Int32Array(validation.checks), 0);
 }
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = createTempDirTracker();
 afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   await closeOpenClawAgentDatabasesAsync();
+  await closeOpenClawStateDatabaseAsync();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
+  tempDirs.cleanup();
 });
 
 function createFixture(sessionIds = ["first", "second"], agentId = "main") {
@@ -614,6 +617,7 @@ test.each([false, true])(
             },
           );
         }
+        await closeOpenClawAgentDatabasesAsync(state.root);
         await reclaimSqliteFreePages(databaseOptions);
         const workers: Worker[] = [];
         const spawn = archiveWorker.createSqliteTranscriptArchiveWorker;
@@ -625,9 +629,12 @@ test.each([false, true])(
           },
         );
         const run = reclamation.runSqliteSessionReclamation;
-        let requests = 0;
         vi.spyOn(reclamation, "runSqliteSessionReclamation").mockImplementation(async (params) => {
-          if (++requests === 2 && failure) {
+          if (
+            failure &&
+            params.plan.kind === "history-eviction" &&
+            params.plan.sessionId === "second"
+          ) {
             throw new Error("next victim preparation failed");
           }
           return run(params);

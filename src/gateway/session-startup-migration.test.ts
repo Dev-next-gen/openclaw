@@ -57,7 +57,8 @@ describe("runStartupSessionMigration", () => {
       const options = { agentId: "main", env };
       const initial = openOpenClawAgentDatabase(options);
       setCanonicalSqliteSessionMainKey(initial, "previous");
-      closeOpenClawAgentDatabasesForTest();
+      await closeOpenClawAgentDatabasesAsync(stateDir);
+      closeOpenClawAgentDatabasesForTest(stateDir);
       const open = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase");
       let handedOff: ReturnType<typeof getOpenClawAgentDatabaseIfOpen>;
       let reconciled: ReturnType<typeof openOpenClawAgentDatabase> | undefined;
@@ -155,7 +156,8 @@ describe("runStartupSessionMigration", () => {
           )
           .run(scope.sessionId);
         expect(sessionTranscriptIndexNeedsReconcile(database.db, scope.sessionId)).toBe(true);
-        closeOpenClawAgentDatabasesForTest();
+        await closeOpenClawAgentDatabasesAsync(root);
+        closeOpenClawAgentDatabasesForTest(root);
         const log = makeLog();
 
         await runStartupSessionMigration({ cfg, env, log });

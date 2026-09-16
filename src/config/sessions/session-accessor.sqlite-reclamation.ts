@@ -520,59 +520,70 @@ export async function runSqliteSessionReclamation(params: {
             };
             assertCommitAllowed();
             let publishCommitted: (() => void) | undefined;
-            const result = await withSqliteReclamationAuthorization(
-              commitGate,
-              database.db,
-              () => {
-                assertCommitAllowed();
-                // A blocked writer may authorize before the Worker's queued request.
-                publishCommitted = prepareReclamationPublication(plan);
-              },
-              (authorize) =>
-                worker.run({
-                  claim,
-                  validationOwner: { database, isCurrent: claim.isCurrent },
-                  commitGate,
-                  plan,
-                  diagnostics: params.diagnostics,
-                  onCommitRequest: authorize,
-                  withWriteAdmission: async (run, reclamationAdmission) =>
-                    await runExclusiveSqliteSessionWrite(
-                      plan.databaseOptions,
-                      async () => {
-                        let refusal: { error: unknown } | undefined;
-                        try {
-                          assertCommitAllowed();
-                        } catch (error) {
-                          refusal = { error };
-                        }
-                        const completed = await run(refusal);
-                        if (completed) {
-                          // Publish captured identities after transaction settlement, before releasing the writer.
-                          publishCommitted?.();
-                          if (plan.kind === "maintenance-finalize") {
-                            prepareReclamationPublication(plan, completed)?.();
-                          }
-                          if (
-                            plan.kind === "maintenance-statistics" &&
-                            getOpenClawAgentDatabaseIfOpen(plan.databaseOptions)?.db === database.db
-                          ) {
+            const runAuthorized = () =>
+              withSqliteReclamationAuthorization(
+                commitGate,
+                database.db,
+                () => {
+                  assertCommitAllowed();
+                  // A blocked writer may authorize before the Worker's queued request.
+                  publishCommitted = prepareReclamationPublication(plan);
+                },
+                (authorize) =>
+                  worker.run({
+                    claim,
+                    validationOwner: { database, isCurrent: claim.isCurrent },
+                    commitGate,
+                    plan,
+                    diagnostics: params.diagnostics,
+                    onCommitRequest: authorize,
+                    withWriteAdmission: async (run, reclamationAdmission) =>
+                      await runExclusiveSqliteSessionWrite(
+                        plan.databaseOptions,
+                        async () => {
+                          let refusal: { error: unknown } | undefined;
+                          try {
                             assertCommitAllowed();
-                            runWithSqliteBusyTimeout(database.db, 0, () => {
-                              // sqlite-allow-raw -- Reload this connection's committed planner metadata without scanning tables.
-                              database.db.exec("ANALYZE sqlite_schema;");
-                            });
+                          } catch (error) {
+                            refusal = { error };
                           }
-                        }
-                      },
-                      "session.reclamation.worker-commit",
-                      { ...params.diagnostics, reclamationAdmission },
-                      "worker",
-                    ),
-                  transferList: prepareReclamationWorkerTransferList(plan),
-                }),
-            );
-            return result;
+                          const completed = await run(refusal);
+                          if (completed) {
+                            // Publish captured identities after transaction settlement, before releasing the writer.
+                            publishCommitted?.();
+                            if (plan.kind === "maintenance-finalize") {
+                              prepareReclamationPublication(plan, completed)?.();
+                            }
+                            if (
+                              plan.kind === "maintenance-statistics" &&
+                              getOpenClawAgentDatabaseIfOpen(plan.databaseOptions)?.db ===
+                                database.db
+                            ) {
+                              assertCommitAllowed();
+                              runWithSqliteBusyTimeout(database.db, 0, () => {
+                                // sqlite-allow-raw -- Reload this connection's committed planner metadata without scanning tables.
+                                database.db.exec("ANALYZE sqlite_schema;");
+                              });
+                            }
+                          }
+                        },
+                        "session.reclamation.worker-commit",
+                        { ...params.diagnostics, reclamationAdmission },
+                        "worker",
+                      ),
+                    transferList: prepareReclamationWorkerTransferList(plan),
+                  }),
+              );
+            // Finalization retains its logical FIFO place across cold validation.
+            // Acquire here, after the archive FIFO, so earlier worker work can settle.
+            return plan.kind === "maintenance-finalize"
+              ? await runExclusiveSqliteSessionWrite(
+                  plan.databaseOptions,
+                  runAuthorized,
+                  "session.maintenance.finalize",
+                  params.diagnostics,
+                )
+              : await runAuthorized();
           },
           assertRequestCurrent,
         );

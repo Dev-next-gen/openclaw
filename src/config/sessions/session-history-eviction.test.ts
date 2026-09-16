@@ -31,6 +31,7 @@ import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admi
 import { closeCachedOpenClawAgentDatabase } from "../../state/openclaw-agent-db-lifecycle.js";
 import {
   closeOpenClawAgentDatabaseByPath,
+  closeOpenClawAgentDatabaseByPathAsync,
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
 } from "../../state/openclaw-agent-db.js";
@@ -275,6 +276,7 @@ describe("SQLite historical session disk budget", () => {
         ).toEqual(new Set(["oldest-history"]));
       }
       setSessionUpdatedAt("newer-history", 20);
+      await closeOpenClawAgentDatabaseByPathAsync(database().path);
       settlePhysicalUsage();
       database().db.exec("ANALYZE; PRAGMA analysis_limit = 37;");
       expect(

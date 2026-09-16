@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { afterEach } from "vitest";
 import { runQaGatewayFixture } from "../../../test/helpers/qa-gateway-cleanup.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
@@ -56,6 +57,17 @@ export function installGatewaySessionsTestResources(
           harness = undefined;
         },
       ),
+  });
+
+  // Stacked teardown hooks drain external stores before the Gateway home closes shared state.
+  afterEach(async () => {
+    if (gatewayFixtureLifetime.hasActiveServers()) {
+      return;
+    }
+    for (const dir of tempDirs.dirs) {
+      await closeOpenClawAgentDatabasesAsync(dir);
+      closeOpenClawAgentDatabasesForTest(dir);
+    }
   });
 
   const requireHarness = () => {

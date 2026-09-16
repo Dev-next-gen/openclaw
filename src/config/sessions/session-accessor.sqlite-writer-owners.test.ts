@@ -401,6 +401,7 @@ it("coalesces automatic maintenance through the shared reclamation writer", asyn
         "session.reclamation.worker-commit",
         "session.reclamation.retain",
         "session.reclamation.worker-commit",
+        "session.maintenance.finalize",
         "session.archive.publish-prepare",
         "session.maintenance.plan",
         "session.reclamation.retain",
@@ -409,6 +410,7 @@ it("coalesces automatic maintenance through the shared reclamation writer", asyn
       expect(reclamationKinds).toEqual([
         "maintenance-plan",
         "maintenance-plan",
+        "maintenance-finalize",
         "maintenance-finalize",
         "maintenance-schedule",
       ]);
