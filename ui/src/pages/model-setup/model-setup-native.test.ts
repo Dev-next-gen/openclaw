@@ -22,9 +22,16 @@ function nativeCatalog(available = true): ModelCatalogResult {
         id: "fixture-model",
         name: "Fixture model",
         available,
-        apiKeySupported: false,
-        agentRuntime: { id: "acp-opencode", source: "model" },
+        agentRuntime: { id: "acp-opencode", source: "implicit" },
         ...(available ? {} : { unavailableReason: "missing-auth" as const }),
+      },
+      {
+        provider: "openai",
+        id: "api-model",
+        name: "API model",
+        available: true,
+        apiKeySupported: true,
+        agentRuntime: { id: "openclaw", source: "implicit" },
       },
     ],
   };
@@ -115,6 +122,7 @@ describe("Model Setup native Use", () => {
         page.querySelector('[role="option"][data-value="acp-opencode/fixture-model"]'),
       ).not.toBeNull(),
     );
+    expect(page.querySelector('[role="option"][data-value="openai/api-model"]')).toBeNull();
     page
       .querySelector<HTMLElement>('[role="option"][data-value="acp-opencode/fixture-model"]')!
       .click();

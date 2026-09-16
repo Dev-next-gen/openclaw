@@ -196,10 +196,7 @@ class NativeModelSetup extends OpenClawLightDomElement {
         return;
       }
       this.nativeModels = catalog.models.filter(
-        (model) =>
-          model.agentRuntime &&
-          model.agentRuntime.id !== "openclaw" &&
-          model.apiKeySupported === false,
+        (model) => model.agentRuntime && model.agentRuntime.id !== "openclaw",
       );
       this.nativeModelsStatus = catalog.pendingProviders?.length ? "loading" : "ready";
       this.nativeModelError = modelCatalogRefreshError(catalog);
