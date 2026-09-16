@@ -23,9 +23,9 @@ import type {
   SessionConnectionOwner,
   SessionConnectionScope,
   SessionMessageSubscription,
+  SessionRefreshOutcome,
 } from "./session-capability.ts";
 import { areUiSessionKeysEquivalent, normalizeAgentId } from "./session-key.ts";
-import type { SessionRefreshOutcome } from "./session-list-query.ts";
 import {
   requestSessionBranchSwitch,
   requestSessionBranches,

@@ -36,7 +36,6 @@ import type {
 import type { SessionArchivedFilter } from "./navigation.ts";
 import type { SessionPatchRoute } from "./patch.ts";
 import type { SessionChangedResult, SessionReconcileOptions } from "./reconcile.ts";
-import type { SessionRefreshOutcome } from "./session-list-query.ts";
 import type { SessionRunTerminal } from "./session-run-terminal.ts";
 
 export type SessionState = {
@@ -90,6 +89,10 @@ export type SessionRefreshOptions = SessionListOptions & {
   // Sidebar startup hydration must not block session creation or drop the open session.
   backgroundHydrate?: boolean;
 };
+
+export type SessionRefreshOutcome =
+  | { status: "refreshed" | "stale" }
+  | { status: "failed"; error: string };
 
 export type SessionListScope = Readonly<Omit<SessionListOptions, "offset" | "append">>;
 

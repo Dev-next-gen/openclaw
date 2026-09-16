@@ -125,11 +125,20 @@ export function createSessionPermissionProjection(
     if (!fact || newer || (!older && revision > fact.revision)) {
       // Retain the watermark: another older managed/list request may still finish.
       if (observe) {
-        projection.fact = {
-          permissionMode: row.permissionMode,
-          updatedAt: row.updatedAt,
-          revision: Math.max(revision, fact?.revision ?? 0),
-        };
+        if (
+          fact &&
+          fact.permissionMode === row.permissionMode &&
+          fact.updatedAt === row.updatedAt
+        ) {
+          // An identical read refreshes observations without superseding the confirmed mutation.
+          fact.revision = revision;
+        } else {
+          projection.fact = {
+            permissionMode: row.permissionMode,
+            updatedAt: row.updatedAt,
+            revision: Math.max(revision, fact?.revision ?? 0),
+          };
+        }
       }
       return row;
     }
@@ -206,10 +215,12 @@ export function createSessionPermissionProjection(
       const identity = permissionIdentity(key, agentId);
       const projection = permissionProjections.get(identity);
       const fact = projection?.fact;
+      const revision = fact?.revision;
       return () =>
         projection !== undefined &&
         permissionProjections.get(identity) === projection &&
-        projection.fact === fact;
+        projection.fact === fact &&
+        projection.fact?.revision === revision;
     },
     reconcileList: (result: SessionsListResult | null, revision: number, agentId?: string) =>
       projectPermissionList(result, () => revision, agentId, true),

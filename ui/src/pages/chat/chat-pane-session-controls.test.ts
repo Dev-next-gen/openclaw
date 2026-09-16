@@ -10,7 +10,7 @@ import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
-import type { SessionRefreshOutcome } from "../../lib/sessions/session-list-query.ts";
+import type { SessionRefreshOutcome } from "../../lib/sessions/session-capability.ts";
 import { createSessionsListResult } from "../../test-helpers/chat-model.ts";
 import {
   createTestGatewayClient,
@@ -684,6 +684,12 @@ describe("chat pane composer controls", () => {
       recovery: "affected",
     },
     {
+      source: "later identical observed row",
+      persistedMode: "workspace",
+      foregroundAgent: "research",
+      recovery: "identical",
+    },
+    {
       source: "unrelated foreground refresh",
       persistedMode: "guarded",
       foregroundAgent: "research",
@@ -701,6 +707,7 @@ describe("chat pane composer controls", () => {
         hasActiveRun: true,
         permissionMode,
         sessionId: "remote-worker-session",
+        ...(recovery === "identical" ? { updatedAt: 1 } : {}),
       };
       const otherSession: GatewaySessionRow = { key: "agent:research:other", kind: "direct" };
       const host = makeChatHost({
@@ -778,6 +785,12 @@ describe("chat pane composer controls", () => {
         expect(
           host.request.mock.calls.find(([method]) => method === "sessions.patch")?.[1],
         ).not.toHaveProperty("agentId");
+        if (recovery === "identical") {
+          expect(observation.captureReconcile()({ ...selectedSession })).toMatchObject({
+            status: "current",
+            row: { permissionMode: "workspace", updatedAt: 1 },
+          });
+        }
         state.assistantAgentId = foregroundAgent;
         await host.sessions.refresh({ agentId: foregroundAgent, force: true });
         const revision = host.sessions.canonicalListRevision;
@@ -793,6 +806,11 @@ describe("chat pane composer controls", () => {
           recoveryUnavailable = false;
           if (recovery === "affected") {
             await host.sessions.reconcileMutation("main");
+          } else if (recovery === "identical") {
+            expect(observation.captureReconcile()({ ...selectedSession })).toMatchObject({
+              status: "current",
+              row: { permissionMode: persistedMode, updatedAt: 1 },
+            });
           } else {
             await host.sessions.refresh({ agentId: "research", force: true });
           }

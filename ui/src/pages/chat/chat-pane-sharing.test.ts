@@ -12,8 +12,10 @@ import type {
   SessionVisibility,
   SessionsListResult,
 } from "../../api/types.ts";
-import type { SessionCapability } from "../../lib/sessions/index.ts";
-import type { SessionRefreshOutcome } from "../../lib/sessions/session-list-query.ts";
+import type {
+  SessionCapability,
+  SessionRefreshOutcome,
+} from "../../lib/sessions/session-capability.ts";
 import {
   createGatewayBrowserClientFixture,
   createSessionCapabilityFixture,
