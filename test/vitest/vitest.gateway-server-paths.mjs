@@ -25,6 +25,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server-methods/requester-cron-authority.integration.test.ts",
   "src/gateway/server-methods/server-methods.test.ts",
   "src/gateway/server-methods/sessions-create-worktree-base.test.ts",
+  "src/gateway/server-methods/sessions-describe-worker.test.ts",
   "src/gateway/server-methods/sessions-list-persisted-worker.test.ts",
   "src/gateway/server-methods/worktrees.authorization.test.ts",
   "src/gateway/server-methods/worktrees.test.ts",
@@ -72,6 +73,7 @@ export const gatewayServerIsolatedTestFiles = [
   "src/gateway/server-plugin-subagent-runtime.overrides.test.ts",
   // Loads the real plugin runtime that neighboring server tests replace with mocks.
   "src/gateway/server.chat-cli-auth.test.ts",
+  "src/gateway/server.incomplete-stream.test.ts",
   "src/gateway/server.placement-abandonment.lifecycle.test.ts",
   "src/gateway/server.placement-abandonment.test.ts",
   "src/gateway/server.sessions.compaction-read-errors.test.ts",

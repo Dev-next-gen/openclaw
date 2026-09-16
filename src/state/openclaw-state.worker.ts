@@ -27,7 +27,16 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
 import { isPluginStateWorkerCommand } from "../plugin-state/plugin-state-worker-contract.js";
 import { executePluginStateCommand } from "../plugin-state/plugin-state.worker.js";
+import {
+  readPluginBindingApprovalsInDatabase,
+  upsertPluginBindingApprovalInDatabase,
+} from "../plugins/conversation-binding-state.kernel.js";
 import { readPluginMetadataStateRowSync } from "../plugins/installed-plugin-index-row.js";
+import {
+  readHostedCatalogSnapshotInDatabase,
+  writeHostedCatalogSnapshotInDatabase,
+} from "../plugins/official-external-plugin-catalog-snapshot-store.kernel.js";
+import { HostedCatalogSignedFeedMonotonicityError } from "../plugins/official-external-plugin-catalog-source.js";
 import {
   ensureProjectRegistrySchema,
   insertProjectRegistryInDatabase,
@@ -183,6 +192,16 @@ function createSharedStateWorkerBackend(
           ? withArtifactPreservingStateReads(read)
           : read();
       }
+      if (command.type === "plugins.conversationBindingApprovals.read") {
+        return readPluginBindingApprovalsInDatabase(open().db);
+      }
+      if (command.type === "plugins.conversationBindingApprovals.upsert") {
+        const database = open();
+        return runOpenClawStateWriteTransaction(
+          ({ db }) => upsertPluginBindingApprovalInDatabase(db, command.input),
+          { database, path: context.databasePath, env: getSqliteWorkerStateContext().environment },
+        );
+      }
       if (command.type === "plugins.metadata.read") {
         return readPluginMetadataStateRowSync(
           command.input.selector,
@@ -337,6 +356,9 @@ function createSharedStateWorkerBackend(
         );
       }
       const database = open();
+      if (command.type === "plugins.catalogSnapshot.read") {
+        return readHostedCatalogSnapshotInDatabase(database.db, command.input.url);
+      }
       if (command.type === "nativeHookRelay.listSnapshots") {
         return listNativeHookRelayBridgeSnapshotsInDatabase(database);
       }
@@ -383,6 +405,21 @@ function createSharedStateWorkerBackend(
         path: context.databasePath,
         env: getSqliteWorkerStateContext().environment,
       };
+      if (command.type === "plugins.catalogSnapshot.write") {
+        try {
+          runOpenClawStateWriteTransaction(
+            ({ db }) =>
+              writeHostedCatalogSnapshotInDatabase(db, command.input.snapshot, command.input.now),
+            writeOptions,
+          );
+          return { ok: true };
+        } catch (error) {
+          if (error instanceof HostedCatalogSignedFeedMonotonicityError) {
+            return { ok: false, message: error.message };
+          }
+          throw error;
+        }
+      }
       if (command.type === "backup.recordOutcome") {
         return runOpenClawStateWriteTransaction(
           ({ db }) => recordBackupRunInDatabase(db, command.input),
