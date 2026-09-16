@@ -14,8 +14,10 @@ const SESSION = "00000000-0000-4000-8000-000000000001";
 const OTHER_SESSION = "00000000-0000-4000-8000-000000000002";
 const STAGES = new Set([
   "published-import",
+  "after-update",
   "before-startup",
   "after-first-stop",
+  "after-doctor",
   "after-second-stop",
 ]);
 const BASELINE_BINDINGS = {
@@ -215,8 +217,9 @@ async function inspectDatabase(owner, file, read) {
 
 async function seed(ctx, packageRoot) {
   assert(!fs.existsSync(ctx.fixture));
-  const repo = path.join(ctx.root, "project-repo");
-  const workspace = path.join(ctx.root, "agent-default");
+  const fixtureRoot = path.dirname(ctx.stateDir);
+  const repo = path.join(fixtureRoot, "project-repo");
+  const workspace = path.join(fixtureRoot, "agent-default");
   fs.mkdirSync(path.join(repo, "packages/app"), { recursive: true });
   fs.mkdirSync(workspace);
   fs.writeFileSync(path.join(repo, "README.md"), "Published-owner project fixture\n", {
@@ -277,7 +280,7 @@ async function seed(ctx, packageRoot) {
     );
     const service = new owner.api.worktrees({
       env: gitEnv,
-      getConfig: () => ({ worktreeRoot: path.join(ctx.root, "managed") }),
+      getConfig: () => ({ worktreeRoot: path.join(fixtureRoot, "managed") }),
     });
     worktree = await service.create({
       repoRoot: project.repoRoot,
@@ -455,7 +458,7 @@ export function assertProjectWorktreeStartupLog(log, start) {
       /session: recorded canonical workspaces for (\d+) managed-worktree session\(s\)/g,
     ),
   ].map((match) => Number(match[1]));
-  assert.deepEqual(backfills, start === "first" ? [1] : [], "Unexpected startup migration count");
+  assert.deepEqual(backfills, [], "Gateway startup performed a Doctor-owned workspace repair");
   assert.match(log, /(?:\[shutdown\]|shutdown) completed cleanly in \d+ms/);
   assert(
     !/(?:\[shutdown\]|shutdown) (?:completed in \d+ms with warnings:|failed in \d+ms)/.test(log),
@@ -470,14 +473,12 @@ export function assertProjectWorktreeStartupPreservation(actual, original, expec
   for (const row of actual.agent.sessions) {
     const before = original.agent.sessions.find((s) => s.session_key === row.session_key);
     assert(before, `Unexpected session row: ${row.session_key}`);
-    if (row.session_key !== KEY) {
+    if (row.session_key !== KEY || expectedWorkspace === undefined) {
       assert.deepEqual(row, before);
       continue;
     }
     const expected = JSON.parse(before.entry_json);
-    if (expectedWorkspace) {
-      expected.worktree.canonicalWorkspaceDir = expectedWorkspace;
-    }
+    expected.worktree.canonicalWorkspaceDir = expectedWorkspace;
     assert.deepEqual(JSON.parse(row.entry_json), expected);
     assert.equal(row.updated_at, before.updated_at);
     assert.equal(row.current_session_id, before.current_session_id);
@@ -518,7 +519,9 @@ async function snapshot(ctx, stage, packageRoot, bindings) {
   assert.equal(entry.worktree.repoRoot, f.project.repoRoot);
   assert.equal(entry.updatedAt, 10);
   assert.equal(entry.lastActivityAt, 10);
-  const expectedWorkspace = stage.startsWith("after-") ? f.project.repoRoot : undefined;
+  const expectedWorkspace = ["after-update", "after-doctor", "after-second-stop"].includes(stage)
+    ? f.project.repoRoot
+    : undefined;
   assert.equal(
     entry.worktree.canonicalWorkspaceDir,
     expectedWorkspace,
@@ -540,9 +543,13 @@ async function snapshot(ctx, stage, packageRoot, bindings) {
     assertProjectWorktreeStartupPreservation(result, original, expectedWorkspace);
   }
   if (stage === "after-second-stop") {
-    const first = readJson(path.join(ctx.artifacts, "worktree-after-first-stop.json"));
-    assert.deepEqual(agent, first.agent, "Second startup changed persisted session/history bytes");
-    assert.deepEqual(shared, first.shared);
+    const repaired = readJson(path.join(ctx.artifacts, "worktree-after-doctor.json"));
+    assert.deepEqual(
+      agent,
+      repaired.agent,
+      "Second startup changed repaired session/history bytes",
+    );
+    assert.deepEqual(shared, repaired.shared);
   }
   writeJson(path.join(ctx.artifacts, `worktree-${stage}.json`), result);
 }
