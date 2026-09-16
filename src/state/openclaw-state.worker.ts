@@ -6,6 +6,7 @@ import { executeNativeHookRelayMutation } from "../agents/harness/native-hook-re
 import { loadSubagentSessionListRunsFromSqlite } from "../agents/subagents/registry/subagent-registry.store.sqlite.js";
 import { readClawInstallSchemaVersionRows } from "../claws/provenance-runtime-read.kernel.js";
 import { readSqliteDatabaseBloat } from "../commands/doctor-db-bloat.read.js";
+import { readWorkshopMigrationRecordsInDatabase } from "../commands/doctor-skill-workshop-read.kernel.js";
 import {
   patchConfigHealthEntryInDatabase,
   readConfigHealthSnapshotInDatabase,
@@ -189,6 +190,12 @@ function createSharedStateWorkerBackend(
         return command.input.preserveSourceArtifacts
           ? withArtifactPreservingStateReads(read)
           : read();
+      }
+      if (command.type === "doctor.workshopMigrationRecords.read") {
+        return withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
+          ({ db }) => readWorkshopMigrationRecordsInDatabase(db, command.input.includeEvents),
+          { path: context.databasePath, env: getSqliteWorkerStateContext().environment },
+        );
       }
       if (command.type === "modelCatalog.remote.read") {
         const read = () =>

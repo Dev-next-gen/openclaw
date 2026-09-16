@@ -25,6 +25,7 @@ import type {
   ProjectRegistryInsert,
   ProjectRegistryRecord,
 } from "../projects/project-registry.kernel.js";
+import type { SkillProposalEvent, SkillProposalRecord } from "../skills/workshop/types.js";
 import type { ManagedTaskInFlowInput } from "../tasks/task-flow-managed-run-task.kernel.js";
 import type { RunTaskInFlowResult } from "../tasks/task-flow-managed-run-task.types.js";
 import type {
@@ -90,6 +91,15 @@ export type OpenClawStateWorkerOperations = NativeHookRelayStoreWorkerOperations
     "projects.resolveRefreshOwner": {
       input: { project: ProjectRegistryIdentity; lease: OpenClawStateLeaseIdentity };
       output: ProjectRegistryRecord | undefined;
+    };
+    "doctor.workshopMigrationRecords.read": {
+      input: { includeEvents: boolean };
+      output:
+        | {
+            records: Array<{ record: SkillProposalRecord; ownerAgentId: string | null }>;
+            appliedEvents: SkillProposalEvent[];
+          }
+        | undefined;
     };
     "modelCatalog.remote.read": {
       input: { artifactPreservingReadOnly: boolean };
