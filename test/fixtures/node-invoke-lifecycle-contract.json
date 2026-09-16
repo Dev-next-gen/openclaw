@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "request": {
     "canonical": {
       "id": "invoke-1",
@@ -64,6 +64,15 @@
         "code": "LOCAL_POLICY_DENIED",
         "message": "command is outside the embedding's current local policy"
       }
+    }
+  },
+  "cancel": {
+    "canonical": {
+      "invokeId": "invoke-1",
+      "nodeId": "node-1"
+    },
+    "invalid": {
+      "invokeId": "invoke-1"
     }
   }
 }

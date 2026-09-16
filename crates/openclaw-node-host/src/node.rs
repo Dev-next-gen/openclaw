@@ -1106,7 +1106,7 @@ mod tests {
             "/../../test/fixtures/node-invoke-lifecycle-contract.json"
         )))
         .expect("valid node invocation lifecycle fixture");
-        assert_eq!(fixture["version"], 1);
+        assert_eq!(fixture["version"], 2);
 
         let invocation = parse_invocation(fixture["request"]["canonical"].clone(), Instant::now())
             .expect("canonical invocation request");
@@ -1158,6 +1158,16 @@ mod tests {
         )
         .expect("canonical failure result");
         assert_eq!(failure_params, failure.clone());
+
+        assert_eq!(
+            parse_invocation_cancel(fixture["cancel"]["canonical"].clone())
+                .expect("canonical invocation cancellation"),
+            NodeSessionEvent::InvocationCancelled {
+                invoke_id: "invoke-1".into(),
+                node_id: "node-1".into(),
+            }
+        );
+        assert!(parse_invocation_cancel(fixture["cancel"]["invalid"].clone()).is_err());
     }
 
     #[test]
