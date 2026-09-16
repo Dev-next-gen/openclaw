@@ -869,13 +869,11 @@ describe("detectChangedScope", () => {
           const selected =
             (failSafe && !key.startsWith("run_node_fast")) ||
             (key === "run_node" && Boolean(changedPath)) ||
-            (key === "run_android" &&
-              changedPath === "test/fixtures/talk-config-contract.json") ||
+            (key === "run_android" && changedPath === "test/fixtures/talk-config-contract.json") ||
             (key === "run_macos_node" &&
               (changedPath === "test/scripts/mac-script-fixture.test-support.ts" ||
                 changedPath === "test/fixtures/talk-config-contract.json")) ||
-            (key === "run_macos" &&
-              changedPath === "test/fixtures/talk-config-contract.json") ||
+            (key === "run_macos" && changedPath === "test/fixtures/talk-config-contract.json") ||
             (key === "run_windows" &&
               changedPath === "src/process/exec.windows.integration.test.ts");
           expect(value, key).toBe(String(selected));
