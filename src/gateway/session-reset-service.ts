@@ -124,7 +124,6 @@ import {
 import { resolvePluginSessionOwnershipError } from "./session-plugin-ownership.js";
 import { notifyGatewaySessionReset } from "./session-reset-notifications.js";
 import {
-  archiveSessionTranscriptsDetailed,
   resolveStableSessionEndTranscript,
   type ArchivedSessionTranscript,
 } from "./session-transcript-files.fs.js";
@@ -166,28 +165,6 @@ const mcpRunEndWatcherState = resolveGlobalSingleton<McpRunEndWatcherState>(
 const mcpRunEndWatchers = mcpRunEndWatcherState.watchers;
 
 const ACP_RUNTIME_CLEANUP_TIMEOUT_MS = 15_000;
-
-export function archiveSessionTranscriptsForSessionDetailed(params: {
-  sessionId: string | undefined;
-  storePath: string;
-  sessionFile?: string;
-  agentId?: string;
-  reason: "reset" | "deleted";
-  incognito?: boolean;
-  onArchiveError?: (err: unknown, sourcePath: string) => void;
-}): ArchivedSessionTranscript[] {
-  if (!params.sessionId || params.incognito === true) {
-    return [];
-  }
-  return archiveSessionTranscriptsDetailed({
-    sessionId: params.sessionId,
-    storePath: params.storePath,
-    sessionFile: params.sessionFile,
-    agentId: params.agentId,
-    reason: params.reason,
-    onArchiveError: params.onArchiveError,
-  });
-}
 
 export function emitGatewaySessionEndPluginHook(params: {
   cfg: OpenClawConfig;
@@ -1643,7 +1620,8 @@ export async function performGatewaySessionReset(params: {
       let resetSkipped = false;
       let creationAuthorizationError: ReturnType<typeof errorShape> | undefined;
       let fastModeSelectionError: ReturnType<typeof missingScopeErrorShape> | undefined;
-      const lifecyclePromise = resetSessionEntryLifecycle({
+      let afterLifecycleCommit: (() => Promise<void>) | undefined;
+      const lifecycleRequest: Parameters<typeof resetSessionEntryLifecycle>[0] = {
         commitGuard,
         archivePreviousTranscript: false,
         agentId: target.agentId,
@@ -1841,10 +1819,11 @@ export async function performGatewaySessionReset(params: {
           }
           return nextEntry;
         },
-        afterEntryMutation: async (mutation) => {
+        afterEntryMutation: (mutation) => {
           if (resetSkipped) {
             return;
           }
+          lifecyclePreparationCommitted = true;
           clearBootstrapSnapshotOnSessionBoundary({
             boundaryAppended: resetBoundaryAppended,
             sessionKey: target.canonicalKey ?? params.key,
@@ -1882,30 +1861,43 @@ export async function performGatewaySessionReset(params: {
             key: target.canonicalKey,
             sessionId: mutation.nextEntry.sessionId,
           });
-          if (committedAcpResetState && isResetLifecycleCurrent()) {
-            // The helper records skipped/failed preparation instead of silently
-            // resuming the old backend conversation after an apparently
-            // successful reset.
-            await tryPrepareFreshManagerRuntimeSession({
-              deps: { getRuntimeBackend: getAcpRuntimeBackend },
+          afterLifecycleCommit = async () => {
+            if (committedAcpResetState && isResetLifecycleCurrent()) {
+              // The helper records skipped/failed preparation instead of silently
+              // resuming the old backend conversation after an apparently
+              // successful reset.
+              await tryPrepareFreshManagerRuntimeSession({
+                deps: { getRuntimeBackend: getAcpRuntimeBackend },
+                cfg,
+                meta: committedAcpResetState.meta,
+                sessionKey: committedAcpResetState.sessionKey,
+                agentId,
+                logPrefix: "sessions.session-reset",
+              });
+            }
+            await emitGatewayBeforeResetPluginHook({
               cfg,
-              meta: committedAcpResetState.meta,
-              sessionKey: committedAcpResetState.sessionKey,
-              agentId,
-              logPrefix: "sessions.session-reset",
+              key: params.key,
+              messages: beforeResetMessages,
+              target,
+              storePath,
+              entry: mutation.previousEntry,
+              reason: params.reason,
             });
-          }
-          await emitGatewayBeforeResetPluginHook({
-            cfg,
-            key: params.key,
-            messages: beforeResetMessages,
-            target,
-            storePath,
-            entry: mutation.previousEntry,
-            reason: params.reason,
-          });
+          };
         },
-      });
+      };
+      const resetLifecycle = async (assertSourceCurrent?: () => void) =>
+        await resetSessionEntryLifecycle({
+          ...lifecycleRequest,
+          commitGuard: () => {
+            commitGuard();
+            assertSourceCurrent?.();
+          },
+        });
+      const lifecyclePromise = preparedLifecycle?.withCommit
+        ? preparedLifecycle.withCommit(resetLifecycle)
+        : resetLifecycle();
       let lifecycle: Awaited<ReturnType<typeof resetSessionEntryLifecycle>>;
       try {
         lifecycle = await lifecyclePromise;
@@ -1918,7 +1910,7 @@ export async function performGatewaySessionReset(params: {
         }
         throw error;
       }
-      lifecyclePreparationCommitted = !resetSkipped;
+      await afterLifecycleCommit?.();
       if (!resetSkipped) {
         const resetSessionKey = target.canonicalKey ?? params.key;
         handleSessionStateSessionReset(resetSessionKey);
