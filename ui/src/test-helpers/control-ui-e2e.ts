@@ -387,23 +387,6 @@ export async function waitForControlUiSettingsTakeover(
 const require = createRequire(import.meta.url);
 const json5EsmPath = require.resolve("json5/dist/index.mjs");
 const json5BrowserSource = readFileSync(require.resolve("json5/dist/index.min.js"), "utf8");
-const commonJsOptimizeDeps = [
-  "highlight.js/lib/core",
-  "highlight.js/lib/languages/bash",
-  "highlight.js/lib/languages/cpp",
-  "highlight.js/lib/languages/css",
-  "highlight.js/lib/languages/diff",
-  "highlight.js/lib/languages/go",
-  "highlight.js/lib/languages/java",
-  "highlight.js/lib/languages/javascript",
-  "highlight.js/lib/languages/json",
-  "highlight.js/lib/languages/markdown",
-  "highlight.js/lib/languages/python",
-  "highlight.js/lib/languages/rust",
-  "highlight.js/lib/languages/typescript",
-  "highlight.js/lib/languages/xml",
-  "highlight.js/lib/languages/yaml",
-] as const;
 
 export const defaultControlUiFeatureMethods = [
   "chat.abort",
@@ -909,6 +892,7 @@ export async function startControlUiE2eServer(
     { createServer },
     { controlUiLocaleModulesPlugin },
     {
+      commonJsOptimizeDeps,
       controlUiBrowserOnlySharedModuleAliases,
       resolveExternalPackageAliasesForVite,
       resolveSourcePackageAliasesForVite,
@@ -2254,13 +2238,27 @@ function installControlUiMockGateway(
           persistConfigState();
         }
         let parsedConfig: unknown = configuredConfig.config;
+        let parsedSource: Record<string, unknown> | undefined;
         try {
           parsedConfig = parseJson5(configState.raw);
+          if (
+            typeof configuredConfig.raw === "string" &&
+            configState.raw !== configuredConfig.raw &&
+            isRecord(parsedConfig)
+          ) {
+            parsedSource = parsedConfig;
+          }
         } catch {
           // Invalid raw keeps the last valid fixture object for generic mock scenarios.
         }
         return {
           ...configuredConfig,
+          ...(parsedSource && isRecord(configuredConfig.sourceConfig)
+            ? { sourceConfig: parsedSource }
+            : {}),
+          ...(parsedSource && isRecord(configuredConfig.resolved)
+            ? { resolved: parsedSource }
+            : {}),
           config: parsedConfig,
           hash: mockConfigHash(),
           configRevisionHash: mockConfigHash(),
