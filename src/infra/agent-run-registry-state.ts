@@ -19,7 +19,10 @@ export function getAgentRunRegistryState(): AgentRunRegistryState {
   }));
 }
 
-export function bumpAgentRunIndexVersion(context?: AgentRunContext, previous?: AgentRunContext): void {
+export function bumpAgentRunIndexVersion(
+  context?: AgentRunContext,
+  previous?: AgentRunContext,
+): void {
   getAgentRunRegistryState().version += 1;
   for (const target of previous &&
   (previous.sessionKey !== context?.sessionKey || previous.agentId !== context?.agentId)
