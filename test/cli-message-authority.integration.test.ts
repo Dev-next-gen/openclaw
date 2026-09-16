@@ -65,6 +65,8 @@ const discordGuild = "100000000000000001";
 const discordManagementRole = "100000000000000006";
 const discordMessage = "100000000000000020";
 const discordChannelPath = `/api/v10/channels/${channels.discord.current}`;
+const discordMessagePath = `${discordChannelPath}/messages/${discordMessage}`;
+const discordPinPath = `${discordChannelPath}/pins/${discordMessage}`;
 const discordGuildsPath = "/api/v10/users/@me/guilds";
 const discordGuildChannelsPath = `/api/v10/guilds/${discordGuild}/channels`;
 const react = { action: "react", channel: "discord", messageId: discordMessage, emoji: "✅" };
@@ -127,8 +129,15 @@ describe("CLI message authority integration", () => {
   let gatewaySend = false;
   let acceptedChannelEdits = 0;
   let nextChannelEditStatus: 403 | 429 | undefined;
+  let acceptedMessageWrites = 0;
+  let nextMessageWriteStatus: 403 | undefined;
   let heldRequest:
-    | { method: "GET" | "POST" | "PATCH"; path: string; entered: Deferred; release: Deferred }
+    | {
+        method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+        path: string;
+        entered: Deferred;
+        release: Deferred;
+      }
     | undefined;
 
   async function handleProviderRequest(req: IncomingMessage, res: ServerResponse) {
@@ -141,18 +150,36 @@ describe("CLI message authority integration", () => {
     const fields = Object.fromEntries(new URLSearchParams(rawBody));
     requests.push({ method: req.method ?? "", path: url.pathname, fields, body: rawBody });
     const isChannelEdit = req.method === "PATCH" && url.pathname === discordChannelPath;
-    const rejectedEditStatus = isChannelEdit ? nextChannelEditStatus : undefined;
+    const messageWriteTarget = /^\/api\/v10\/channels\/(\d+)\/(messages|pins)\/(\d+)$/.exec(
+      url.pathname,
+    );
+    const isMessageWrite =
+      (messageWriteTarget?.[2] === "messages" &&
+        (req.method === "PATCH" || req.method === "DELETE")) ||
+      (messageWriteTarget?.[2] === "pins" && (req.method === "PUT" || req.method === "DELETE"));
+    const rejectedWriteStatus = isChannelEdit
+      ? nextChannelEditStatus
+      : isMessageWrite
+        ? nextMessageWriteStatus
+        : undefined;
     if (isChannelEdit) {
       nextChannelEditStatus = undefined;
-      if (rejectedEditStatus) {
-        res.writeHead(rejectedEditStatus, {
+    }
+    if (isMessageWrite) {
+      nextMessageWriteStatus = undefined;
+    }
+    if (isChannelEdit || isMessageWrite) {
+      if (rejectedWriteStatus) {
+        res.writeHead(rejectedWriteStatus, {
           "content-type": "application/json",
-          ...(rejectedEditStatus === 429 ? { "retry-after": "0.001" } : {}),
+          ...(rejectedWriteStatus === 429 ? { "retry-after": "0.001" } : {}),
         });
         res.flushHeaders();
-      } else {
+      } else if (isChannelEdit) {
         // The fixture accepts the mutation before an optional response barrier.
         acceptedChannelEdits += 1;
+      } else {
+        acceptedMessageWrites += 1;
       }
     }
     const gate = heldRequest;
@@ -163,10 +190,10 @@ describe("CLI message authority integration", () => {
         heldRequest = undefined;
       }
     }
-    if (rejectedEditStatus) {
+    if (rejectedWriteStatus) {
       res.end(
         JSON.stringify(
-          rejectedEditStatus === 429
+          rejectedWriteStatus === 429
             ? { message: "Rate limited", retry_after: 0.001, global: false }
             : { message: "Missing Permissions", code: 50013 },
         ),
@@ -205,13 +232,17 @@ describe("CLI message authority integration", () => {
     } else if (req.method === "PUT" && /\/reactions\/[^/]+\/@me$/.test(url.pathname)) {
       res.writeHead(204).end();
       return;
-    } else if (
-      (req.method === "PUT" && url.pathname === `${discordChannelPath}/pins/${discordMessage}`) ||
-      (req.method === "DELETE" &&
-        url.pathname === `${discordChannelPath}/messages/${discordMessage}`)
-    ) {
-      res.writeHead(204).end();
-      return;
+    } else if (isMessageWrite) {
+      if (req.method === "PATCH") {
+        body = {
+          id: messageWriteTarget?.[3],
+          channel_id: messageWriteTarget?.[1],
+          content: "edited message",
+        };
+      } else {
+        res.writeHead(204).end();
+        return;
+      }
     } else if (req.method === "GET" && url.pathname === `/api/v10/guilds/${discordGuild}`) {
       body = {
         id: discordGuild,
@@ -299,6 +330,8 @@ describe("CLI message authority integration", () => {
     gatewaySend = false;
     acceptedChannelEdits = 0;
     nextChannelEditStatus = undefined;
+    acceptedMessageWrites = 0;
+    nextMessageWriteStatus = undefined;
     requests.length = 0;
     providerErrors.length = 0;
     vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
@@ -326,7 +359,7 @@ describe("CLI message authority integration", () => {
     setRuntimeConfigSnapshot(cfg, cfg);
   });
 
-  function registerChannelPlugins() {
+  function registerChannelPlugins(options: { discordOrigin?: "global" | "bundled" } = {}) {
     const owner = createPluginRegistry({
       logger: { info() {}, warn() {}, error() {}, debug() {} },
       runtime: {} as PluginRuntime,
@@ -334,10 +367,11 @@ describe("CLI message authority integration", () => {
     });
     // Installer provenance has its own coverage; the official adapters and gates are real.
     for (const plugin of [discordPlugin, slackPlugin]) {
+      const origin = plugin.id === "discord" ? (options.discordOrigin ?? "global") : "global";
       const record = createPluginRecord({
         id: plugin.id,
-        origin: "global",
-        trustedOfficialInstall: true,
+        origin,
+        trustedOfficialInstall: origin === "global",
       });
       owner.registry.plugins.push(record);
       const actions: ChannelMessageActionAdapter | undefined = plugin.actions
@@ -392,7 +426,7 @@ describe("CLI message authority integration", () => {
   });
 
   function holdProviderRequest(
-    method: "GET" | "POST" | "PATCH",
+    method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     requestPath = `${discordChannelPath}${method === "POST" ? "/messages" : ""}`,
   ) {
     const gate = {
@@ -1087,5 +1121,258 @@ describe("CLI message authority integration", () => {
       tracking.finalizeCapture(() => {});
     }
     expect(turn.isCurrent()).toBe(false);
+  });
+
+  describe("scheduled message management", () => {
+    const messageTarget = {
+      channel: "discord",
+      target: `channel:${channels.discord.current}`,
+      messageId: discordMessage,
+    };
+    const editedContent = "A permitted scheduled message edit";
+    const writes = [
+      { action: "edit", method: "PATCH", path: discordMessagePath },
+      { action: "delete", method: "DELETE", path: discordMessagePath },
+      { action: "pin", method: "PUT", path: discordPinPath },
+      { action: "unpin", method: "DELETE", path: discordPinPath },
+    ] as const;
+
+    it.each(
+      [
+        { principal: "trusted", scheduledPolicy: trustedScheduledPolicy },
+        { principal: "account", scheduledPolicy: accountScheduledPolicy },
+      ].flatMap(({ principal, scheduledPolicy }) =>
+        writes.map(({ action, method, path: requestPath }) => ({
+          principal,
+          scheduledPolicy,
+          action,
+          method,
+          path: requestPath,
+        })),
+      ),
+    )(
+      "dispatches $action through the provider route for a $principal scheduled job",
+      async ({ scheduledPolicy, action, method, path: requestPath }) => {
+        const turn = await createTurn("discord", { scheduledPolicy });
+
+        expectSuccess(
+          await turn.call({
+            ...messageTarget,
+            action,
+            ...(action === "edit" ? { message: editedContent } : {}),
+          }),
+        );
+
+        const mutations = requests.filter((request) => request.method !== "GET");
+        expect(mutations).toEqual([expect.objectContaining({ method, path: requestPath })]);
+        if (action === "edit") {
+          expect(JSON.parse(mutations[0]?.body ?? "null")).toEqual({ content: editedContent });
+        } else {
+          expect(mutations[0]?.body).toBe("");
+        }
+        expect(acceptedMessageWrites).toBe(1);
+      },
+    );
+
+    it.each([
+      { action: "edit", gate: "messages" },
+      { action: "pin", gate: "pins" },
+    ] as const)("retains the $gate action gate for scheduled $action", async ({ action, gate }) => {
+      const turn = await createTurn("discord", { scheduledPolicy: accountScheduledPolicy });
+      const discord = expectDefined(cfg.channels?.discord, "configured Discord account");
+      cfg = {
+        ...cfg,
+        channels: {
+          ...cfg.channels,
+          discord: { ...discord, actions: { ...discord.actions, [gate]: false } },
+        },
+      };
+      setRuntimeConfigSnapshot(cfg, cfg);
+
+      expectDenied(
+        await turn.call({
+          ...messageTarget,
+          action,
+          ...(action === "edit" ? { message: editedContent } : {}),
+        }),
+        /message edits are disabled|pins are disabled|is disabled for this account/,
+      );
+      expect(requests.filter((request) => request.method !== "GET")).toEqual([]);
+      expect(acceptedMessageWrites).toBe(0);
+    });
+
+    it.each([
+      {
+        boundary: "another configured account",
+        scheduledPolicy: accountScheduledPolicy,
+        args: { accountId: "other" },
+        reason: /cannot use another creator account/,
+      },
+      {
+        boundary: "a forbidden target for an account job",
+        scheduledPolicy: accountScheduledPolicy,
+        args: { target: `channel:${discordSibling}` },
+        reason: /Discord read target channel is not allowed/,
+      },
+      {
+        boundary: "a forbidden target for a trusted job",
+        scheduledPolicy: trustedScheduledPolicy,
+        args: { target: `channel:${discordSibling}` },
+        reason: /Discord read target channel is not allowed/,
+      },
+    ])("denies $boundary before message mutation", async ({ scheduledPolicy, args, reason }) => {
+      const discord = expectDefined(cfg.channels?.discord, "configured Discord account");
+      cfg = {
+        ...cfg,
+        channels: {
+          ...cfg.channels,
+          discord: {
+            ...discord,
+            accounts: {
+              ...discord.accounts,
+              other: { token: "synthetic-other-message-provider-token" },
+            },
+            guilds: {
+              [discordGuild]: {
+                channels: {
+                  [channels.discord.current]: { enabled: true },
+                  [discordSibling]: { enabled: false },
+                },
+              },
+            },
+          },
+        },
+      };
+      setRuntimeConfigSnapshot(cfg, cfg);
+      const turn = await createTurn("discord", { scheduledPolicy });
+
+      expectDenied(await turn.call({ ...messageTarget, action: "delete", ...args }), reason);
+      expect(requests.filter((request) => request.method !== "GET")).toEqual([]);
+      expect(acceptedMessageWrites).toBe(0);
+    });
+
+    it("allows an account job to pin in another conversation permitted by Discord policy", async () => {
+      const turn = await createTurn("discord", { scheduledPolicy: accountScheduledPolicy });
+
+      expectSuccess(
+        await turn.call({ ...messageTarget, action: "pin", target: `channel:${discordSibling}` }),
+      );
+
+      expect(requests.filter((request) => request.method !== "GET")).toEqual([
+        expect.objectContaining({
+          method: "PUT",
+          path: `/api/v10/channels/${discordSibling}/pins/${discordMessage}`,
+        }),
+      ]);
+      expect(acceptedMessageWrites).toBe(1);
+    });
+
+    it("resolves a channel-name target for an account-bound pin", async () => {
+      const turn = await createTurn("discord", { scheduledPolicy: accountScheduledPolicy });
+
+      expectSuccess(
+        await turn.call({
+          ...messageTarget,
+          action: "pin",
+          target: `#${directoryChannelName}`,
+        }),
+      );
+
+      expect(
+        requests.filter(
+          (request) =>
+            request.path === discordGuildsPath || request.path === discordGuildChannelsPath,
+        ),
+      ).toEqual([
+        expect.objectContaining({ method: "GET", path: discordGuildsPath }),
+        expect.objectContaining({ method: "GET", path: discordGuildChannelsPath }),
+      ]);
+      expect(requests.filter((request) => request.method !== "GET")).toEqual([
+        expect.objectContaining({ method: "PUT", path: discordPinPath }),
+      ]);
+      expect(acceptedMessageWrites).toBe(1);
+    });
+
+    it("settles an accepted delete after job permission revocation and blocks the next call", async () => {
+      const turn = await createTurn("discord", { scheduledPolicy: accountScheduledPolicy });
+      const accepted = holdProviderRequest("DELETE", discordMessagePath);
+      const args = { ...messageTarget, action: "delete" };
+      const pending = turn.call(args);
+      try {
+        await accepted.entered(pending);
+        expect(acceptedMessageWrites).toBe(1);
+        turn.revokeScheduledPermission();
+        accepted.release();
+
+        expectSuccess(await pending);
+        const requestCount = requests.length;
+        expectDenied(await turn.call(args), /Scheduled source permission revoked/);
+        expect(requests).toHaveLength(requestCount);
+        expect(requests.filter((request) => request.method !== "GET")).toEqual([
+          expect.objectContaining({ method: "DELETE", path: discordMessagePath }),
+        ]);
+        expect(acceptedMessageWrites).toBe(1);
+      } finally {
+        accepted.release();
+        await pending.catch(() => undefined);
+      }
+    });
+
+    it("reports a provider-denied unpin without another mutation attempt", async () => {
+      const turn = await createTurn("discord", { scheduledPolicy: accountScheduledPolicy });
+      nextMessageWriteStatus = 403;
+
+      expectDenied(await turn.call({ ...messageTarget, action: "unpin" }), /Missing Permissions/);
+
+      expect(requests.filter((request) => request.method !== "GET")).toEqual([
+        expect.objectContaining({ method: "DELETE", path: discordPinPath }),
+      ]);
+      expect(acceptedMessageWrites).toBe(0);
+    });
+
+    it("preserves installed interactive pin admission without a write declaration", async () => {
+      const actions = expectDefined(registeredDiscordActions, "registered Discord actions");
+      delete actions.writeAuthorityActions;
+      const turn = await createTurn("discord");
+
+      expectSuccess(await turn.call({ ...messageTarget, action: "pin" }));
+      const requestCount = requests.length;
+      expectDenied(
+        await turn.call({ ...messageTarget, action: "pin", target: `channel:${discordSibling}` }),
+        /exact current conversation and account/,
+      );
+      const scheduledTurn = await createTurn("discord", {
+        scheduledPolicy: accountScheduledPolicy,
+      });
+      expectDenied(
+        await scheduledTurn.call({ ...messageTarget, action: "pin" }),
+        /write authorization support/,
+      );
+
+      expect(requests).toHaveLength(requestCount);
+      expect(requests.filter((request) => request.method !== "GET")).toEqual([
+        expect.objectContaining({ method: "PUT", path: discordPinPath }),
+      ]);
+      expect(acceptedMessageWrites).toBe(1);
+    });
+
+    it("preserves bundled provider-owned scheduled pins without a write declaration", async () => {
+      registerChannelPlugins({ discordOrigin: "bundled" });
+      const actions = expectDefined(registeredDiscordActions, "bundled Discord actions");
+      delete actions.writeAuthorityActions;
+      const turn = await createTurn("discord", { scheduledPolicy: accountScheduledPolicy });
+
+      expectSuccess(
+        await turn.call({ ...messageTarget, action: "pin", target: `channel:${discordSibling}` }),
+      );
+
+      expect(requests.filter((request) => request.method !== "GET")).toEqual([
+        expect.objectContaining({
+          method: "PUT",
+          path: `/api/v10/channels/${discordSibling}/pins/${discordMessage}`,
+        }),
+      ]);
+      expect(acceptedMessageWrites).toBe(1);
+    });
   });
 });
