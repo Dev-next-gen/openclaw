@@ -48,6 +48,9 @@ const originalLoadWorkspaceSkills = (() => {
   return implementation;
 })();
 
+// Prefix-specific checks replace the shared mkdir spy; retain the real function to avoid recursion.
+const realMkdir = fs.mkdir.bind(fs);
+
 async function writeInstallableSkill(
   workspaceDir: string,
   name: string,
@@ -95,13 +98,16 @@ function lastRunCommandCall(): unknown[] | undefined {
 }
 
 function observePrivateNpmPrefix(prefix: string) {
-  const mkdir = fs.mkdir.bind(fs);
-  return vi.spyOn(fs, "mkdir").mockImplementation(async (target, options) => {
-    // A regression must fail before it can create an operator or system directory.
-    expect(target).toBe(prefix);
-    expect(options).toEqual({ recursive: true, mode: 0o700 });
-    return await mkdir(target, options);
-  });
+  // Observe this prefix operation, not the shared fixture's earlier directory creation.
+  return vi
+    .spyOn(fs, "mkdir")
+    .mockClear()
+    .mockImplementation(async (target, options) => {
+      // A regression must fail before it can create an operator or system directory.
+      expect(target).toBe(prefix);
+      expect(options).toEqual({ recursive: true, mode: 0o700 });
+      return await realMkdir(target, options);
+    });
 }
 
 const workspaceSuite = createFixtureSuite("openclaw-skills-install-");
@@ -131,14 +137,29 @@ async function withWorkspaceCase(
   const homeDir = path.join(workspaceDir, "home");
   await fs.mkdir(homeDir, { recursive: true });
   const homeSpy = vi.spyOn(os, "homedir").mockReturnValue(homeDir);
-  const uidSpy = process.getuid ? vi.spyOn(process, "getuid").mockReturnValue(501) : undefined;
+  const mkdirSpy = vi.spyOn(fs, "mkdir").mockImplementation(async (target, options) => {
+    if (typeof target !== "string") {
+      throw new Error("Unexpected non-string mkdir fixture path");
+    }
+    const destination = path.resolve(target);
+    // Root-hosted cases observe the system-prefix intent without writing that system directory.
+    if (destination === "/var/lib/openclaw/tools/node/npm") {
+      expect(process.getuid?.()).toBe(0);
+      expect(options).toEqual({ recursive: true, mode: 0o700 });
+      return undefined;
+    }
+    expect(
+      destination === workspaceDir || destination.startsWith(`${workspaceDir}${path.sep}`),
+    ).toBe(true);
+    return await realMkdir(target, options);
+  });
   const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
   try {
     process.env.OPENCLAW_STATE_DIR = stateDir;
     await run({ workspaceDir, stateDir, homeDir });
   } finally {
+    mkdirSpy.mockRestore();
     homeSpy.mockRestore();
-    uidSpy?.mockRestore();
     envSnapshot.restore();
   }
 }
@@ -165,24 +186,28 @@ describe("installSkill before_install hooks", () => {
       await writeInstallableSkill(workspaceDir, "node-prefix-skill");
       const npmPrefix = path.join(homeDir, ".openclaw", "tools", "node", "npm");
       const mkdirSpy = observePrivateNpmPrefix(npmPrefix);
+      const uidSpy = process.getuid ? vi.spyOn(process, "getuid").mockReturnValue(501) : undefined;
+      try {
+        const result = await installSkill({
+          workspaceDir,
+          skillName: "node-prefix-skill",
+          installId: "deps",
+        });
 
-      const result = await installSkill({
-        workspaceDir,
-        skillName: "node-prefix-skill",
-        installId: "deps",
-      });
-
-      expect(result.ok).toBe(true);
-      const call = lastRunCommandCall();
-      expect(call?.[0]).toEqual(["npm", "install", "-g", "--ignore-scripts", "example-package"]);
-      const options = call?.[1] as { env?: NodeJS.ProcessEnv };
-      expect(options.env?.NPM_CONFIG_PREFIX).toBe(npmPrefix);
-      expect(options.env?.npm_config_prefix).toBe(npmPrefix);
-      expect(options.env).not.toHaveProperty("PATH");
-      const stat = await fs.stat(npmPrefix);
-      expect(stat.isDirectory()).toBe(true);
-      expect(mkdirSpy).toHaveBeenCalledWith(npmPrefix, { recursive: true, mode: 0o700 });
-      mkdirSpy.mockRestore();
+        expect(result.ok).toBe(true);
+        const call = lastRunCommandCall();
+        expect(call?.[0]).toEqual(["npm", "install", "-g", "--ignore-scripts", "example-package"]);
+        const options = call?.[1] as { env?: NodeJS.ProcessEnv };
+        expect(options.env?.NPM_CONFIG_PREFIX).toBe(npmPrefix);
+        expect(options.env?.npm_config_prefix).toBe(npmPrefix);
+        expect(options.env).not.toHaveProperty("PATH");
+        const stat = await fs.stat(npmPrefix);
+        expect(stat.isDirectory()).toBe(true);
+        expect(mkdirSpy).toHaveBeenCalledWith(npmPrefix, { recursive: true, mode: 0o700 });
+      } finally {
+        uidSpy?.mockRestore();
+        mkdirSpy.mockRestore();
+      }
     });
   });
 
@@ -389,6 +414,7 @@ describe("installSkill before_install hooks", () => {
       const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR", "OPENCLAW_CONFIG_PATH"]);
       const prefix = path.join(homeDir, ".openclaw", "tools", "node", "npm");
       const mkdirSpy = observePrivateNpmPrefix(prefix);
+      const uidSpy = process.getuid ? vi.spyOn(process, "getuid").mockReturnValue(501) : undefined;
       try {
         process.env.OPENCLAW_STATE_DIR = "/tmp/untrusted-state";
         process.env.OPENCLAW_CONFIG_PATH = "/tmp/untrusted-config/openclaw.json";
@@ -414,6 +440,7 @@ describe("installSkill before_install hooks", () => {
         });
         expect(await fs.stat(prefix).then((stat) => stat.isDirectory())).toBe(true);
       } finally {
+        uidSpy?.mockRestore();
         mkdirSpy.mockRestore();
         envSnapshot.restore();
       }
@@ -427,11 +454,7 @@ describe("installSkill before_install hooks", () => {
       const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue("/workspace/openclaw");
       const prefix = "/var/lib/openclaw/tools/node/npm";
       // Observe the real consumer's system-prefix intent without writing that system path.
-      const mkdirSpy = vi.spyOn(fs, "mkdir").mockImplementation(async (target, options) => {
-        expect(target).toBe(prefix);
-        expect(options).toEqual({ recursive: true, mode: 0o700 });
-        return undefined;
-      });
+      const mkdirSpy = vi.mocked(fs.mkdir).mockClear();
       try {
         Object.defineProperty(process, "getuid", { configurable: true, value: () => 0 });
         const result = await withMockedPlatform("linux", () =>
