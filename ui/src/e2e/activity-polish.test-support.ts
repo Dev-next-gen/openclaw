@@ -80,6 +80,7 @@ export function activityPolishFixture(now = Date.now()) {
       ...defaultControlUiFeatureMethods,
       SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD,
       TEST_LINK_READER.linkReader.previewMethod!,
+      TEST_LINK_READER.linkReader.detailMethod,
     ],
     controlUiLinkReaders: [TEST_LINK_READER],
     heldMethods: ["sessions.list", TEST_LINK_READER.linkReader.previewMethod!],

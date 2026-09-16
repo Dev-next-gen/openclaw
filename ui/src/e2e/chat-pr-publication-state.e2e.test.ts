@@ -29,7 +29,11 @@ suite.define(() => {
       const href = "https://github.com/synthetic/publication-demo/pull/42";
       const gateway = await installMockGateway(page, {
         communityInvite: false,
-        featureMethods: [...publicationMethods, TEST_LINK_READER.linkReader.previewMethod!],
+        featureMethods: [
+          ...publicationMethods,
+          TEST_LINK_READER.linkReader.previewMethod!,
+          TEST_LINK_READER.linkReader.detailMethod,
+        ],
         controlUiLinkReaders: [TEST_LINK_READER],
         deferredMethods: ["sessions.github.options"],
         historyMessages: [

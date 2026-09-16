@@ -120,6 +120,12 @@ suite.define(() => {
               ],
             },
             [SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD]: { subscribed: true },
+            "forge.detail": {
+              url: reviewRequest.url,
+              title: reviewRequest.title,
+              body: "Read this pull request without leaving Activity.",
+              comments: [],
+            },
             "forge.preview": {
               cases: [
                 { match: { url: reviewRequest.url }, response: preview },
@@ -234,13 +240,20 @@ suite.define(() => {
         await page.keyboard.press("Escape");
         await expect.poll(() => card.count()).toBe(0);
         expect(await draftPr.evaluate((element) => element === document.activeElement)).toBe(true);
-        const popupPromise = page.waitForEvent("popup");
         await page.keyboard.press("Enter");
+        const reader = page.locator("openclaw-link-reader-panel");
+        await reader.getByRole("heading", { name: reviewRequest.title, exact: true }).waitFor();
+        expect(new URL(page.url()).pathname).toBe("/activity");
+        const external = reader.locator("a[data-link-reader-external]").first();
+        expect(await external.getAttribute("href")).toBe(reviewRequest.url);
+        const popupPromise = page.waitForEvent("popup");
+        await external.click();
         const popup = await popupPromise;
         await popup.waitForLoadState("domcontentloaded");
         expect(popup.url()).toBe(reviewRequest.url);
         expect(new URL(page.url()).pathname).toBe("/activity");
         await popup.close();
+        await reader.getByRole("button", { name: "Close link reader", exact: true }).click();
 
         await gateway.emitGatewayEvent(CONTROL_UI_SESSION_PULL_REQUESTS_CHANGED_EVENT, {
           sessions: {
