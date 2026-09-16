@@ -149,7 +149,7 @@ async function handleChatSendWithOptions(
     return;
   }
   const { imageOrder, prepareAttachmentsMs } = preparedAttachments.value;
-  const cronCreatorAuthority = externalAuthorityAdmission?.resolve({
+  const externalAdmissionParams = {
     runId: clientRunId,
     sessionKey,
     spawnedBy: entry?.spawnedBy,
@@ -163,7 +163,23 @@ async function handleChatSendWithOptions(
       normalizedRequest.value.suppressCommandInterpretation ||
       normalizedRequest.value.systemProvenanceReceipt !== undefined,
     turnKind: normalizedRequest.value.turnKind,
-  });
+  };
+  const cronCreatorAuthority = externalAuthorityAdmission?.resolve(externalAdmissionParams);
+  const assertDashboardReadCurrent = externalAuthorityAdmission?.allowsDashboardReads(
+    externalAdmissionParams,
+  )
+    ? () => {
+        admitted.value.assertWorkAdmissionCurrent();
+        sessionMutationCommitGuard?.();
+        client?.connectionSignal?.throwIfAborted();
+        if (
+          client?.invalidated ||
+          !externalAuthorityAdmission.allowsDashboardReads(externalAdmissionParams)
+        ) {
+          throw new Error("Dashboard message read admission is no longer active.");
+        }
+      }
+    : undefined;
 
   const admissionStartedAt = Date.now();
   const terminalizeRestartSafeAdmission = async (
@@ -570,6 +586,7 @@ async function handleChatSendWithOptions(
       skillWorkshopProposalRevision: options?.skillWorkshopProposalRevision,
       skillLibraryAuthoring,
       cronCreatorAuthority,
+      assertDashboardReadCurrent,
       externalAuthorityAdmission,
       injection: {
         beginCapturedMessageInjection,

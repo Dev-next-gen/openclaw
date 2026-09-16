@@ -903,17 +903,18 @@ export const sendHandlers: GatewayRequestHandlers = {
       client,
       requestedOrigin: request.conversationReadOrigin,
     });
-    const assertScheduledReadCurrent = isFencedProviderReadAction(request.action)
-      ? trustedContext.messageActionAuthorization?.scheduled?.assertCurrent
+    const assertReadCurrent = isFencedProviderReadAction(request.action)
+      ? (trustedContext.messageActionAuthorization?.scheduled?.assertCurrent ??
+        trustedContext.messageActionAuthorization?.assertDashboardReadCurrent)
       : undefined;
     const agentRuntimeAuthority = createAgentRuntimeAuthorityGuard(
       client,
       context,
       respond,
-      assertScheduledReadCurrent
+      assertReadCurrent
         ? () => {
             sessionMutationCommitGuard?.();
-            assertScheduledReadCurrent();
+            assertReadCurrent();
           }
         : sessionMutationCommitGuard,
     );
@@ -936,7 +937,7 @@ export const sendHandlers: GatewayRequestHandlers = {
       ],
       conflictMessage: "message.action accountId does not match params.accountId",
       authorize: agentRuntimeAuthority.hasActive,
-      replayResults: assertScheduledReadCurrent === undefined,
+      replayResults: assertReadCurrent === undefined,
       resolveChannel: async (requestChannel) => {
         const resolved = await resolveRequestedChannel({
           requestChannel,
@@ -976,7 +977,7 @@ export const sendHandlers: GatewayRequestHandlers = {
       work: async ({ cfg, channel, plugin, canonicalAction, accountId, dedupeKey, authorize }) => {
         try {
           const completed = await withChannelReadAuthority(
-            request.action === "download-file" || assertScheduledReadCurrent
+            request.action === "download-file" || assertReadCurrent
               ? assertDirectAdapterHandoff
               : undefined,
             async () => {

@@ -23,12 +23,23 @@ type ScheduledMessageActionAuthority = {
   assertCurrent: () => void;
 };
 
+/** Private handoff from authenticated dashboard admission to the exact reply run. */
+export type DashboardMessageReadAdmission = Readonly<{
+  agentId: string;
+  runId: string;
+  sessionKey: string;
+  sessionId?: string;
+  assertCurrent: () => void;
+}>;
+
 export type MessageActionAuthorization = {
   requesterAccountId?: string;
   requesterSenderId?: string;
   toolContext?: InternalChannelThreadingToolContext;
   /** @internal Redeemed from the process-local turn capability. */
   scheduled?: ScheduledMessageActionAuthority;
+  /** @internal Redeemed only by the host; never serialized or passed to plugins. */
+  assertDashboardReadCurrent?: () => void;
 };
 
 type MessageActionRequesterIdentity = {
@@ -78,6 +89,7 @@ type MessageActionTurnCapability = AgentRuntimeMessageActionContext & {
   runId: string;
   sessionKey: string;
   scheduled?: ScheduledMessageActionAuthority;
+  assertDashboardReadCurrent?: () => void;
 };
 
 const capabilitiesByToken = new Map<string, MessageActionTurnCapability>();
@@ -159,8 +171,8 @@ function sweepExpiredMessageActionTurnCapabilities(nowMs: number = Date.now()): 
 }
 
 /**
- * Mint an opaque capability from trusted channel ingress or a live cron occurrence.
- * Public Gateway agent requests never receive this token.
+ * Mint an opaque capability from admitted channel/dashboard input or a live cron occurrence.
+ * Unattested Gateway agent requests never receive this token.
  */
 export function mintMessageActionTurnCapability(params: {
   agentId: string;
@@ -175,6 +187,7 @@ export function mintMessageActionTurnCapability(params: {
   requesterSenderE164?: string;
   toolContext?: InternalChannelThreadingToolContext;
   scheduled?: ScheduledMessageActionAuthority;
+  assertDashboardReadCurrent?: () => void;
   expiresWithRun?: boolean;
   ttlMs?: number;
   nowMs?: number;
@@ -219,6 +232,15 @@ export function mintMessageActionTurnCapability(params: {
       },
     };
   }
+  const assertDashboardReadCurrent = params.assertDashboardReadCurrent;
+  if (assertDashboardReadCurrent) {
+    capability.assertDashboardReadCurrent = () => {
+      if (capabilitiesByToken.get(token) !== capability || Date.now() >= capability.expiresAtMs) {
+        throw new Error("message action turn capability is no longer active");
+      }
+      assertDashboardReadCurrent();
+    };
+  }
   capabilitiesByToken.set(token, capability);
   return token;
 }
@@ -259,7 +281,7 @@ function resolveStoredMessageActionTurnCapability(
   return capability;
 }
 
-/** Serializable context deliberately excludes the scheduled grant and its closure. */
+/** Serializable context deliberately excludes host-only grants and their closures. */
 export function resolveMessageActionTurnCapability(
   params: MessageActionTurnCapabilityLookup,
 ): AgentRuntimeMessageActionContext | undefined {
@@ -295,6 +317,7 @@ export function resolveMessageActionTurnAuthorization(
     ? {
         ...copyMessageActionTurnContext(capability),
         scheduled: capability.scheduled,
+        assertDashboardReadCurrent: capability.assertDashboardReadCurrent,
       }
     : undefined;
 }

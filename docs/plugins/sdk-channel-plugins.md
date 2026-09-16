@@ -559,9 +559,12 @@ field and use only the synchronous callback. An async-only alias therefore canno
 prove equivalence on those hosts; exact canonical target matching still works.
 
 Verified official installed plugins can delegate supported conversation, metadata, and attachment
-reads to provider-owned access checks. The request still needs server-owned current
-provider, account, and conversation context. Provider destination policies remain
-in force; this does not grant unrestricted account access.
+reads to provider-owned access checks. Channel-origin requests need server-owned
+current provider, account, and conversation context. An authenticated dashboard user
+turn can also use those provider-owned checks without native channel context. This
+permission belongs only to that admitted turn; background work and scheduled jobs
+keep their separate authorization. Provider account, destination, action, and requester
+policies remain in force.
 
 An adapter lists actions that support the lifetime fence in `actions.readAuthorityActions`.
 Its `actions.providerOwnedReadGates` declaration separately identifies the actions
