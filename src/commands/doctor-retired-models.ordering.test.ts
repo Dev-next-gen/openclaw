@@ -14,6 +14,7 @@ import { loadCronJobsStore, resolveCronJobsStorePath, saveCronJobsStore } from "
 import { runWriteConfigHealth } from "../flows/doctor-health-contribution-runners.config.js";
 import { runCodexSessionRouteHealth } from "../flows/doctor-health-contribution-runners.state.js";
 import type { DoctorHealthFlowContext } from "../flows/doctor-health-contribution-types.js";
+import { loadManifestMetadataSnapshot } from "../plugins/manifest-contract-eligibility.js";
 import { createDoctorPrompter } from "./doctor-prompter.js";
 import { createRetiredModelFixture as fixture } from "./doctor-retired-models.test-support.js";
 import { repairCronCodexModelRefsAfterConfigWrite } from "./doctor/cron/legacy-repair.js";
@@ -414,6 +415,97 @@ describe("doctor retirement owner scope", () => {
       });
     return { cfg, state, repair };
   }
+
+  it("repairs native defaults and subagents with only an environment API key", async () => {
+    const { cfg, state } = await nativeFixture();
+    await state.writeAuthProfiles({ version: 1, profiles: {} });
+    delete cfg.models;
+    delete cfg.auth;
+    cfg.agents!.defaults!.subagents = { model: "XAI/auto" };
+    const env = { ...state.env, XAI_API_KEY: "synthetic-env-xai-key" };
+    const repair = (config: OpenClawConfig) =>
+      repairStaleAgentModelRefs(config, {
+        env,
+        pluginProviderIds: new Set(["xai"]),
+        persistedProviderIdsByAgentId: new Map(),
+      });
+
+    const result = repair(cfg);
+    expect(resolveDefaultModelForAgent({ cfg: result.config, agentId: "main" })).toEqual({
+      provider: "xai",
+      model: "grok-4.6",
+    });
+    expect(result.config.agents?.defaults?.subagents?.model).toBe("xai/grok-4.6");
+    expect(result.config.agents?.defaults?.models).toEqual({
+      "xai/grok-4.6": { alias: "Grok", params: { temperature: 0.25 } },
+    });
+    expect(result.config.models).toBeUndefined();
+    expect(result.warnings).toEqual([]);
+    const repeated = repair(result.config);
+    expect(repeated.config).toEqual(result.config);
+    expect(repeated.changes).toEqual([]);
+    expect(repeated.warnings).toEqual([]);
+
+    const resolve = createRetiredModelRefRepairResolver({ cfg, env });
+    expect(resolve({ modelRef: "xai/auto@xai:missing", agentId: "main" })).toEqual({
+      kind: "unchanged",
+    });
+  });
+
+  it("retains env-only model selections when native catalog ownership is ambiguous", async () => {
+    const { cfg, state } = await nativeFixture();
+    delete cfg.models;
+    delete cfg.auth;
+    const env = { ...state.env, XAI_API_KEY: "synthetic-env-xai-key" };
+    const snapshot = loadManifestMetadataSnapshot({ config: cfg, env });
+    const xai = snapshot.byPluginId.get("xai")!;
+    const competing = { ...xai, id: "competing-xai" };
+    cfg.plugins!.allow!.push(competing.id);
+    cfg.plugins!.entries![competing.id] = { enabled: true };
+    const warnings: string[] = [];
+    const resolve = createRetiredModelRefRepairResolver({
+      cfg,
+      env,
+      warnings,
+      metadataSnapshot: {
+        ...snapshot,
+        plugins: [...snapshot.plugins, competing],
+        byPluginId: new Map([...snapshot.byPluginId, [competing.id, competing]]),
+        owners: {
+          ...snapshot.owners,
+          modelCatalogProviders: new Map([
+            ...snapshot.owners.modelCatalogProviders,
+            ["xai", [xai.id, competing.id]],
+          ]),
+        },
+      },
+    });
+
+    expect(resolve({ modelRef: "XAI/auto", agentId: "main" })).toEqual({ kind: "unchanged" });
+    expect(warnings.join("\n")).toContain("authentication route is unavailable");
+  });
+
+  it("does not infer an API-key transport for an account with an unknown OAuth endpoint", async () => {
+    const { cfg, state, repair } = await nativeFixture();
+    delete cfg.models;
+    await state.writeAuthProfiles({
+      version: 1,
+      profiles: {
+        "xai:fixture": {
+          provider: "xai",
+          type: "oauth",
+          access: "synthetic-access",
+          refresh: "synthetic-refresh",
+          expires: 9_999_999_999_999,
+        },
+      },
+    });
+
+    const result = repair(cfg);
+    expect(result.config).toEqual(cfg);
+    expect(result.changes).toEqual([]);
+    expect(result.warnings.join("\n")).toContain("authentication route is unavailable");
+  });
 
   it("moves Grok and its policy to the successor when its only route is native xAI", async () => {
     const { cfg, repair } = await nativeFixture();

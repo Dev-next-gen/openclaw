@@ -1,4 +1,5 @@
 // Doctor consumes provider retirement facts only after selecting the exact auth route.
+import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   listAgentIds,
@@ -18,6 +19,8 @@ import {
   resolveConfiguredModelPolicyAllow,
   resolveModelRefFromString,
 } from "../../../agents/model-selection-shared.js";
+import { resolvePluginModelCatalogOwnerPluginId } from "../../../agents/plugin-model-catalog.js";
+import { resolveProviderModelMaterializationAuthMode } from "../../../agents/provider-model-route-auth.js";
 import {
   canonicalizeProviderModelId,
   projectProviderModelRouteConfig,
@@ -101,20 +104,19 @@ export function createRetiredModelRefRepairResolver(params: {
       const metadataSnapshot =
         params.metadataSnapshot ??
         loadManifestMetadataSnapshot({ config: params.cfg, workspaceDir, env });
+      const eligiblePlugins = metadataSnapshot.plugins.filter((plugin) =>
+        isManifestPluginAvailableForControlPlane({
+          snapshot: metadataSnapshot,
+          plugin,
+          config: params.cfg,
+        }),
+      );
       const retirementCandidates = new Set(
-        metadataSnapshot.plugins
-          .filter((plugin) =>
-            isManifestPluginAvailableForControlPlane({
-              snapshot: metadataSnapshot,
-              plugin,
-              config: params.cfg,
-            }),
-          )
-          .flatMap((plugin) =>
-            (plugin.modelCatalog?.suppressions ?? [])
-              .filter((rule) => rule.retirement)
-              .map((rule) => `${rule.provider}/${rule.model}`.toLowerCase()),
-          ),
+        eligiblePlugins.flatMap((plugin) =>
+          (plugin.modelCatalog?.suppressions ?? [])
+            .filter((rule) => rule.retirement)
+            .map((rule) => `${rule.provider}/${rule.model}`.toLowerCase()),
+        ),
       );
       const authViews = new Map<
         string | undefined,
@@ -148,6 +150,17 @@ export function createRetiredModelRefRepairResolver(params: {
         agentId,
         {
           retirementCandidates,
+          nativeApiKeyRoute(provider: string) {
+            const pluginId = resolvePluginModelCatalogOwnerPluginId({
+              providerId: provider,
+              pluginMetadataSnapshot: metadataSnapshot,
+            });
+            const plugin = eligiblePlugins.find((candidate) => candidate.id === pluginId);
+            const catalog = Object.entries(plugin?.modelCatalog?.providers ?? {}).find(
+              ([providerId]) => normalizeProviderId(providerId) === provider,
+            )?.[1];
+            return catalog?.baseUrl ? { api: catalog.api, baseUrl: catalog.baseUrl } : undefined;
+          },
           model: model.resolve,
           currentModel: currentModel.resolve,
           modelPolicy: params.checkModelPolicy
@@ -259,10 +272,19 @@ export function createRetiredModelRefRepairResolver(params: {
       const configuredModel = findConfiguredProviderModel(configured, provider, id, (modelId) =>
         canonicalizeProviderModelId(provider, modelId),
       );
-      const configuredRoute = configured && {
-        api: configuredModel?.api ?? configured.api,
-        baseUrl: configuredModel?.baseUrl ?? configured.baseUrl,
-      };
+      // Manifest defaults describe the native API-key transport, not OAuth or
+      // runtime-owned accounts. Keep an authored transport as one route tuple.
+      const configuredRoute = configured
+        ? {
+            api: configuredModel?.api ?? configured.api,
+            baseUrl: configuredModel?.baseUrl ?? configured.baseUrl,
+          }
+        : auth.routeResolution === null &&
+            !auth.availabilityAuthoritative &&
+            auth.availability === true &&
+            resolveProviderModelMaterializationAuthMode(auth.selectedAuthMode) === "api_key"
+          ? owner.nativeApiKeyRoute(provider)
+          : undefined;
       const baseUrl = auth.selectedRoute?.baseUrl ?? configuredRoute?.baseUrl;
       if (!baseUrl) {
         warn(
