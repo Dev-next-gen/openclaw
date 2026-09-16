@@ -26,10 +26,10 @@ import {
   type ServiceChildRelayMessage,
   type ServiceChildStart,
 } from "./service-child-protocol.js";
+import { createServiceChildRelayRetirement } from "./service-child-relay-retirement.js";
 import type {
   ProcessAdapterConstruction,
   ProcessAdapterStartup,
-  ProcessCleanupResult,
   SpawnProcessAdapter,
   SpawnSecretInput,
 } from "./types.js";
@@ -201,9 +201,6 @@ export async function createServiceChildRelayAdapter(
   let startupErrorAckDelivery: Promise<void> | undefined;
   let cleanupDeadline: number | undefined;
   let cleanupTimer: NodeJS.Timeout | undefined;
-  let relayKillAt: number | undefined;
-  let relayKillError: Error | undefined;
-  let cleanupResult: ProcessCleanupResult | undefined;
   let completionSettled = false;
   void Promise.allSettled([resultCompletion.promise, extinctionCompletion.promise]).then(() => {
     completionSettled = true;
@@ -211,6 +208,7 @@ export async function createServiceChildRelayAdapter(
   });
 
   const settleWait = () => {
+    retirement.reconcile();
     // Authority loss cannot erase an already observed root result. Output must
     // still drain, while the independent extinction join keeps the failure.
     const error = resultError ?? (rootResult ? undefined : waitError);
@@ -247,6 +245,10 @@ export async function createServiceChildRelayAdapter(
     settleWait();
     extinctionCompletion.reject(waitError);
     lineage?.destroy();
+    // Release a forced relay's receipt hold without erasing the failed cleanup outcome.
+    if (!useWindowsJobAnchor && child.connected) {
+      child.disconnect();
+    }
   };
 
   const expireCleanup = () => {
@@ -266,14 +268,7 @@ export async function createServiceChildRelayAdapter(
       "service child cleanup did not complete before its hard deadline; pending: " +
       JSON.stringify(pending);
     const error = new Error(message, {
-      cause: {
-        durationMs: performance.now() - (cleanupDeadline! - GRACEFUL_CANCEL_TIMEOUT_MS),
-        escalationAfterMs:
-          relayKillAt === undefined
-            ? undefined
-            : relayKillAt - (cleanupDeadline! - GRACEFUL_CANCEL_TIMEOUT_MS),
-        signalError: relayKillError,
-      },
+      cause: retirement.diagnostics(),
     });
     // Extinction may already be confirmed while an output pipe remains open.
     // Reject pending results before destroy can turn that missing tail into success.
@@ -338,8 +333,34 @@ export async function createServiceChildRelayAdapter(
     });
   };
 
+  const retirement = createServiceChildRelayRetirement({
+    child,
+    generation,
+    nextSequence: () => ++outboundSequence,
+    startedAt: () => cleanupDeadline! - GRACEFUL_CANCEL_TIMEOUT_MS,
+    anchorGone: () => {
+      if (anchorPid === undefined) {
+        return false;
+      }
+      try {
+        process.kill(-anchorPid, 0);
+        return false;
+      } catch (error) {
+        return extractErrorCode(error) === "ESRCH";
+      }
+    },
+    canRetire: () =>
+      state === "closing" &&
+      control?.closed === true &&
+      lineage?.readableEnded === true &&
+      stdoutRelay.ended &&
+      stderrRelay.ended &&
+      performance.now() < cleanupDeadline!,
+  });
+
   lineage?.once("end", () => {
     lineageEnd.resolve();
+    retirement.reconcile();
     if (state !== "starting" && state !== "active") {
       return;
     }
@@ -389,6 +410,7 @@ export async function createServiceChildRelayAdapter(
   };
 
   const finishPosixAuthority = async (missingReceiptError: string) => {
+    retirement.reconcile();
     if (state === "closed" || state === "identity-lost") {
       return;
     }
@@ -399,18 +421,6 @@ export async function createServiceChildRelayAdapter(
     // Closure requires lineage EOF outside the group as well as kernel group
     // disappearance; an escaped writer survives the anchor's group-wide KILL.
     beginCleanupDeadline();
-    if (!childExited) {
-      // Control EOF can precede the relay reaping its anchor. Darwin reports
-      // EPERM for that unreaped zombie group, so join before observing it.
-      try {
-        await Promise.race([relayExit.promise, extinctionCompletion.promise]);
-      } catch {
-        return;
-      }
-      if (state !== "closing") {
-        return;
-      }
-    }
     if (!lineage?.readableEnded) {
       try {
         await Promise.race([lineageEnd.promise, extinctionCompletion.promise]);
@@ -422,24 +432,34 @@ export async function createServiceChildRelayAdapter(
       return;
     }
     for (;;) {
-      try {
-        // Observation only: signalling a retired numeric PGID could hit a reused group.
-        process.kill(-anchorPid, 0);
-      } catch (cause) {
-        // SAFETY: process.kill throws Node system errors; only the exact ESRCH code certifies absence.
-        if ((cause as NodeJS.ErrnoException).code === "ESRCH") {
-          finishAuthorityClose(missingReceiptError);
-        } else {
-          loseIdentity("owned process group disappearance could not be confirmed", { cause });
+      retirement.reconcile();
+      if (childExited) {
+        try {
+          // Observation only: signalling a retired numeric PGID could hit a reused group.
+          process.kill(-anchorPid, 0);
+        } catch (cause) {
+          if (extractErrorCode(cause) === "ESRCH") {
+            finishAuthorityClose(missingReceiptError);
+          } else {
+            loseIdentity("owned process group disappearance could not be confirmed", { cause });
+          }
+          return;
         }
-        return;
       }
       const remainingMs = cleanupDeadline! - performance.now();
       if (remainingMs <= 0) {
         expireCleanup();
         return;
       }
-      await delay(Math.min(100, remainingMs));
+      try {
+        await Promise.race([
+          delay(Math.min(100, remainingMs)),
+          ...(!childExited ? [relayExit.promise] : []),
+          extinctionCompletion.promise,
+        ]);
+      } catch {
+        return;
+      }
       if (state !== "closing") {
         return;
       }
@@ -485,6 +505,7 @@ export async function createServiceChildRelayAdapter(
       closingReceipt = true;
       state = "closing";
       beginCleanupDeadline();
+      retirement.reconcile();
       if (control) {
         // Retire cancellation before acknowledging this exact POSIX receipt.
         // The ACK releases the sender, not the independent native extinction join.
@@ -534,7 +555,7 @@ export async function createServiceChildRelayAdapter(
       decoder = new StringDecoder("utf8");
       try {
         const message = readChildMessage(JSON.parse(line));
-        if (!("sequence" in message)) {
+        if (!("sequence" in message) || message.type === "retirement") {
           throw new Error("invalid anchor message");
         }
         handleAnchorMessage(message);
@@ -594,7 +615,7 @@ export async function createServiceChildRelayAdapter(
       return;
     }
     if (useWindowsJobAnchor) {
-      if (!("sequence" in message)) {
+      if (!("sequence" in message) || message.type === "retirement") {
         loseIdentity("invalid anchor message");
         return;
       }
@@ -606,6 +627,8 @@ export async function createServiceChildRelayAdapter(
     }
     if (message.type === "relay-error") {
       loseIdentity(message.error);
+    } else if (message.type === "retirement") {
+      retirement.receive(message);
     }
   });
   child.once("error", (error) => {
@@ -627,17 +650,7 @@ export async function createServiceChildRelayAdapter(
   });
   child.once("exit", (code, signal) => {
     childExited = true;
-    if (relayKillAt !== undefined) {
-      const startedAt = cleanupDeadline! - GRACEFUL_CANCEL_TIMEOUT_MS;
-      cleanupResult = {
-        reason: "forced-relay-exit",
-        signalRequested: "SIGKILL",
-        signalError: relayKillError,
-        exit: { code, signal },
-        durationMs: performance.now() - startedAt,
-        escalationAfterMs: relayKillAt - startedAt,
-      };
-    }
+    retirement.observeExit(code, signal);
     relayExit.resolve();
     removeConstructionAbortListener();
     if (useWindowsJobAnchor) {
@@ -713,38 +726,11 @@ export async function createServiceChildRelayAdapter(
     const normalized = signal === "SIGTERM" ? "SIGTERM" : "SIGKILL";
     if (normalized === "SIGKILL") {
       beginCleanupDeadline();
+      retirement.request();
     }
     // A closing receipt retires group cancellation, not the retained relay handle.
-    // After the group is gone, honor forced cleanup and join real relay exit within the same deadline.
+    // Remember force requests until closure events permit anchor reaping and relay retirement.
     if (state !== "active") {
-      if (
-        normalized === "SIGKILL" &&
-        state === "closing" &&
-        !childExited &&
-        relayKillAt === undefined &&
-        anchorPid !== undefined &&
-        control?.closed &&
-        lineage?.readableEnded &&
-        stdoutRelay.ended &&
-        stderrRelay.ended &&
-        performance.now() < cleanupDeadline!
-      ) {
-        try {
-          process.kill(-anchorPid, 0);
-        } catch (error) {
-          // The relay must finish reaping its anchor before losing its own process handle.
-          if (extractErrorCode(error) === "ESRCH") {
-            relayKillAt = performance.now();
-            try {
-              if (!child.kill("SIGKILL")) {
-                relayKillError = new Error("retained relay SIGKILL was not delivered");
-              }
-            } catch (signalError) {
-              relayKillError = toErrorObject(signalError, "retained relay SIGKILL failed");
-            }
-          }
-        }
-      }
       return;
     }
     requestedSignal = normalized;
@@ -786,7 +772,7 @@ export async function createServiceChildRelayAdapter(
     },
     waitForExtinction: async () => await extinctionCompletion.promise,
     get cleanupResult() {
-      return state === "closed" ? cleanupResult : undefined;
+      return state === "closed" ? retirement.result : undefined;
     },
     kill,
     dispose: () => {

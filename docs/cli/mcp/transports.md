@@ -21,9 +21,11 @@ Launches a local child process and communicates over stdin/stdout.
 | `env`                      | Extra environment variables       |
 | `cwd` / `workingDirectory` | Working directory for the process |
 
-Shutdown can force a slow relay to exit after its server process group and pipes
-have closed. Confirmed forced exit completes cleanup normally; a later connection
-starts a fresh server. Unconfirmed cleanup still reports an error with the missing
+Shutdown can force a slow anchor and relay to exit after their control, output,
+and lineage pipes close. A still-live anchor is killed and reaped through its
+relay. If the anchor group is already gone, the host can kill an unresponsive
+relay directly. The host then confirms actual exit and group disappearance. Confirmed cleanup
+completes normally; a later connection starts a fresh server. Unconfirmed cleanup still reports an error with the missing
 closure facts, elapsed time, and any failed signal delivery. The cleanup deadline
 does not change when shutdown escalates.
 
