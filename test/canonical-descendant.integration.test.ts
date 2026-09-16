@@ -1143,6 +1143,85 @@ describe("canonical descendant lifecycle through real owners", () => {
     });
   }, 180_000);
 
+  it.each(["plugin_missing", "marketplace_missing"] as const)(
+    "forks with healthy account apps when plugin discovery reports %s",
+    async (diagnosticCode) => {
+      await withFixture(
+        async (fixture, fork) => {
+          const source = await fixture.adopt();
+          await fixture.turn(source.sessionKey, "canonical");
+          const selected = expectDefined(
+            (await fixture.readEntries(source.sessionKey)).at(-1),
+            "canonical user message",
+          );
+          const pluginPolicy = expectDefined(fixture.pluginConfig.codexPlugins, "plugin policy");
+          pluginPolicy.plugins = {
+            missing: { marketplaceName: "company-tools", pluginName: "missing-plugin" },
+          };
+          await fixture.withClient(async (client) => {
+            const request = client.request.bind(client);
+            const requestSpy = vi
+              .spyOn(client, "request")
+              .mockImplementation((method, input, options) => {
+                if (method === "plugin/installed" || method === "plugin/list") {
+                  return Promise.resolve({
+                    marketplaces:
+                      diagnosticCode === "plugin_missing"
+                        ? [
+                            {
+                              name: "company-tools",
+                              path: "/company/marketplace.json",
+                              plugins: [],
+                            },
+                          ]
+                        : [],
+                    marketplaceLoadErrors: [],
+                    ...(method === "plugin/list" ? { featuredPluginIds: [] } : {}),
+                  });
+                }
+                return request(method, input, options);
+              });
+            const errorLog = vi.spyOn(embeddedAgentLog, "error").mockImplementation(() => {});
+            try {
+              const result = await fork(source.sessionKey, selected.entryId);
+              expect(result, result.message).toMatchObject({ ok: true });
+              const childKey = expectDefined(result.key, "child key");
+              const binding = expectDefined(
+                fixture.bindingStore.read(fixture.identity(childKey)),
+                "child binding",
+              );
+              const child = expectDefined(
+                fixture.native.threads.get(binding.threadId),
+                "native child",
+              );
+              expect(child.config).toMatchObject({
+                apps: { "synthetic-app": { enabled: true, destructive_enabled: false } },
+              });
+              expect(binding.pluginAppPolicyContext?.apps).toMatchObject({
+                "synthetic-app": { source: "account", allowDestructiveActions: false },
+              });
+              expect(errorLog).toHaveBeenCalledWith(
+                expect.any(String),
+                expect.objectContaining({ code: diagnosticCode, pluginName: "missing-plugin" }),
+              );
+            } finally {
+              errorLog.mockRestore();
+              requestSpy.mockRestore();
+            }
+          });
+        },
+        {
+          codexPlugins: {
+            enabled: true,
+            allow_all_plugins: true,
+            allow_destructive_actions: false,
+          },
+        },
+      );
+    },
+    180_000,
+  );
+
   it.each([
     ...(["searchable", "direct"] as const).flatMap((loading) =>
       (["unconfigured", "empty", "disabled", "enabled"] as const).map((appPolicy) => ({

@@ -186,7 +186,12 @@ export async function prepareCanonicalCodexFork(params: {
       })
     : undefined;
   assertCurrent();
-  if (apps?.diagnostics.length) {
+  if (
+    apps?.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.code !== "plugin_missing" && diagnostic.code !== "marketplace_missing",
+    )
+  ) {
     throw new Error(
       "Codex app policy is not ready for a native fork. Complete plugin setup and retry.",
     );

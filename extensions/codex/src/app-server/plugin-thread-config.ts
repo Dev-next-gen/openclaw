@@ -3,6 +3,7 @@
  * for native Codex turns.
  */
 import crypto from "node:crypto";
+import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { defaultCodexAppInventoryCache, CodexAppInventoryCache } from "./app-inventory-cache.js";
 import {
   resolveCodexPluginsPolicy,
@@ -112,7 +113,7 @@ type BuildCodexPluginThreadConfigParams = {
 
 // Admission changes must rebuild existing bindings too, or older bindings can
 // bypass updated app approval checks after the gateway has been upgraded.
-const CODEX_PLUGIN_THREAD_CONFIG_INPUT_FINGERPRINT_VERSION = 6;
+const CODEX_PLUGIN_THREAD_CONFIG_INPUT_FINGERPRINT_VERSION = 7;
 const CODEX_PLUGIN_THREAD_CONFIG_FINGERPRINT_VERSION = 2;
 
 /** Returns true when plugin config exists and thread config may need app patches. */
@@ -310,6 +311,16 @@ export async function buildCodexPluginThreadConfig(
     ...activationDiagnostics,
     ...(accountAppsResult.diagnostic ? [accountAppsResult.diagnostic] : []),
   ];
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.code === "plugin_missing" || diagnostic.code === "marketplace_missing") {
+      embeddedAgentLog.error(diagnostic.message, {
+        code: diagnostic.code,
+        configKey: diagnostic.plugin?.configKey,
+        pluginName: diagnostic.plugin?.pluginName,
+        marketplaceName: diagnostic.plugin?.marketplaceName,
+      });
+    }
+  }
   const provisionalAppIds = new Set<string>();
   const { apps } = buildDisabledAppsConfigPatch();
   const policyApps: Record<string, CodexAppPolicyContextEntry> = {};
@@ -327,17 +338,18 @@ export async function buildCodexPluginThreadConfig(
         const disabledByMarketplacePolicy =
           record?.summary.availability === "DISABLED_BY_ADMIN" ||
           record?.summary.installPolicy === "NOT_AVAILABLE";
-        const unresolvedPluginIdentity =
+        // A missing plugin is a configuration error, not an account-wide denial.
+        const disabledPluginWithoutInventory =
           !record &&
           inventory.diagnostics.some(
             (diagnostic) =>
               diagnostic.plugin?.configKey === pluginPolicy.configKey &&
-              (diagnostic.code === "plugin_disabled" ||
-                diagnostic.code === "plugin_missing" ||
-                diagnostic.code === "marketplace_missing"),
+              diagnostic.code === "plugin_disabled",
           );
         return (
-          (!pluginPolicy.enabled || disabledByMarketplacePolicy || unresolvedPluginIdentity) &&
+          (!pluginPolicy.enabled ||
+            disabledByMarketplacePolicy ||
+            disabledPluginWithoutInventory) &&
           !record?.detail
         );
       })

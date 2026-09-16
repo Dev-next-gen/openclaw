@@ -1,4 +1,5 @@
 // Codex tests cover plugin thread config plugin behavior.
+import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexAppInventoryCache, defaultCodexAppInventoryCache } from "./app-inventory-cache.js";
 import { codexAppInventoryResponse } from "./app-inventory.test-helpers.js";
@@ -1587,10 +1588,91 @@ describe("Codex plugin thread config", () => {
 
   it.each([
     {
-      name: "an enterprise plugin omitted from every catalog",
-      marketplaceName: "company-tools",
-      listedPlugins: [],
+      name: "an enabled plugin is missing",
+      marketplaceName: CODEX_PLUGINS_MARKETPLACE_NAME,
+      diagnosticCode: "plugin_missing",
     },
+    {
+      name: "an enabled plugin's marketplace is missing",
+      marketplaceName: "missing-marketplace",
+      diagnosticCode: "marketplace_missing",
+    },
+  ])(
+    "logs an error and admits healthy apps when $name",
+    async ({ marketplaceName, diagnosticCode }) => {
+      const errorLog = vi.spyOn(embeddedAgentLog, "error").mockImplementation(() => {});
+      try {
+        const request = vi.fn(async (method: string) => {
+          if (method === "app/installed" || method === "app/read") {
+            return codexAppInventoryResponse(method, [
+              appInfo("configured-app", true),
+              appInfo("account-calendar-app", true),
+            ]);
+          }
+          if (method === "plugin/installed" || method === "plugin/list") {
+            const summaries = [pluginSummary("healthy-plugin", { installed: true, enabled: true })];
+            return method === "plugin/installed"
+              ? pluginInstalled(summaries)
+              : pluginList(summaries);
+          }
+          if (method === "plugin/read") {
+            return pluginDetail("healthy-plugin", [appSummary("configured-app")]);
+          }
+          if (method === "config/read") {
+            return { config: {}, layers: [] };
+          }
+          throw new Error(`unexpected request ${method}`);
+        });
+        const config = await buildCodexPluginThreadConfig({
+          pluginConfig: {
+            codexPlugins: {
+              enabled: true,
+              allow_all_plugins: true,
+              allow_destructive_actions: "auto",
+              plugins: {
+                healthy: {
+                  marketplaceName: CODEX_PLUGINS_MARKETPLACE_NAME,
+                  pluginName: "healthy-plugin",
+                  allow_destructive_actions: false,
+                },
+                missing: {
+                  marketplaceName,
+                  pluginName: "missing-plugin",
+                },
+              },
+            },
+          },
+          appCacheKey: "runtime",
+          request,
+        });
+
+        expect(config.configPatch?.apps).toMatchObject({
+          "configured-app": { enabled: true, destructive_enabled: false },
+          "account-calendar-app": { enabled: true, destructive_enabled: true },
+        });
+        expect(config.policyContext.apps).toMatchObject({
+          "configured-app": { configKey: "healthy", allowDestructiveActions: false },
+          "account-calendar-app": { source: "account", allowDestructiveActions: true },
+        });
+        expect(config.diagnostics).toEqual([
+          expect.objectContaining({
+            code: diagnosticCode,
+            plugin: expect.objectContaining({ configKey: "missing" }),
+          }),
+        ]);
+        expect(errorLog).toHaveBeenCalledExactlyOnceWith(config.diagnostics[0]?.message, {
+          code: diagnosticCode,
+          configKey: "missing",
+          pluginName: "missing-plugin",
+          marketplaceName,
+        });
+      } finally {
+        errorLog.mockRestore();
+      }
+    },
+  );
+
+  it.each([
     {
       name: "an enterprise plugin unavailable before installation",
       marketplaceName: "company-tools",
