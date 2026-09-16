@@ -25,6 +25,7 @@ import { isCommandLaneTaskTimeoutError } from "../../process/command-queue.js";
 import { CommandLane } from "../../process/lanes.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { removeCronRunContinuationSessionIfIdle } from "../../tasks/cron-run-continuation-cleanup.js";
+import { CronExecutionRootRuntimeError } from "../execution-root-runtime.js";
 import { createCronRunDiagnosticsFromError, mergeCronRunDiagnostics } from "../run-diagnostics.js";
 import { resolveCronRunErrorReason } from "../run-error-reason.js";
 import {
@@ -32,13 +33,12 @@ import {
   resolveCronAbortReasonText,
 } from "../service/execution-errors.js";
 import type { CronAgentExecutionPhaseUpdate } from "../types.js";
+import type { CronExecutionResult } from "./run-executor.js";
 import { finalizeCronRun } from "./run-finalize.js";
-import {
-  CronExecutionRootRuntimeError,
-  type RunCronAgentTurnParams,
-} from "./run-prepare-runtime.js";
+import type { RunCronAgentTurnParams } from "./run-prepare-runtime.js";
 import { prepareCronRunContext } from "./run-prepare.js";
 import { CronSessionLifecycleClaimError, type MutableCronSession } from "./run-session-state.js";
+import { applyCronRunUsage, recordCronRunUsage } from "./run-usage.js";
 import { logWarn } from "./run.runtime.js";
 import type { RunCronAgentTurnResult } from "./run.types.js";
 import { cleanupCronRunSessionAfterRun } from "./session-cleanup.js";
@@ -188,6 +188,19 @@ export async function runCronIsolatedAgentTurn(
           let outcome: "completed" | "error" = "completed";
           let outcomeError: string | undefined;
           let cronRunSessionCleanupHandled = false;
+          let completedExecution: CronExecutionResult | undefined;
+          let usage: RunCronAgentTurnResult["usage"];
+          let usageSettlement: Promise<void> | undefined;
+          const settleUsage = async (execution: CronExecutionResult, contextTokens?: number) => {
+            usageSettlement ??= (async () => {
+              usage = applyCronRunUsage(prepared.context, execution);
+              await recordCronRunUsage({ prepared: prepared.context, execution, contextTokens });
+              await prepared.context.persistSessionEntry();
+              await prepared.context.runContinuationSession?.seal({ basePersisted: true });
+            })();
+            await usageSettlement;
+            return usage;
+          };
           // The execution owner spans fallback and interim-ack retries. Individual
           // attempts must not retire the shared run before that execution settles.
           const lifecycle = createAgentLifecycleTerminalBackstop({
@@ -260,6 +273,9 @@ export async function runCronIsolatedAgentTurn(
               onExecutionStarted: notifyExecutionStarted,
               onExecutionPhase: notifyExecutionPhase,
               onLaneWait: params.onLaneWait,
+              onPromptCompleted: (execution) => {
+                completedExecution = execution;
+              },
               abortReason,
               isAborted,
               immutableThinkLevel: prepared.context.thinkingSelection.immutableThinkLevel,
@@ -283,6 +299,7 @@ export async function runCronIsolatedAgentTurn(
               execution,
               abortReason,
               isAborted,
+              settleUsage: (contextTokens) => settleUsage(execution, contextTokens),
               markCronRunSessionCleanupHandled: () => {
                 cronRunSessionCleanupHandled = true;
               },
@@ -317,6 +334,17 @@ export async function runCronIsolatedAgentTurn(
                 : err instanceof CronExecutionRootRuntimeError || !executionStarted
                   ? "rejected"
                   : undefined;
+            if (completedExecution) {
+              try {
+                await settleUsage(completedExecution);
+              } catch (usageError) {
+                if (usageError !== err) {
+                  logWarn(
+                    `[cron:${params.job.id}] Failed to settle completed prompt usage: ${String(usageError)}`,
+                  );
+                }
+              }
+            }
             return prepared.context.withRunSession({
               status: "error",
               error,
@@ -324,6 +352,7 @@ export async function runCronIsolatedAgentTurn(
                 ? { kind: "reason", reason: errorReason }
                 : undefined,
               executionStarted,
+              usage,
               ...(admissionDisposition ? { admissionDisposition } : {}),
               // Carry the already-resolved run model into the error/timeout row so
               // Task-run history keeps provider/model attribution instead of looking like

@@ -1746,9 +1746,9 @@ jobs:
               // Diff generation took 209–246s on smaller hosts; keep its 8GiB heap isolated.
               { check_name: "report-plugin-sdk-api-diff", group: "plugin-sdk-api-diff", runner: "blacksmith-8vcpu-ubuntu-2404" },
             ] : []),
-            // Cold SDK/plugin compilation and architecture scans need the measured 8CPU class.
+            // Cold SDK/plugin compilation needs the measured 8CPU class.
             { check_name: "check-additional-extension-package-boundary", group: "extension-package-boundary", runner: "blacksmith-32vcpu-ubuntu-2404" },
-            { check_name: "check-additional-runtime-topology-architecture", group: "runtime-topology-architecture", runner: "blacksmith-32vcpu-ubuntu-2404" },
+            { check_name: "check-additional-runtime-topology-architecture", group: "runtime-topology-architecture", runner: "blacksmith-16vcpu-ubuntu-2404" },
           ];
 
           const manifest = {
@@ -2138,9 +2138,7 @@ jobs:
       contents: read
     needs: [preflight]
     if: needs.preflight.outputs.run_build_artifacts == 'true'
-    # Current targets fit the measured 16-class with serial SDK declarations.
-    # Keep frozen/unknown targets on their existing class; their compute was not proved.
-    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (needs.preflight.outputs.frozen_target == 'false' && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-32vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
+    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-32vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 35 || 20 }}
     steps:
       - *linux_node_checkout_step
@@ -3451,7 +3449,8 @@ jobs:
     name: ${{ matrix.check_name || 'checks-node-core-test-nondist-shard' }}
     needs: [preflight]
     if: needs.preflight.outputs.run_checks_node_core_nondist == 'true'
-    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
+    # Apply selected transitions only: numbered bins can use another class in other profiles.
+    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && ((matrix.runner == 'blacksmith-8vcpu-ubuntu-2404' && contains(fromJSON('["checks-node-changed-extensions-bundle-16","checks-node-compact-large-9","checks-node-changed-extensions-bundle-25","checks-node-compact-large-5"]'), matrix.check_name) || matrix.runner == 'blacksmith-32vcpu-ubuntu-2404' && contains(fromJSON('["checks-node-compact-small-4","checks-node-compact-small-3","checks-node-compact-small-10"]'), matrix.check_name)) && 'blacksmith-16vcpu-ubuntu-2404' || matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
     timeout-minutes: ${{ matrix.timeout_minutes || 60 }}
     strategy:
       fail-fast: false
@@ -4934,8 +4933,8 @@ jobs:
             swift_test_width=$(( logical_cpu < 12 ? logical_cpu : 12 ))
             echo "[macos-swift] Swift Testing parallelization width: $swift_test_width"
             swift_test_args+=(--experimental-maximum-parallelization-width "$swift_test_width")
-            node scripts/test-macos-native.mts default "${swift_test_args[@]}" --skip AppStateIsolationTests
-            node scripts/test-macos-native.mts named "${swift_test_args[@]}" --filter AppStateIsolationTests
+            node scripts/test-macos-native.mts default "${swift_test_args[@]}" --skip "AppStateIsolationTests|ProfileChatPreferencesTests"
+            node scripts/test-macos-native.mts named "${swift_test_args[@]}" --filter "AppStateIsolationTests|ProfileChatPreferencesTests"
           elif [[ "$HISTORICAL_TARGET" == "true" ]]; then
             # Frozen release targets predate the resource-owner script and its tests.
             # Their original suite still runs only on this disposable macOS worker.
@@ -4945,6 +4944,32 @@ jobs:
             echo "Current CI targets must provide scripts/test-macos-native.mts." >&2
             exit 1
           fi
+
+      - name: Upload default-profile chat menu captures
+        if: ${{ always() && steps.swift-test.outputs.menu-default-artifact-path != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-chat-menu-captures-default
+          path: |
+            ${{ steps.swift-test.outputs.menu-default-artifact-path }}/*-window.png
+            ${{ steps.swift-test.outputs.menu-default-artifact-path }}/*-menu-*.png
+            ${{ steps.swift-test.outputs.menu-default-artifact-path }}/*-capture-status.json
+            ${{ steps.swift-test.outputs.menu-default-artifact-path }}/capture-export.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload named-profile chat menu captures
+        if: ${{ always() && steps.swift-test.outputs.menu-named-artifact-path != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-chat-menu-captures-named
+          path: |
+            ${{ steps.swift-test.outputs.menu-named-artifact-path }}/*-window.png
+            ${{ steps.swift-test.outputs.menu-named-artifact-path }}/*-menu-*.png
+            ${{ steps.swift-test.outputs.menu-named-artifact-path }}/*-capture-status.json
+            ${{ steps.swift-test.outputs.menu-named-artifact-path }}/capture-export.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Render isolated macOS health fixtures
         id: health-render
@@ -5739,7 +5764,7 @@ jobs:
     name: docker-seed-e2e
     needs: [preflight]
     if: needs.preflight.outputs.run_docker_seed_e2e == 'true'
-    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.event_name == 'pull_request' && (github.run_attempt > 1 || github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-32vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.event_name == 'pull_request' && (github.run_attempt > 1 || github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: 60
     steps:
       - *linux_node_checkout_step

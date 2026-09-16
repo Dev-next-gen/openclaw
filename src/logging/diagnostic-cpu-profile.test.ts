@@ -151,6 +151,67 @@ describe("diagnostic CPU profile owner", () => {
     expect((await capture()).status).toBe("complete");
   });
 
+  it("preserves native signed script IDs, source offsets and sample order", async () => {
+    const value = profile();
+    value.timeDeltas = [10_000, -500, 10_500];
+    value.nodes[1].callFrame.lineNumber = -10;
+    value.nodes[1].callFrame.columnNumber = -200;
+    value.nodes[1].positionTicks = [{ line: -9, ticks: 2 }];
+    value.nodes[2].callFrame = {
+      functionName: "wasm-to-js",
+      scriptId: "-1",
+      url: "",
+      lineNumber: 0,
+      columnNumber: 0,
+    };
+    native.post.mockImplementation(async (method) =>
+      method === "Profiler.stop" ? { profile: value } : {},
+    );
+    expect(await capture()).toMatchObject({
+      status: "complete",
+      result: {
+        profile: {
+          nodes: expect.arrayContaining([
+            expect.objectContaining({
+              id: 2,
+              callFrame: expect.objectContaining({ lineNumber: -10, columnNumber: -200 }),
+              positionTicks: [{ line: -9, ticks: 2 }],
+            }),
+            expect.objectContaining({
+              id: 3,
+              callFrame: {
+                functionName: "[redacted]",
+                scriptId: "-1",
+                url: "",
+                lineNumber: 0,
+                columnNumber: 0,
+              },
+            }),
+          ]),
+          samples: [2, 3, 2],
+          timeDeltas: [10_000, -500, 10_500],
+        },
+      },
+    });
+  });
+
+  it.each(["private payload", "-", "-1.5", `-${"1".repeat(33)}`])(
+    "rejects malformed or oversized script IDs: %s",
+    async (scriptId) => {
+      const value = profile();
+      value.nodes[1].callFrame.scriptId = scriptId;
+      native.post.mockImplementation(async (method) =>
+        method === "Profiler.stop" ? { profile: value } : {},
+      );
+      expect(await capture()).toEqual({
+        status: "unavailable",
+        reason: "invalid-profile",
+        cleanupFailed: false,
+      });
+      expect(native.disconnect).toHaveBeenCalledOnce();
+    },
+  );
+
   it("rejects overlap instead of queuing, and stops on cancellation", async () => {
     const controller = new AbortController();
     const waiting = createDeferred();
@@ -386,6 +447,24 @@ describe("diagnostic CPU profile owner", () => {
       },
     ],
     [
+      "fractional source line",
+      (value: ProfileFixture) => {
+        value.nodes[1].callFrame.lineNumber = -1.5;
+      },
+    ],
+    [
+      "fractional source column",
+      (value: ProfileFixture) => {
+        value.nodes[1].callFrame.columnNumber = -1.5;
+      },
+    ],
+    [
+      "fractional position-tick line",
+      (value: ProfileFixture) => {
+        value.nodes[1].positionTicks = [{ line: -1.5, ticks: 2 }];
+      },
+    ],
+    [
       "duplicate node",
       (value: ProfileFixture) => {
         value.nodes[1].id = 1;
@@ -467,7 +546,7 @@ const result = outcome.result;
 assert.ok(result.actualDurationMs > 0);
 assert.ok(result.profile.samples.length > 0);
 assert.equal(result.profile.samples.length, result.profile.timeDeltas.length);
-assert.ok(result.profile.timeDeltas.every(delta => Number.isFinite(delta) && delta >= 0));
+assert.ok(result.profile.timeDeltas.every(delta => Number.isFinite(delta)));
 const ids = new Set(result.profile.nodes.map(node => node.id));
 assert.ok(result.profile.samples.every(id => ids.has(id)));
 assert.equal(result.sampleLossCount, null);

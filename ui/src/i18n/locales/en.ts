@@ -553,8 +553,9 @@ export const en: TranslationMap & {
   lazyView: {
     errorTitle: "Panel failed to load",
     genericSubtitle: "Something went wrong while loading this panel.",
-    staleTitle: "A new version is available",
-    staleSubtitle: "OpenClaw was updated in the background. Reload to get the latest panel.",
+    staleTitle: "This view could not load",
+    staleSubtitle:
+      "Some interface files could not be downloaded. Check your connection, then reload.",
     reloading: "Reloading…",
     retry: "Retry",
     stylesFailed: "Styles failed to load, so the page may look broken.",
@@ -1173,7 +1174,11 @@ export const en: TranslationMap & {
     statusTimeout: "Timed out",
     waitingForAnswer: "Waiting for your answer",
     waitingForApproval: "Waiting for approval",
+    questionsNeedAnswer: "{count} questions need your answer",
+    approvalsNeedApproval: "{count} requests need approval",
+    attentionMore: "+{count} more",
     runFailedReason: "Run failed: {reason}",
+    childRunFailedReason: "Child session {label} failed: {reason}",
     runErrorTimedOut: "Timed out",
     runErrorUnknown: "Unknown error",
     attentionRequired: "Session needs attention",
@@ -2835,6 +2840,7 @@ export const en: TranslationMap & {
       finished: "{done} completed · {failed} failed",
       completed: "{done} completed",
       childOutcome: "Child runs finished. Check the conversation for the final response.",
+      childOutcomeProcessing: "Child runs finished. The parent is processing their results.",
       details: "Child details",
       detailsUnavailable: "Child details are unavailable. Counts include all accepted workers.",
       otherGroups: "{count} more active groups",
@@ -4403,6 +4409,8 @@ export const en: TranslationMap & {
       sendMessage: "Send message",
     },
     queue: {
+      reviewEdit: "Review edit",
+      reloadBlocked: "Save or cancel your queued message edit before reloading.",
       connectionPending: "Finishing connection recovery. Try sending again when it is ready.",
       editSourceChanged:
         "This queued message changed while you were editing. Your edit is still here. Copy it, cancel the edit, and review the queue before trying again.",
@@ -4692,7 +4700,7 @@ export const en: TranslationMap & {
       closeSearch: "Close search",
       loading: "Loading chat",
       showEarlier: "Show earlier",
-      loadingEarlier: "Loading earlier history…",
+      loadingEarlier: "Loading earlier…",
       noMatches: "No matching messages",
       positionRail: "Conversation position",
       positionMarker: "{label}, marker {position} of {count}",
@@ -4720,6 +4728,7 @@ export const en: TranslationMap & {
     },
     composer: {
       composerInput: "Chat composer",
+      emojiSuggestions: "Emoji suggestions",
       placeholder: "Message {name}",
       emptyHint: "Write a message to send.",
       placeholderWithAttachments: "Add a message or paste more images...",
@@ -4922,6 +4931,9 @@ export const en: TranslationMap & {
       preparing: "Preparing voice session...",
       connecting: "Connecting voice input...",
       listening: "Listening...",
+      selectionFailed: "Could not change voices. Restart the call.",
+      selectionTimedOut: "Voice change timed out. Restart the call.",
+      selectionConfirmationFailed: "Voice change unconfirmed.",
     },
     selectors: {
       loadMoreSessions: "Show more",

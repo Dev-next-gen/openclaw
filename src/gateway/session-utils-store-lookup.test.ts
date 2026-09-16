@@ -12,7 +12,7 @@ import {
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { withStateDirEnv } from "../test-helpers/state-dir-env.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import { prepareCurrentGitHubPublicationIdentity } from "./github-publication-availability.js";
+import { prepareCurrentGitHubPublicationOptionsIdentity } from "./github-publication-availability.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import { chatHistoryHandlers } from "./server-methods/chat-history-handler.js";
@@ -49,7 +49,7 @@ import {
 } from "./session-utils.js";
 
 vi.mock("./github-publication-availability.js", () => ({
-  prepareCurrentGitHubPublicationIdentity: vi.fn(async (agentId: string) => ({
+  prepareCurrentGitHubPublicationOptionsIdentity: vi.fn(async (agentId: string) => ({
     source: "system",
     account: { accountId: `account-${agentId}`, login: `synthetic-${agentId}` },
   })),
@@ -121,33 +121,59 @@ describe("global session lookup ownership", () => {
     });
   });
 
-  it.each([
+  it.each<{
+    agentId: string;
+    clone: false | undefined;
+    createsDatabase: boolean;
+    unreadableRegistry?: true;
+  }>([
     { agentId: "main", clone: undefined, createsDatabase: true },
     { agentId: "main", clone: false, createsDatabase: false },
     { agentId: "retired", clone: undefined, createsDatabase: false },
-  ])("preserves scalar database admission for $agentId (clone: $clone)", async (scenario) => {
-    await withStateDirEnv("gateway-scalar-store-admission-", async ({ stateDir }) => {
-      const cfg: OpenClawConfig = {
-        agents: { ownership: "explicit", entries: { main: {} } },
-        session: { store: path.join(stateDir, "agents", "{agentId}", "sessions", "sessions.json") },
-      };
-      const key = `agent:${scenario.agentId}:dashboard:new-session`;
-      const target = resolveGatewaySessionStoreTarget({
-        cfg,
-        key,
-        clone: scenario.clone,
+    { agentId: "main", clone: false, createsDatabase: false, unreadableRegistry: true },
+    { agentId: "retired", clone: false, createsDatabase: false, unreadableRegistry: true },
+  ])(
+    "preserves scalar database admission for $agentId (clone: $clone, unreadable registry: $unreadableRegistry)",
+    async (scenario) => {
+      await withStateDirEnv("gateway-scalar-store-admission-", async ({ stateDir }) => {
+        const cfg: OpenClawConfig = {
+          agents: { ownership: "explicit", entries: { main: {} } },
+          session: {
+            store: path.join(
+              stateDir,
+              "agents",
+              scenario.unreadableRegistry ? scenario.agentId : "{agentId}",
+              "sessions",
+              "sessions.json",
+            ),
+          },
+        };
+        const key = `agent:${scenario.agentId}:dashboard:new-session`;
+        if (scenario.unreadableRegistry) {
+          mkdirSync(path.join(stateDir, "state", "openclaw.sqlite"), { recursive: true });
+        }
+        const resolve = () =>
+          resolveGatewaySessionStoreTarget({
+            cfg,
+            key,
+            clone: scenario.clone,
+          });
+        if (scenario.unreadableRegistry) {
+          expect(resolve).toThrow();
+        } else {
+          expect(resolve()).toEqual({
+            agentId: scenario.agentId,
+            canonicalKey: key,
+            storeKeys: [key],
+            storePath: path.join(stateDir, "agents", scenario.agentId, "sessions", "sessions.json"),
+          });
+        }
+        expect(existsSync(resolveOpenClawAgentSqlitePath({ agentId: scenario.agentId }))).toBe(
+          scenario.createsDatabase,
+        );
       });
-      expect(target).toEqual({
-        agentId: scenario.agentId,
-        canonicalKey: key,
-        storeKeys: [key],
-        storePath: path.join(stateDir, "agents", scenario.agentId, "sessions", "sessions.json"),
-      });
-      expect(existsSync(resolveOpenClawAgentSqlitePath({ agentId: scenario.agentId }))).toBe(
-        scenario.createsDatabase,
-      );
-    });
-  });
+    },
+  );
 
   it("keeps a child-relative parent distinct from qualified parent owners", async () => {
     await withGlobalSessions("main", async (cfg) => {
@@ -387,7 +413,7 @@ describe("global session lookup ownership", () => {
             login: `synthetic-${agentId}`,
           },
         });
-        expect(prepareCurrentGitHubPublicationIdentity).toHaveBeenLastCalledWith(agentId);
+        expect(prepareCurrentGitHubPublicationOptionsIdentity).toHaveBeenLastCalledWith(agentId);
         expect(latestShared).toHaveBeenLastCalledWith(
           expect.objectContaining({
             agentId,

@@ -2,7 +2,7 @@
 
 import { render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SubagentRunReadRecord } from "../../../../../src/agents/subagents/registry/subagent-registry.types.js";
+import type { SubagentRunReadRecord } from "../../../../../src/agents/subagents/registry/subagent-registry-read.types.js";
 import { buildSessionSwarmSummary } from "../../../../../src/gateway/session-swarm-summary.js";
 import type { GatewaySessionRow } from "../../../api/types.ts";
 import { i18n } from "../../../i18n/index.ts";
@@ -299,6 +299,46 @@ describe("chat Swarm progress", () => {
     expect(container.querySelector("[data-test-id=chat-swarm]")).not.toBeNull();
     expect(container.textContent).toContain("1 completed · 1 failed");
     expect(container.textContent).toContain("Check the conversation for the final response");
+  });
+
+  it("says the parent is processing while child runs are finished but the parent is still active", () => {
+    const completed = session({ key: "completed", status: "done", hasActiveRun: true });
+    const parentActive: (typeof completed)[] = [];
+    for (const row of withSummary([completed])) {
+      parentActive.push(
+        row.key === parentSessionKey
+          ? { ...row, status: "running" as const, hasActiveRun: true }
+          : row,
+      );
+    }
+    const container = document.createElement("div");
+    document.body.append(container);
+    render(
+      renderChatSwarmProgress({ sessionKey: parentSessionKey, sessions: parentActive }),
+      container,
+    );
+    expect(container.textContent).toContain("The parent is processing their results");
+    expect(container.textContent).not.toContain("Check the conversation for the final response");
+  });
+
+  it("directs to the final response when child runs are finished and the parent is not active", () => {
+    const completed = session({ key: "completed", status: "done", hasActiveRun: false });
+    const parentDone: (typeof completed)[] = [];
+    for (const row of withSummary([completed])) {
+      parentDone.push(
+        row.key === parentSessionKey
+          ? { ...row, status: "done" as const, hasActiveRun: false }
+          : row,
+      );
+    }
+    const container = document.createElement("div");
+    document.body.append(container);
+    render(
+      renderChatSwarmProgress({ sessionKey: parentSessionKey, sessions: parentDone }),
+      container,
+    );
+    expect(container.textContent).toContain("Check the conversation for the final response");
+    expect(container.textContent).not.toContain("The parent is processing their results");
   });
 
   it("keeps tasks from every phase in the compact detail", () => {

@@ -10,12 +10,10 @@ const peer = fileURLToPath(new URL("../test/fixtures/owner-agent.mjs", import.me
 it.each([
   "session",
   "bridge",
-  "catalog",
   "openclaw-direct",
   ...(process.platform === "win32" ? [] : ["env-bridge"]),
 ])("scopes MCP at the real ACP boundary across reconnect (%s)", async (scenario) => {
   const bridge = scenario === "bridge" || scenario === "env-bridge";
-  const catalog = scenario === "catalog";
   const agent = scenario === "openclaw-direct" ? "openclaw" : "fixture";
   await withOpenClawTestState({ label: "acpx-mcp-process" }, async (state) => {
     const directory = path.join(state.root, "peer");
@@ -59,8 +57,7 @@ it.each([
           sessionKey: "shared",
           agentId,
           agent,
-          mode: catalog ? "oneshot" : "persistent",
-          bridgeSession: catalog ? null : undefined,
+          mode: "persistent",
         });
         handles.push(handle);
       }
@@ -84,7 +81,7 @@ it.each([
         const results = await Promise.all(handles.map(prompt));
         for (const [index, result] of results.entries()) {
           expect(result.mcpServers).toEqual(
-            bridge || catalog
+            bridge
               ? []
               : servers.map((server) =>
                   server.name === "user-server"

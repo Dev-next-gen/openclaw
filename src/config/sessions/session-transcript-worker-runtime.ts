@@ -72,11 +72,12 @@ export async function readSessionTranscriptModelContextAsync(
   admission: SessionModelContextWorkerInput["admission"],
   signal?: AbortSignal,
   through?: SessionModelContextWorkerInput["through"],
+  limits?: SessionModelContextWorkerInput["limits"],
 ): Promise<ReturnType<typeof readSessionTranscriptModelContext>> {
   signal?.throwIfAborted();
   return unwrapReply<"model-context">(
     await modelContextReads.run(
-      { kind: "model-context", target, admission, through },
+      { kind: "model-context", target, admission, through, limits },
       { timeoutMs: 60_000, signal },
     ),
   );
@@ -123,6 +124,7 @@ type HistoryDatabaseResource = {
 
 export type SessionHistoryWorkerDatabase = {
   generation: number;
+  assertCurrent: () => void;
   run: (
     prepare: () => Omit<SessionTranscriptHistoryWorkerInput, "database">,
     inputBytes: number,
@@ -230,6 +232,7 @@ export async function withSessionHistoryWorkerDatabase<T>(
     assertCurrent();
     const result = await operation({
       generation: owned.generation,
+      assertCurrent,
       run: async (prepare, inputBytes) => {
         assertCurrent();
         let sequence = 0;

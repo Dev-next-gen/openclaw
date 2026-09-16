@@ -3,7 +3,6 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
-  createAgentRegistry,
   RequestedModelUnsupportedError,
   type AcpxRuntime as UpstreamRuntime,
   type AcpRuntimeOptions,
@@ -121,8 +120,6 @@ function makeRuntime(
     getCapabilities: UpstreamRuntime["getCapabilities"];
     getStatus: NonNullable<AcpRuntime["getStatus"]>;
     setMode: NonNullable<AcpRuntime["setMode"]>;
-    setModel: UpstreamRuntime["setModel"];
-    prepareFreshSession: UpstreamRuntime["prepareFreshSession"];
     setConfigOption: NonNullable<AcpRuntime["setConfigOption"]>;
     isHealthy(): boolean;
     probeAvailability(): Promise<void>;
@@ -160,8 +157,6 @@ function makeRuntime(
           getCapabilities: UpstreamRuntime["getCapabilities"];
           getStatus: NonNullable<AcpRuntime["getStatus"]>;
           setMode: NonNullable<AcpRuntime["setMode"]>;
-          setModel: UpstreamRuntime["setModel"];
-          prepareFreshSession: UpstreamRuntime["prepareFreshSession"];
           setConfigOption: NonNullable<AcpRuntime["setConfigOption"]>;
           isHealthy(): boolean;
           probeAvailability(): Promise<void>;
@@ -228,89 +223,6 @@ describe("AcpxRuntime fresh reset wrapper", () => {
       configOptionKeys: ["model", "effort"],
     });
     expect(capabilities.controls).toContain("session/set_model");
-  });
-
-  it("inspects configured native commands through the same registry without launching them", async () => {
-    const registry = createAgentRegistry({
-      overrides: { qwen: ["/test/custom-qwen", "--acp", "--profile", "work"] },
-      resolveExecutable: (command) => (command === "/test/custom-qwen" ? command : undefined),
-      resolvePackageRoot: () => undefined,
-    });
-    const baseStore = {
-      load: vi.fn(async () => undefined),
-      save: vi.fn(async () => {}),
-    };
-    const { runtime, delegate } = makeRuntime(baseStore, {
-      agentRegistry: registry,
-      openclawInspectAgent: (agent) => registry.inspect(agent),
-    });
-    const ensure = vi.spyOn(delegate, "ensureSession");
-    expect(await runtime.inspectAgent("qwen")).toEqual({
-      id: "qwen",
-      name: "Qwen Code",
-      launch: {
-        kind: "installed",
-        argv: ["/test/custom-qwen", "--acp", "--profile", "work"],
-      },
-    });
-    expect(ensure).not.toHaveBeenCalled();
-    expect(baseStore.load).not.toHaveBeenCalled();
-    expect(baseStore.save).not.toHaveBeenCalled();
-  });
-
-  it("does not invent native inspection for a legacy custom registry", async () => {
-    const { runtime } = makeRuntime(makeEmptySessionStore());
-    await expect(runtime.inspectAgent("qwen")).rejects.toThrow(
-      "Native ACP harnesses require installed command inspection",
-    );
-  });
-
-  it("forwards native model IDs through the public setter without interpreting them", async () => {
-    const baseStore = {
-      load: vi.fn(async () => ({
-        acpxRecordId: "agent:main:acp:test",
-        agentCommand: "qwen --acp",
-      })),
-      save: vi.fn(async () => {}),
-    };
-    const { runtime, delegate } = makeRuntime(baseStore);
-    const setModel = vi.spyOn(delegate, "setModel").mockResolvedValue(undefined);
-    const setConfigOption = vi.spyOn(delegate, "setConfigOption");
-    const handle = {
-      sessionKey: "agent:main:acp:test",
-      backend: "acpx",
-      runtimeSessionName: "agent:main:acp:test",
-      acpxRecordId: "agent:main:acp:test",
-    };
-    const model = "$runtime|openai|fixture-model(openai)";
-    await runtime.setModel({ handle, model });
-    expect(setModel).toHaveBeenCalledExactlyOnceWith({ handle, model });
-    expect(setConfigOption).not.toHaveBeenCalled();
-  });
-
-  it("prepares an existing native handle through the durable local reset owner", async () => {
-    const baseStore = {
-      load: vi.fn(async () => ({
-        acpxRecordId: "agent:main:harness:acp-pi:session",
-        agentCommand: "pi-acp",
-      })),
-      save: vi.fn(async () => {}),
-    };
-    const { runtime, delegate } = makeRuntime(baseStore);
-    const prepareFreshSession = vi
-      .spyOn(delegate, "prepareFreshSession")
-      .mockResolvedValue(undefined);
-    const close = vi.spyOn(delegate, "close");
-    const handle = {
-      sessionKey: "agent:main:harness:acp-pi:session",
-      backend: "acpx",
-      runtimeSessionName: "agent:main:harness:acp-pi:session",
-      acpxRecordId: "agent:main:harness:acp-pi:session",
-    };
-    await runtime.prepareFreshSession({ handle });
-    expect(prepareFreshSession).toHaveBeenCalledExactlyOnceWith({ handle });
-    expect(close).not.toHaveBeenCalled();
-    expect(baseStore.save).not.toHaveBeenCalled();
   });
 
   beforeEach(() => {

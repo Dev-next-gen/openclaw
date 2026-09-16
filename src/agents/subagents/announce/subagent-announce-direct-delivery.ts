@@ -104,10 +104,7 @@ export async function sendSubagentAnnounceDirectly(params: {
   resolveGatewayContext?: import("../../../gateway/server-methods/types.js").GatewayContextResolver;
 }): Promise<SubagentAnnounceDeliveryResult> {
   if (params.signal?.aborted) {
-    return {
-      delivered: false,
-      path: "none",
-    };
+    return { delivered: false, path: "none" };
   }
   const parentOnly = params.completionTarget === "parent";
   const cfg = getSubagentAnnounceRuntimeConfig();
@@ -347,10 +344,7 @@ export async function sendSubagentAnnounceDirectly(params: {
       };
     }
     if (params.signal?.aborted) {
-      return {
-        delivered: false,
-        path: "none",
-      };
+      return { delivered: false, path: "none" };
     }
     const directAgentOrigin = shouldDeliverAgentFinal
       ? deliveryTarget
@@ -415,7 +409,9 @@ export async function sendSubagentAnnounceDirectly(params: {
                 : undefined,
             expectFinal: true,
             signal: params.signal,
-            timeoutMs: announceTimeoutMs,
+            // Individual private delivery retains its cleanup owner until the
+            // lifecycle deadline; settle batches can observe and replay admission.
+            timeoutMs: parentOnly && isSubagentCompletion ? undefined : announceTimeoutMs,
             isExecutionAllowed: isCompletionDeliveryAllowed,
             resolveGatewayContext: params.resolveGatewayContext,
           });
@@ -456,8 +452,15 @@ export async function sendSubagentAnnounceDirectly(params: {
       throw err;
     }
 
-    if (isGatewayAgentRunPending(directAnnounceResponse) && !parentOnly) {
-      return { delivered: true, path: "direct" };
+    if (isGatewayAgentRunPending(directAnnounceResponse)) {
+      return parentOnly
+        ? {
+            delivered: false,
+            path: "direct",
+            reason: "requester_turn_pending",
+            disposition: "retryable",
+          }
+        : { delivered: true, path: "direct" };
     }
 
     const directAnnounceResult = getGatewayAgentResult(directAnnounceResponse);
@@ -517,15 +520,12 @@ export async function sendSubagentAnnounceDirectly(params: {
         ...(automaticEvidence.mayHaveSent ? { disposition: "ambiguous" as const } : {}),
       };
     }
-    const completionPayloadVisibility = {
-      includeErrorPayloads: false,
-      includeReasoningPayloads: false,
-      requireTerminalContent: true,
-    };
     const hasVisibleNonSilentGatewayPayload = Boolean(
       directAnnounceResult &&
       hasVisibleAgentPayload(directAnnounceResult, {
-        ...completionPayloadVisibility,
+        includeErrorPayloads: false,
+        includeReasoningPayloads: false,
+        requireTerminalContent: true,
         includeSilentReplyPayloads: false,
       }),
     );

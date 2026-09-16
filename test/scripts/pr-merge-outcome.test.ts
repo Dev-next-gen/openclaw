@@ -10,6 +10,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -164,14 +165,26 @@ function fixture(
   };
   prepare(head);
   const initial = {
-    // gh reports the REST database id (a number) while GraphQL reports the node id.
-    // The fixture models both so the merge path is exercised against real gh shapes.
+    // The CLI locator can use an adapter's numeric id; REST and GraphQL expose
+    // the authoritative pair independently of that projection.
     repo: {
-      id: 1103012935 as string | number,
+      id: "R_kgDOQb6kRw" as string | number,
       url: "https://github.com/fixture/repo",
       nameWithOwner: "fixture/repo",
     },
-    repoNodeId: "R_kgDOQb6kRw" as string | null,
+    repoAuthority: {
+      id: 1103012935,
+      node_id: "R_kgDOQb6kRw",
+      full_name: "fixture/repo",
+      html_url: "https://github.com/fixture/repo",
+    } as Record<string, unknown>,
+    repoAuthorityUnavailable: false,
+    repoGraphql: {
+      id: "R_kgDOQb6kRw",
+      databaseId: 1103012935,
+      url: "https://github.com/fixture/repo",
+      nameWithOwner: "fixture/repo",
+    },
     pr: {
       id: "fixture-pr",
       number: 123,
@@ -286,6 +299,12 @@ const advanceMain=()=>{
   s.mainAdvances.push(next);
 };
 if(args[0]==="repo") out(args.includes("--jq")?s.repo.nameWithOwner:s.repo);
+else if(args[0]==="api"&&args.some(arg=>new RegExp("^repos/[^/]+/[^/]+$").test(arg))) {
+  if(!args.includes("Cache-Control: max-age=0")) fail("missing live repository header");
+  if(!args.includes("--hostname")) fail("missing repository hostname");
+  if(s.repoAuthorityUnavailable) fail("repository metadata unavailable");
+  out(s.repoAuthority);
+}
 else if(args[0]==="api"&&args.includes("user")) out("relay-reader");
 else if(args.includes("graphql")&&args.includes("query=query { viewer { login } }")) out(args.includes("--include") ? "HTTP/2.0 200 OK\\n\\n" + JSON.stringify({data:{viewer:{login:s.operator}}}) : s.operator);
 else if(args[0]==="pr"&&args[1]==="checks") {
@@ -352,8 +371,7 @@ else if(args[0]==="pr"&&args[1]==="view") {
     if(step?.unavailable) fail("metadata unavailable");
     if(step?.invalid) {save();out({data:{repository:{}}});process.exit(0);}
     const pr={...s.pr};if(s.drift&&s.reads%2===0) pr.baseRefName="changed";
-    const repository={...s.repo,ref:{target:{oid:step?.reportedMain??main()}},pullRequest:pr};
-    if(s.repoNodeId!==null) {repository.id=s.repoNodeId;repository.databaseId=s.repo.id;}
+    const repository={...s.repoGraphql,ref:{target:{oid:step?.reportedMain??main()}},pullRequest:pr};
     out({data:{repository}});
     if(step?.advanceAfterRead) advanceMain();
   }
@@ -444,7 +462,7 @@ begin_pr_operation_validation_phase
 if [ -n "\${5:-}" ]; then
   merge_complete 123 "$5"
 else
-  merge_run 123 "\${1:-false}" "\${2:-}" "\${3:-}" "\${4:-}"
+  merge_run 123 "\${1:-false}" "\${2:-}" "\${3:-}" "\${4:-}" "\${6:-}"
 fi
 `,
   );
@@ -470,6 +488,7 @@ fi
     replacementHead = "",
     bodyPath = "",
     completionOid = "",
+    legacyDirectory = "",
   ) => {
     const result = spawnSync(
       nodeExecutable,
@@ -482,6 +501,7 @@ fi
         replacementHead,
         bodyPath,
         completionOid,
+        legacyDirectory,
       ],
       { cwd, env: { ...env, OPENCLAW_PR_MERGE_METHOD: method }, encoding: "utf8", timeout: 20_000 },
     );
@@ -613,6 +633,29 @@ function expectNoProbeFetch(trace: ReturnType<ReturnType<typeof fixture>["trace"
         probes.some((probe) => probe.sid === event.sid),
     ),
   ).toEqual([]);
+}
+
+function createLegacyRefusal(f: ReturnType<typeof fixture>) {
+  const directory = join(f.root, "legacy-evidence");
+  mkdirSync(directory);
+  const capture = `X Pull request fixture/repo#123 is not mergeable: the merge commit cannot be cleanly created.
+To have the pull request merged after all the requirements have been met, add the \`--auto\` flag.
+Run the following to resolve the merge conflicts locally:
+  gh pr checkout 123 && git fetch origin main && git merge origin/main
+`;
+  writeFileSync(join(f.worktree, ".local/merge-output.log"), capture);
+  const files = Object.fromEntries(
+    ["merge-output.log", "prep.env", "prep.md", "gates.env"].map((name) => {
+      const contents = readFileSync(join(f.worktree, ".local", name), "utf8");
+      writeFileSync(join(directory, name), contents);
+      return [name, contents];
+    }),
+  );
+  return {
+    directory,
+    files,
+    oid: f.git(["hash-object", "--no-filters", join(directory, "merge-output.log")]),
+  };
 }
 
 function reconciledMergeAfterCleanup(admin = false) {
@@ -1262,6 +1305,186 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     expect(f.state().mutations).toBe(1);
   });
 
+  it("recovers a qualified legacy refusal with preserved evidence and one new current intent", () => {
+    const f = fixture();
+    const legacy = createLegacyRefusal(f);
+    const approvedHead = f.replacePreparedHead();
+    const run = f.run(false, f.repo, "squash", legacy.oid, approvedHead, "", "", legacy.directory);
+    expect(run.status, run.output).toBe(0);
+    expect(f.state().mutations).toBe(1);
+    expect(f.record()).toMatchObject({
+      phase: "complete",
+      head: approvedHead,
+      legacyRefusal: {
+        actor: "fixture-operator",
+        kind: "gh-2.98-pre-dispatch-refusal",
+        head: f.head,
+        preparedBase: f.base,
+      },
+    });
+    expect(f.record()).not.toHaveProperty("recovery");
+    for (const [name, contents] of Object.entries(legacy.files)) {
+      expect(f.git(["rev-parse", `${outcomeRef}:legacy-refusal/${name}`])).toBe(
+        f.git(["hash-object", "--stdin"], contents),
+      );
+    }
+    expect(f.run().status).toBe(0);
+    expect(f.state().mutations).toBe(1);
+    const replay = f.run(
+      false,
+      f.repo,
+      "squash",
+      legacy.oid,
+      approvedHead,
+      "",
+      "",
+      legacy.directory,
+    );
+    expect(replay.status, replay.output).toBe(1);
+    expect(f.state().mutations).toBe(1);
+  });
+
+  it("retains qualified legacy evidence through successor recovery and garbage collection", () => {
+    const f = fixture();
+    const legacy = createLegacyRefusal(f);
+    const approvedHead = f.replacePreparedHead();
+    f.save({ ...f.state(), mode: "unapplied" });
+    const first = f.run(
+      false,
+      f.repo,
+      "squash",
+      legacy.oid,
+      approvedHead,
+      "",
+      "",
+      legacy.directory,
+    );
+    expect(first.status, first.output).toBe(1);
+    expect(f.state().mutations).toBe(1);
+    const previous = f.git(["rev-parse", outcomeRef]);
+    const previousRecord = f.record();
+    expect(previousRecord.legacyRefusal).toMatchObject({ head: f.head, preparedBase: f.base });
+    expect(previousRecord).not.toHaveProperty("recovery");
+    f.recover();
+    f.save({ ...f.state(), mode: "success" });
+    const recovered = f.run(false, f.repo, "squash", previous);
+    expect(recovered.status, recovered.output).toBe(0);
+    expect(f.state().mutations).toBe(2);
+    expect(f.record()).toMatchObject({
+      phase: "complete",
+      head: approvedHead,
+      recovery: { outcome: previous, attempt: previousRecord.attempt },
+    });
+    f.git(["merge-base", "--is-ancestor", previous, outcomeRef]);
+    for (const ref of [
+      "refs/heads/topic",
+      "refs/heads/pr-123",
+      "refs/heads/pr-123-prep",
+      "refs/remotes/origin/topic",
+    ]) {
+      f.git(["update-ref", "-d", ref]);
+    }
+    rmSync(legacy.directory, { recursive: true });
+    f.git(["reflog", "expire", "--expire=now", "--all"]);
+    f.git(["gc", "--prune=now"]);
+    for (const oid of [previous, f.head, f.base, approvedHead]) {
+      f.git(["cat-file", "-e", `${oid}^{commit}`]);
+    }
+    expect(JSON.parse(f.git(["show", `${previous}:outcome.json`]))).toEqual(previousRecord);
+    for (const [name, contents] of Object.entries(legacy.files)) {
+      const oid = f.git(["rev-parse", `${previous}:legacy-refusal/${name}`]);
+      expect(oid).toBe(f.git(["hash-object", "--stdin"], contents));
+      f.git(["cat-file", "-e", `${oid}^{blob}`]);
+    }
+  });
+
+  it.each([
+    "empty",
+    "timeout",
+    "extra-capture",
+    "wrong-hash",
+    "wrong-pr",
+    "wrong-base",
+    "missing-proof",
+    "symlink",
+    "auto",
+    "queue",
+    "closed",
+    "pending",
+    "ci-proof",
+    "changed-capture",
+    "no-head",
+  ])("legacy refusal recovery refuses %s without losing evidence or dispatching", (fault) => {
+    const f = fixture();
+    const legacy = createLegacyRefusal(f);
+    const approvedHead = f.replacePreparedHead();
+    const next = f.state();
+    const capture = join(f.worktree, ".local/merge-output.log");
+    if (fault === "empty" || fault === "timeout") {
+      const text = fault === "empty" ? "" : "502 after dispatch\n";
+      writeFileSync(capture, text);
+      writeFileSync(join(legacy.directory, "merge-output.log"), text);
+      legacy.oid = f.git(["hash-object", "--no-filters", capture]);
+    }
+    if (fault === "extra-capture") {
+      writeFileSync(join(f.worktree, ".local/merge-output.other.log"), "");
+    }
+    if (fault === "wrong-hash") {
+      legacy.oid = f.base;
+    }
+    if (fault === "wrong-pr" || fault === "wrong-base") {
+      const path = join(legacy.directory, "prep.env");
+      writeFileSync(
+        path,
+        readFileSync(path, "utf8").replace(
+          fault === "wrong-pr" ? "PR_NUMBER=123" : f.base,
+          fault === "wrong-pr" ? "PR_NUMBER=456" : "not-a-sha",
+        ),
+      );
+    }
+    if (fault === "missing-proof") {
+      rmSync(join(legacy.directory, "prep.md"));
+    }
+    if (fault === "symlink") {
+      rmSync(capture);
+      symlinkSync(join(legacy.directory, "merge-output.log"), capture);
+    }
+    if (fault === "auto") {
+      next.pr.autoMergeRequest = { mergeMethod: "SQUASH" };
+    }
+    if (fault === "queue") {
+      next.pr.isMergeQueueEnabled = true;
+    }
+    if (fault === "closed") {
+      next.pr.state = "CLOSED";
+    }
+    if (fault === "pending") {
+      next.gates = "pending";
+    }
+    if (fault === "ci-proof") {
+      next.ciExit = 15;
+    }
+    if (fault === "changed-capture") {
+      next.duringChecks = { artifact: "merge-output.log" };
+    }
+    f.save(next);
+    const run = f.run(
+      false,
+      f.repo,
+      "squash",
+      legacy.oid,
+      fault === "no-head" ? "" : approvedHead,
+      "",
+      "",
+      legacy.directory,
+    );
+    expect(run.status, run.output).not.toBe(0);
+    expect(f.state().mutations, run.output).toBe(0);
+    expect(f.state().posts).toBe(0);
+    expect(existsSync(capture)).toBe(true);
+    expect(() => f.git(["rev-parse", "--verify", outcomeRef])).toThrow();
+  });
+
   it.each([
     { replacement: false, reviewHead: "current", forwardMain: false },
     { replacement: true, reviewHead: "current", forwardMain: false },
@@ -1431,7 +1654,7 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
         next.pr.id = "other-pr";
       }
       if (fault === "wrong-repo") {
-        next.repo.id = "other-repo";
+        next.repoAuthority.node_id = "other-repo";
       }
       if (fault === "current-auto") {
         next.pr.autoMergeRequest = { mergeMethod: "SQUASH" };
@@ -2392,6 +2615,7 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     "recovery-extra",
     "recovery-unretained",
     "recovery-method",
+    "recovery-repo",
   ])("fails closed on %s outcome evidence", (fault) => {
     const f = fixture();
     f.save({ ...f.state(), mode: "unapplied" });
@@ -2403,6 +2627,7 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
       const record = {
         ...original,
         method: fault === "recovery-method" ? "merge" : original.method,
+        repo: fault === "recovery-repo" ? { ...original.repo, id: 1103012935 } : original.repo,
         recovery: {
           outcome: previous,
           attempt: original.attempt,
@@ -2424,7 +2649,10 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
       f.git(["symbolic-ref", outcomeRef, "refs/heads/topic"]);
     }
     if (fault === "mismatched") {
-      f.save({ ...f.state(), repo: { ...f.state().repo, id: "other-repo" } });
+      f.save({
+        ...f.state(),
+        repoAuthority: { ...f.state().repoAuthority, node_id: "other-repo" },
+      });
     }
     if (fault === "missing-head") {
       rmSync(join(f.repo, ".git/objects", f.head.slice(0, 2), f.head.slice(2)));
@@ -2680,9 +2908,8 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
 });
 
 describePosix("merge_outcome_repo_identity", () => {
-  // gh reports the repository id as a REST database number while PR ids stay GraphQL
-  // node strings, so admission has to accept both scalars. Requiring a string here
-  // failed every merge closed on a current gh.
+  // Local historical records contain either scalar. Remote admission separately
+  // binds the whole retained object to the authoritative repository pair.
   const identity = (repo: unknown) =>
     spawnSync(
       "bash",
@@ -2696,7 +2923,7 @@ describePosix("merge_outcome_repo_identity", () => {
       { encoding: "utf8" },
     );
 
-  it("accepts the numeric repository id gh actually returns", () => {
+  it("accepts a historical numeric repository id", () => {
     const run = identity({
       id: 1103012935,
       nameWithOwner: "openclaw/openclaw",
@@ -2741,19 +2968,177 @@ describePosix("merge_outcome_repo_identity", () => {
 });
 
 describePosix("repository identity across gh id representations", () => {
-  // The fixture's default state models current gh: a numeric CLI id and a GraphQL node
-  // id. This covers the other host shape, where gh reports the node id from both
-  // sources, so neither representation regresses.
-  it("merges when gh reports the node id from both sources", () => {
+  const canonicalRepo = {
+    id: "R_kgDOQb6kRw",
+    nameWithOwner: "fixture/repo",
+    url: "https://github.com/fixture/repo",
+  };
+  const historicalIds = [
+    { name: "node", id: "R_kgDOQb6kRw", nextId: 1103012935 },
+    { name: "numeric", id: 1103012935, nextId: "R_kgDOQb6kRw" },
+  ];
+  const retainRepository = (f: ReturnType<typeof fixture>, repo: unknown) => {
+    const previous = f.git(["rev-parse", outcomeRef]);
+    const parents = f.git(["show", "-s", "--format=%P", previous]).split(" ");
+    const blob = f.git(["hash-object", "-w", "--stdin"], JSON.stringify({ ...f.record(), repo }));
+    const tree = f.git(["mktree"], `100644 blob ${blob}\toutcome.json\n`);
+    const historical = f.commit(tree, [...parents, previous], "Historical repository identity\n");
+    f.git(["update-ref", outcomeRef, historical, previous]);
+    return historical;
+  };
+
+  it.each(historicalIds)("records the canonical node identity with a $name CLI id", ({ id }) => {
     const f = fixture();
-    f.save({
-      ...f.state(),
-      repo: { ...f.state().repo, id: "R_kgDOQb6kRw" },
-      repoNodeId: null,
-    });
+    f.save({ ...f.state(), repo: { ...f.state().repo, id } });
     const run = f.run();
     expect(run.status, run.output).toBe(0);
+    expect(f.record().repo).toEqual(canonicalRepo);
     expect(f.record().phase).toBe("complete");
     expect(f.state().mutations).toBe(1);
+  });
+
+  it.each(historicalIds)(
+    "recovers the historical $name identity after CLI shape drift without rewriting its evidence",
+    ({ id, nextId }) => {
+      const f = fixture();
+      f.save({ ...f.state(), mode: "unapplied", repo: { ...f.state().repo, id } });
+      const first = f.run();
+      expect(first.status, first.output).toBe(1);
+      f.recover();
+      const repo = { ...canonicalRepo, id };
+      const previous = retainRepository(f, repo);
+      const bytes = f.git(["show", `${previous}:outcome.json`]);
+      const attempt = f.record().attempt;
+      const captures = f.captures();
+      f.save({ ...f.state(), repo: { ...f.state().repo, id: nextId } });
+
+      const observed = f.run();
+      expect(observed.status, observed.output).toBe(1);
+      expect(observed.output).toContain("prior dispatch unresolved");
+      expect(f.git(["rev-parse", outcomeRef])).toBe(previous);
+      expect(f.captures()).toEqual(captures);
+      expect(f.state().mutations).toBe(1);
+      expect(f.state().posts).toBe(0);
+      f.recover();
+      f.save({ ...f.state(), mode: "success" });
+
+      const recovered = f.run(false, f.repo, "squash", previous);
+      expect(recovered.status, recovered.output).toBe(0);
+      expect(f.record()).toMatchObject({
+        phase: "complete",
+        recovery: { outcome: previous, attempt, actor: "fixture-operator" },
+      });
+      expect(f.record().repo).toEqual(repo);
+      expect(f.git(["show", `${previous}:outcome.json`])).toBe(bytes);
+      f.git(["merge-base", "--is-ancestor", previous, outcomeRef]);
+      expect(f.state().mutations).toBe(2);
+      expect(f.state().posts).toBe(1);
+      expect(existsSync(f.worktree)).toBe(false);
+    },
+  );
+
+  it.each(historicalIds)(
+    "completes the historical $name receipt after CLI shape drift without another dispatch",
+    ({ id, nextId }) => {
+      const f = reconciledMergeAfterCleanup();
+      const repo = { ...canonicalRepo, id };
+      const previous = retainRepository(f, repo);
+      const bytes = f.git(["show", `${previous}:outcome.json`]);
+      f.save({ ...f.state(), repo: { ...f.state().repo, id: nextId } });
+
+      const completed = f.complete(previous);
+      expect(completed.status, completed.output).toBe(0);
+      expect(f.record().phase).toBe("complete");
+      expect(f.record().repo).toEqual(repo);
+      expect(f.git(["show", `${previous}:outcome.json`])).toBe(bytes);
+      f.git(["merge-base", "--is-ancestor", previous, outcomeRef]);
+      expect(f.state().mutations).toBe(1);
+      expect(f.state().posts).toBe(1);
+      expect(existsSync(f.worktree)).toBe(false);
+    },
+  );
+
+  it.each(
+    [
+      { name: "extra key", repo: { ...canonicalRepo, allow: true } },
+      { name: "numeric string", repo: { ...canonicalRepo, id: "1103012935" } },
+      { name: "unknown node id", repo: { ...canonicalRepo, id: "R_other" } },
+      { name: "unknown numeric id", repo: { ...canonicalRepo, id: 1103012936 } },
+      {
+        name: "other repository",
+        repo: {
+          ...canonicalRepo,
+          nameWithOwner: "fixture/other",
+          url: "https://github.com/fixture/other",
+        },
+      },
+    ].flatMap((fault) =>
+      [false, true].map((completion) => ({ name: fault.name, repo: fault.repo, completion })),
+    ),
+  )(
+    "refuses retained $name before side effects (completion=$completion)",
+    ({ repo, completion }) => {
+      const f = completion ? reconciledMergeAfterCleanup() : fixture();
+      if (!completion) {
+        f.save({ ...f.state(), mode: "unapplied" });
+        expect(f.run().status).toBe(1);
+        f.recover();
+      }
+      const previous = retainRepository(f, repo);
+      const bytes = f.git(["show", `${previous}:outcome.json`]);
+      const captures = completion ? [] : f.captures();
+      f.save({ ...f.state(), mode: "success" });
+
+      const result = completion ? f.complete(previous) : f.run(false, f.repo, "squash", previous);
+      expect(result.status, result.output).toBe(1);
+      expect(f.git(["rev-parse", outcomeRef])).toBe(previous);
+      expect(f.git(["show", `${previous}:outcome.json`])).toBe(bytes);
+      expect(f.state().mutations).toBe(1);
+      expect(f.state().posts).toBe(0);
+      expect(existsSync(f.worktree)).toBe(!completion);
+      if (!completion) {
+        expect(f.captures()).toEqual(captures);
+        expect(f.git(["--git-dir=" + f.remote, "rev-parse", "topic"])).toBe(f.head);
+      }
+    },
+  );
+
+  it.each([
+    { name: "missing numeric id", authority: { id: undefined } },
+    { name: "numeric string", authority: { id: "1103012935" } },
+    { name: "zero numeric id", authority: { id: 0 } },
+    { name: "fractional numeric id", authority: { id: 1.5 } },
+    { name: "missing node id", authority: { node_id: undefined } },
+    { name: "empty node id", authority: { node_id: "" } },
+    { name: "numeric node id", authority: { node_id: 1103012935 } },
+    { name: "different name", authority: { full_name: "fixture/other" } },
+    { name: "different host", authority: { html_url: "https://elsewhere.invalid/fixture/repo" } },
+  ])("rejects $name in repository authority before recording intent", ({ authority }) => {
+    const f = fixture();
+    f.save({ ...f.state(), repoAuthority: { ...f.state().repoAuthority, ...authority } });
+    const result = f.run();
+    expect(result.status, result.output).toBe(1);
+    expect(f.state().mutations).toBe(0);
+    expect(f.state().posts).toBe(0);
+    expect(() => f.record()).toThrow();
+    expect(f.captures()).toEqual([]);
+    expect(existsSync(f.worktree)).toBe(true);
+  });
+
+  it.each([false, true])("requires repository authority for completion=%s", (completion) => {
+    const f = completion ? reconciledMergeAfterCleanup() : fixture();
+    const previous = completion ? f.git(["rev-parse", outcomeRef]) : undefined;
+    f.save({ ...f.state(), repoAuthorityUnavailable: true });
+    const result = previous ? f.complete(previous) : f.run();
+    expect(result.status, result.output).toBe(1);
+    expect(result.output).toContain("repository metadata unavailable");
+    expect(f.state().mutations).toBe(completion ? 1 : 0);
+    expect(f.state().posts).toBe(0);
+    if (previous) {
+      expect(f.git(["rev-parse", outcomeRef])).toBe(previous);
+    } else {
+      expect(() => f.record()).toThrow();
+    }
+    expect(existsSync(f.worktree)).toBe(!completion);
   });
 });

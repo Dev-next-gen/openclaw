@@ -6,6 +6,8 @@ import { randomUUID } from "node:crypto";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { embeddedAgentLog, OPENCLAW_VERSION } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { coerceErrorMessage, toStringifiedError } from "openclaw/plugin-sdk/error-runtime";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { addSafeTimeoutDelayGraceMs } from "openclaw/plugin-sdk/number-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { sliceUtf16Safe, truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { parse as parseSemver } from "semver";
@@ -29,6 +31,7 @@ import {
   type RpcResponse,
 } from "./protocol.js";
 import { createCodexRequestAttempt, type CodexRequestAttempt } from "./request-attempt.js";
+import type { CodexRequestWaiterFinished } from "./request-observation.js";
 import { CodexAppServerRpcError } from "./rpc-error.js";
 import { createStdioTransport } from "./transport-stdio.js";
 import { createWebSocketTransport } from "./transport-websocket.js";
@@ -63,6 +66,7 @@ type RequestOptions = {
   signal?: AbortSignal;
   assertCurrent?: () => void;
   catalogListKey?: CodexCatalogListRequestKey;
+  attemptWaiterFinished?: CodexRequestWaiterFinished;
 };
 
 /** Process-local generation fence for bindings tied to one app-server client instance. */
@@ -196,6 +200,7 @@ export function isCodexAppServerConnectionClosedError(error: unknown): boolean {
 type CodexServerRequestHandler = (
   request: Required<Pick<RpcRequest, "id" | "method">> & { params?: JsonValue },
   signal?: AbortSignal,
+  setExecutionTimeoutMs?: (timeoutMs: number) => void,
 ) => Promise<JsonValue | undefined> | JsonValue | undefined;
 
 /** Notification handler registered on a Codex app-server client. */
@@ -240,6 +245,7 @@ export class CodexAppServerClient {
         abortMessage: string;
       }) => Promise<() => void>)
     | undefined;
+  private retireAfterIndeterminateThreadRequest: (() => boolean) | undefined;
   private stderrTail = "";
   private readonly privateTransportSecrets = new Set<string>();
   private privateStderrPending = "";
@@ -393,7 +399,7 @@ export class CodexAppServerClient {
     return this.modelCatalogRevision;
   }
 
-  /** Installs the spawn-owner check run before config-loading thread requests. */
+  /** Installs the spawn-owner guard and retirement for config-loading thread requests. */
   setThreadSessionRequestGuard(
     guard:
       | ((options: {
@@ -403,8 +409,10 @@ export class CodexAppServerClient {
           abortMessage: string;
         }) => Promise<() => void>)
       | undefined,
+    retireAfterIndeterminateRequest?: () => boolean,
   ): void {
     this.threadSessionRequestGuard = guard;
+    this.retireAfterIndeterminateThreadRequest = retireAfterIndeterminateRequest;
   }
 
   /** Returns the local transport PID for scoped child-process cleanup, when available. */
@@ -449,6 +457,7 @@ export class CodexAppServerClient {
         ? this.threadSessionRequestGuard
         : undefined;
     if (guard) {
+      const retire = this.retireAfterIndeterminateThreadRequest;
       if (
         !options.signal &&
         !(
@@ -462,7 +471,7 @@ export class CodexAppServerClient {
         );
       }
       return (async () => {
-        const guardStartedAt = Date.now();
+        const guardStartedAt = performance.now();
         const timeoutMessage = `${method} timed out`;
         const abortMessage = `${method} aborted`;
         let releaseGuard: () => void;
@@ -488,17 +497,20 @@ export class CodexAppServerClient {
           throw error;
         }
         let released = false;
+        let removeExitHandler: (() => void) | undefined;
         const release = () => {
           if (released) {
             return;
           }
           released = true;
+          removeExitHandler?.();
           releaseGuard();
         };
         let releaseWhenRequestSettles = true;
         let requestMayHaveWritten = false;
+        let nativeResponded = false;
         try {
-          const elapsedMs = Date.now() - guardStartedAt;
+          const elapsedMs = performance.now() - guardStartedAt;
           const remainingTimeoutMs =
             options.timeoutMs === undefined ? undefined : options.timeoutMs - elapsedMs;
           if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) {
@@ -513,15 +525,31 @@ export class CodexAppServerClient {
             },
             (mayHaveWritten) => {
               requestMayHaveWritten = mayHaveWritten;
+              nativeResponded = !mayHaveWritten;
+            },
+            () => {
+              nativeResponded = true;
+              if (!releaseWhenRequestSettles) {
+                release();
+              }
             },
           );
         } catch (error) {
           if (requestMayHaveWritten && !(error instanceof CodexAppServerRpcError)) {
             // A local deadline cannot prove Codex stopped loading native config.
-            // Keep the fence until the physical process exits, even if shutdown
-            // itself outlives closeAndWait's bounded wait.
+            // Only the exact native response or physical exit can release the
+            // fence. A late response must never resume the abandoned caller.
             releaseWhenRequestSettles = false;
-            await this.closeAndRunAfterExit(release, method);
+            if (nativeResponded) {
+              release();
+            } else {
+              removeExitHandler = this.addTransportExitHandler(release);
+            }
+            // New acquisitions need a fresh client; existing peers can finish,
+            // including guarded helper startup after the native response arrives.
+            if (!retire?.()) {
+              await this.closeAndRunAfterExit(release, method);
+            }
           }
           throw error;
         } finally {
@@ -539,10 +567,11 @@ export class CodexAppServerClient {
     params: unknown,
     options: RequestOptions,
     onWriteStateChange?: (mayHaveWritten: boolean) => void,
+    onResponse?: () => void,
   ): Promise<T> {
     const deadline =
       options.timeoutMs !== undefined && Number.isFinite(options.timeoutMs)
-        ? Date.now() + options.timeoutMs
+        ? performance.now() + options.timeoutMs
         : undefined;
     for (let retry = 0; ; retry += 1) {
       if (options.signal?.aborted) {
@@ -553,7 +582,7 @@ export class CodexAppServerClient {
           options.signal?.reason,
         );
       }
-      const remainingTimeoutMs = deadline === undefined ? undefined : deadline - Date.now();
+      const remainingTimeoutMs = deadline === undefined ? undefined : deadline - performance.now();
       if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) {
         throw new CodexAppServerLocalRequestCancellationError(method, "timed out", false);
       }
@@ -565,8 +594,10 @@ export class CodexAppServerClient {
             ...options,
             ...(remainingTimeoutMs !== undefined ? { timeoutMs: remainingTimeoutMs } : {}),
           },
+          retry + 1,
           onWriteStateChange,
           deadline,
+          onResponse,
         );
       } catch (error) {
         // Codex emits -32001 only when ingress rejects a request before enqueue,
@@ -602,7 +633,7 @@ export class CodexAppServerClient {
         signal?.reason,
       );
     }
-    const remainingMs = deadline === undefined ? undefined : deadline - Date.now();
+    const remainingMs = deadline === undefined ? undefined : deadline - performance.now();
     if (remainingMs !== undefined && remainingMs <= 0) {
       throw new CodexAppServerLocalRequestCancellationError(method, "timed out", false);
     }
@@ -634,8 +665,10 @@ export class CodexAppServerClient {
     method: string,
     params: unknown,
     options: RequestOptions,
+    overloadAttemptOrdinal: number,
     onWriteStateChange?: (mayHaveWritten: boolean) => void,
     deadline?: number,
+    onResponse?: () => void,
   ): Promise<T> {
     if (this.closed) {
       return Promise.reject(this.closeError ?? new Error("codex app-server client is closed"));
@@ -663,7 +696,10 @@ export class CodexAppServerClient {
       sharedRequests = this.catalogListRequests.get(sharing.scope);
       const existing = sharedRequests?.get(sharedKey);
       if (existing) {
-        return existing.wait<T>(options, deadline);
+        return existing.wait<T>(
+          { ...options, disposition: "joined", overloadAttemptOrdinal },
+          deadline,
+        );
       }
       if (!sharedRequests) {
         sharedRequests = new Map();
@@ -682,7 +718,16 @@ export class CodexAppServerClient {
     const message: RpcRequest = { id, method, params: params as JsonValue | undefined };
     const attempt = createCodexRequestAttempt({
       method,
-      retainWritten: sharing !== undefined,
+      retainWritten: sharing !== undefined || onResponse !== undefined,
+      ...(method === "thread/list"
+        ? { diagnosticIdentity: { clientInstanceId: this.instanceId, rpcId: id } }
+        : {}),
+      onResponse: onResponse
+        ? (mayHaveWritten) => {
+            onWriteStateChange?.(mayHaveWritten);
+            onResponse();
+          }
+        : undefined,
       onSettled: () => {
         if (this.pending.get(id) === attempt) {
           this.pending.delete(id);
@@ -705,7 +750,17 @@ export class CodexAppServerClient {
     if (sharedKey !== undefined) {
       sharedRequests?.set(sharedKey, attempt);
     }
-    const result = attempt.wait<T>(options, deadline);
+    // Stateful ownership assertions remain pre-write checks. A native response
+    // can arrive after authority changed; only catalog waiters revalidate here.
+    const result = attempt.wait<T>(
+      {
+        ...options,
+        assertCurrent: sharing ? options.assertCurrent : undefined,
+        disposition: "new",
+        overloadAttemptOrdinal,
+      },
+      deadline,
+    );
     if (!attempt.pending) {
       return result;
     }
@@ -963,7 +1018,8 @@ export class CodexAppServerClient {
     }
     this.pending.delete(response.id);
     if (response.error) {
-      pending.reject(new CodexAppServerRpcError(response.error, pending.method));
+      const error = new CodexAppServerRpcError(response.error, pending.method);
+      pending.reject(error, isCodexAppServerOverloadError(error));
       return;
     }
     if (
@@ -1011,44 +1067,67 @@ export class CodexAppServerClient {
     if (request.method !== "item/tool/call") {
       return await this.runServerRequestHandlersWithoutTimeout(request, controller.signal);
     }
-    const timeoutMs = resolveDynamicToolServerRequestTimeoutMs(
+    let timeoutMs = resolveDynamicToolServerRequestTimeoutMs(
       readCodexDynamicToolCallParams(request.params),
     );
-    const timeoutResponse = timeoutServerRequestResponse(timeoutMs);
-
+    const deadline = createDeferred<JsonValue>();
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    let executionTimeoutResolved = false;
+    const armTimeout = () => {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => {
+        embeddedAgentLog.warn("codex app-server server request timed out", {
+          id: request.id,
+          method: request.method,
+          timeoutMs,
+        });
+        controller.abort(new Error("codex app-server server request timed out"));
+        deadline.resolve(timeoutServerRequestResponse(timeoutMs));
+      }, timeoutMs);
+      timeout.unref?.();
+    };
+    const setExecutionTimeoutMs = (executionTimeoutMs: number) => {
+      if (
+        settled ||
+        controller.signal.aborted ||
+        executionTimeoutResolved ||
+        !Number.isFinite(executionTimeoutMs) ||
+        executionTimeoutMs <= 0
+      ) {
+        return;
+      }
+      // The admitted owner sets one execution budget; later progress cannot reset it.
+      executionTimeoutResolved = true;
+      timeoutMs = addSafeTimeoutDelayGraceMs(executionTimeoutMs, 30_000);
+      armTimeout();
+    };
+    armTimeout();
     try {
       return await Promise.race([
-        this.runServerRequestHandlersWithoutTimeout(request, controller.signal),
-        new Promise<JsonValue>((resolve) => {
-          timeout = setTimeout(() => {
-            embeddedAgentLog.warn("codex app-server server request timed out", {
-              id: request.id,
-              method: request.method,
-              timeoutMs,
-            });
-            controller.abort(new Error("codex app-server server request timed out"));
-            resolve(timeoutResponse);
-          }, timeoutMs);
-          timeout.unref?.();
-        }),
+        this.runServerRequestHandlersWithoutTimeout(
+          request,
+          controller.signal,
+          setExecutionTimeoutMs,
+        ),
+        deadline.promise,
       ]);
     } finally {
-      if (timeout) {
-        clearTimeout(timeout);
-      }
+      settled = true;
+      clearTimeout(timeout);
     }
   }
 
   private async runServerRequestHandlersWithoutTimeout(
     request: Required<Pick<RpcRequest, "id" | "method">> & { params?: JsonValue },
     signal: AbortSignal,
+    setExecutionTimeoutMs?: (timeoutMs: number) => void,
   ): Promise<JsonValue | undefined> {
     for (const handler of this.requestHandlers) {
       if (signal.aborted) {
         return undefined;
       }
-      const result = await handler(request, signal);
+      const result = await handler(request, signal, setExecutionTimeoutMs);
       if (result !== undefined) {
         return result;
       }

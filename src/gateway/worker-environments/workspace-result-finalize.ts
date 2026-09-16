@@ -164,7 +164,7 @@ export async function reconcileWorkspaceAfterTurn(params: {
     currentPlacement.workspaceResultConflict ??
     latestDurableWorkspaceConflict(completed.getBranch());
   const pendingWorkspaceResult = params.placements
-    .listPendingWorkspaceResults()
+    .listPendingWorkspaceResults(params.turnClaim.sessionId)
     .some(
       (pending) =>
         pending.sessionId === params.turnClaim.sessionId &&
@@ -222,7 +222,7 @@ export async function reconcileWorkspaceAfterTurn(params: {
         }
         params.placements.acceptWorkspaceResult(params.turnClaim);
         const recordedStagedResultRef = params.placements
-          .listPendingWorkspaceResults()
+          .listPendingWorkspaceResults(params.turnClaim.sessionId)
           .find(
             (pending) =>
               pending.sessionId === params.turnClaim.sessionId &&

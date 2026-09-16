@@ -89,7 +89,7 @@ describe("native attempt child bundles", () => {
     async (status) => {
       const root = await harness.makeTempRepo("qa-native-child-");
       const script = path.join(root, "producer.mjs");
-      const api = pathToFileURL(path.resolve("extensions/qa-lab/api.ts")).href;
+      const api = pathToFileURL(path.resolve("extensions/qa-lab/test-api.ts")).href;
       await fs.writeFile(
         script,
         `
@@ -182,7 +182,10 @@ process.exitCode = Number(value("--exit"));
       const firstId = first.results[0]!.evidenceOccurrenceId!;
       const captured = first.evidence.occurrences.find((item) => item.id === firstId)!;
       const receipt = captured.receipts.find((item) => item.artifact.kind === "producer-evidence")!;
-      expect(receipt, await fs.readFile(first.results[0]!.logPath, "utf8")).toBeDefined();
+      expect(
+        receipt,
+        `${first.results[0]?.failureMessage ?? ""}\n${await fs.readFile(first.results[0]!.logPath, "utf8")}`,
+      ).toBeDefined();
       const originalPath = resolveQaArtifactPath(
         process.cwd(),
         process.cwd(),

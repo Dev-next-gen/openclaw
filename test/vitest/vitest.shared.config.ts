@@ -314,6 +314,7 @@ export const sharedVitestConfig = {
         replacement: path.join(repoRoot, "packages", "llm-core", "src", "validation.ts"),
       },
       sourcePackageAlias("llm-core", "types"),
+      sourcePackageAlias("llm-core", "model-contracts/anthropic"),
       {
         find: "@openclaw/llm-core",
         replacement: path.join(repoRoot, "packages", "llm-core", "src", "index.ts"),
@@ -556,7 +557,7 @@ export const sharedVitestConfig = {
         "src/gateway/server-methods/config.ts",
         "src/gateway/server-methods/send.ts",
         "src/gateway/server-methods/skills.ts",
-        "src/gateway/server-methods/talk.ts",
+        "src/gateway/talk/handlers/index.ts",
         "src/gateway/server-methods/web.ts",
         "src/gateway/server-methods/wizard.ts",
         "src/gateway/call.ts",

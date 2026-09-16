@@ -15,6 +15,7 @@ import {
   closeOpenClawAgentDatabasesForTest,
   getOpenClawAgentDatabaseIfOpen,
   openOpenClawAgentDatabase,
+  OPENCLAW_AGENT_SCHEMA_VERSION,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
 import { replaceSessionEntry } from "./session-accessor.js";
@@ -790,7 +791,10 @@ describe("cold transcript storage workers", () => {
 
   it.each([
     { version: 19, expected: /uses schema version 19/ },
-    { version: 20, expected: /no such table: session_transcript_cold_archives/ },
+    {
+      version: OPENCLAW_AGENT_SCHEMA_VERSION,
+      expected: /no such table: session_transcript_cold_archives/,
+    },
   ])(
     "rejects unmigrated or damaged schema $version instead of reporting zero transcripts",
     async ({ version, expected }) => {
@@ -868,6 +872,38 @@ describe("cold transcript storage workers", () => {
       }),
     ).toEqual({ archivedTranscripts: 0, externalizedTranscripts: 0 });
     expect(fixture.snapshot()).toEqual(resumed);
+  });
+
+  it("preserves a cold transcript when its reader is revoked at restore commit", async () => {
+    const fixture = await createFixture();
+    const { descriptor } = await archiveFixture(fixture);
+    const before = fixture.snapshot();
+    const originalWorker = archiveWorkers.runSqliteTranscriptArchiveWorkerOperation;
+    let revoked = false;
+    vi.spyOn(archiveWorkers, "runSqliteTranscriptArchiveWorkerOperation").mockImplementation(
+      (params) => {
+        if (params.expectedMessageType !== "reclaimed") {
+          return originalWorker(params);
+        }
+        return originalWorker({
+          ...params,
+          onCommitRequest: () => {
+            revoked = true;
+            params.onCommitRequest();
+          },
+        });
+      },
+    );
+    await expect(
+      restoreSessionColdTranscript(fixture.scope, () => {
+        if (revoked) {
+          throw new Error("Cold transcript reader was revoked");
+        }
+      }),
+    ).rejects.toThrow("Cold transcript reader was revoked");
+    expect(revoked).toBe(true);
+    expect(readSessionColdTranscript(fixture.database(), historicalId)).toEqual(descriptor);
+    expect(fixture.snapshot()).toEqual(before);
   });
 
   it.each(["missing", "corrupt"] as const)(
