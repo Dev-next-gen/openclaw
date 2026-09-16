@@ -41,7 +41,7 @@ export function createMessageActionRuntimeAuthority(
     ? params.authorization?.scheduled?.assertCurrent
     : undefined;
   const assertScheduledActionCurrent = assertScheduledReadCurrent ?? assertScheduledWriteCurrent;
-  const scheduledPolicy = assertScheduledReadCurrent
+  const scheduledPolicy = assertScheduledActionCurrent
     ? params.authorization?.scheduled?.policy
     : undefined;
   return {

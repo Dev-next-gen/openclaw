@@ -922,7 +922,7 @@ export const sendHandlers: GatewayRequestHandlers = {
       respond,
       conversationReadOrigin,
       requestChannel: request.channel,
-      bindingAccountIds: [request.accountId, request.params.accountId],
+      bindingAccountIds: [messageAuthority.routeAccountId, request.params.accountId],
       routeAccountIds: (binding) => [
         messageAuthority.routeAccountId,
         request.params.accountId,

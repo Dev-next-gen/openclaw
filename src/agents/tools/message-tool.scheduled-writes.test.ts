@@ -19,7 +19,7 @@ import { createMessageTool } from "./message-tool-execution.js";
 const scheduledWriteActions = ["edit", "delete", "pin", "unpin"] as const;
 
 async function observeScheduledAccountSelection(
-  action: (typeof scheduledWriteActions)[number],
+  action: (typeof scheduledWriteActions)[number] | "send",
   accountId?: string,
 ) {
   const registry = captureActivePluginRegistrySnapshot();
@@ -51,7 +51,7 @@ async function observeScheduledAccountSelection(
           resolveAccount: (cfg, id) => cfg.channels?.discord?.accounts?.[id ?? "delivery"],
         },
       }),
-      actions: { describeMessageTool: () => ({ actions: [...scheduledWriteActions] }) },
+      actions: { describeMessageTool: () => ({ actions: ["send", ...scheduledWriteActions] }) },
     };
     setActivePluginRegistry(createTestRegistry([{ pluginId: "discord", source: "test", plugin }]));
     const config: OpenClawConfig = {
@@ -101,8 +101,8 @@ async function observeScheduledAccountSelection(
         action,
         channel: "discord",
         target: "channel:100000000000000001",
-        messageId: "100000000000000002",
-        ...(action === "edit" ? { message: "Updated scheduled message" } : {}),
+        ...(action === "send" ? {} : { messageId: "100000000000000002" }),
+        ...(action === "edit" || action === "send" ? { message: "Updated scheduled message" } : {}),
         ...(accountId ? { accountId } : {}),
       }),
     ).rejects.toBe(outboundBoundary);
@@ -119,12 +119,32 @@ describe("scheduled message write account selection", () => {
       action,
       accountId: undefined,
       selection: "an omitted account",
+      expectedAccountId: "ops",
     })),
-    { action: "edit" as const, accountId: "ops", selection: "an explicit matching account" },
-  ])("uses the scheduled owner for $action with $selection", async ({ action, accountId }) => {
-    expect(await observeScheduledAccountSelection(action, accountId)).toEqual({
-      secretScopes: [new Set(["channels.discord.token", "channels.discord.accounts.ops.token"])],
-      defaultAccounts: ["ops"],
-    });
-  });
+    {
+      action: "edit" as const,
+      accountId: "ops",
+      selection: "an explicit matching account",
+      expectedAccountId: "ops",
+    },
+    {
+      action: "send" as const,
+      accountId: undefined,
+      selection: "the delivery default",
+      expectedAccountId: "delivery",
+    },
+  ])(
+    "selects $expectedAccountId for $action with $selection",
+    async ({ action, accountId, expectedAccountId }) => {
+      expect(await observeScheduledAccountSelection(action, accountId)).toEqual({
+        secretScopes: [
+          new Set([
+            "channels.discord.token",
+            `channels.discord.accounts.${expectedAccountId}.token`,
+          ]),
+        ],
+        defaultAccounts: [expectedAccountId],
+      });
+    },
+  );
 });
