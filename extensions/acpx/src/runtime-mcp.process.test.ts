@@ -77,10 +77,10 @@ it.each([
         expect(await turn.result).toMatchObject({ status: "completed" });
         return JSON.parse(text);
       };
-      const verify = async () => {
+      const verify = async (reconnected = false) => {
         const results = await Promise.all(handles.map(prompt));
         for (const [index, result] of results.entries()) {
-          expect(result.mcpServers).toEqual(
+          expect(reconnected ? result.loadedMcpServers : result.mcpServers).toEqual(
             bridge
               ? []
               : servers.map((server) =>
@@ -103,7 +103,7 @@ it.each([
         await runtime.setMode({ handle, mode: "review" });
         await runtime.setConfigOption({ handle, key: "tone", value: "brief" });
       }
-      await verify();
+      await verify(true);
     } finally {
       for (const handle of handles) {
         await runtime.close({ handle, reason: "test-complete", discardPersistentState: true });

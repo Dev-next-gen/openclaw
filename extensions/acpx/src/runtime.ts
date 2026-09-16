@@ -743,6 +743,7 @@ export class AcpxRuntime implements CompleteAcpRuntime {
   private readonly processLeaseStore: AcpxProcessLeaseStore | undefined;
   private readonly launchLeaseScope = new AsyncLocalStorage<AcpxLaunchLeaseContext | undefined>();
   private readonly sessionEnsureQueue = new KeyedAsyncQueue();
+  private readonly probeQueue = new KeyedAsyncQueue();
   private readonly cwd: string;
 
   constructor(options: OpenClawAcpxRuntimeOptions, testOptions?: AcpxRuntimeTestOptions) {
@@ -1151,23 +1152,27 @@ export class AcpxRuntime implements CompleteAcpRuntime {
   }
 
   async probeAvailability(): Promise<void> {
-    await this.runWithLaunchLease({
-      agent: this.probeAgent,
-      sessionKey: ACPX_PROBE_LEASE_SESSION_KEY,
-      command: this.probeCommand,
-      finalizeCompletedProbe: true,
-      run: () => this.delegate.probeAvailability(),
-    });
+    await this.probeQueue.enqueue(this.probeAgent, () =>
+      this.runWithLaunchLease({
+        agent: this.probeAgent,
+        sessionKey: ACPX_PROBE_LEASE_SESSION_KEY,
+        command: this.probeCommand,
+        finalizeCompletedProbe: true,
+        run: () => this.delegate.probeAvailability(),
+      }),
+    );
   }
 
   async doctor(): Promise<AcpRuntimeDoctorReport> {
-    return await this.runWithLaunchLease({
-      agent: this.probeAgent,
-      sessionKey: ACPX_PROBE_LEASE_SESSION_KEY,
-      command: this.probeCommand,
-      finalizeCompletedProbe: true,
-      run: () => this.delegate.doctor(),
-    });
+    return await this.probeQueue.enqueue(this.probeAgent, () =>
+      this.runWithLaunchLease({
+        agent: this.probeAgent,
+        sessionKey: ACPX_PROBE_LEASE_SESSION_KEY,
+        command: this.probeCommand,
+        finalizeCompletedProbe: true,
+        run: () => this.delegate.doctor(),
+      }),
+    );
   }
 
   async ensureSession(input: OpenClawRuntimeEnsureInput): Promise<OpenClawRuntimeHandle> {

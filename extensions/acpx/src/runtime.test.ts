@@ -376,6 +376,47 @@ describe("AcpxRuntime fresh reset wrapper", () => {
     },
   );
 
+  it("settles each diagnostic probe cleanup before starting the next probe", async () => {
+    const firstEntered = createDeferred();
+    const releaseFirst = createDeferred();
+    const events: string[] = [];
+    const { runtime, delegate } = makeRuntime(
+      makeEmptySessionStore(),
+      {
+        openclawGatewayInstanceId: "gateway-test",
+        openclawProcessLeaseStore: makeLeaseStore().store,
+        openclawWrapperRoot: "/tmp/openclaw/acpx",
+        agentRegistry: {
+          resolve: () => CODEX_ACP_WRAPPER_COMMAND,
+          list: () => ["codex"],
+        },
+      },
+      {
+        openclawProcessCleanup: {
+          listProcesses: vi.fn(async () => {
+            events.push("cleanup");
+            return [];
+          }),
+        },
+      },
+    );
+    vi.spyOn(delegate, "probeAvailability").mockImplementation(async () => {
+      events.push("first-started");
+      firstEntered.resolve();
+      await releaseFirst.promise;
+    });
+    vi.spyOn(delegate, "doctor").mockImplementation(async () => {
+      events.push("second-started");
+      return { ok: true, message: "ready" };
+    });
+    const first = runtime.probeAvailability();
+    await firstEntered.promise;
+    const second = runtime.doctor();
+    releaseFirst.resolve();
+    await Promise.all([first, second]);
+    expect(events).toEqual(["first-started", "cleanup", "second-started", "cleanup"]);
+  });
+
   it("reaps a fulfilled probe wrapper that exact live evidence still finds", async () => {
     const baseStore: TestSessionStore = makeEmptySessionStore();
     const leaseStore = makeLeaseStore();
