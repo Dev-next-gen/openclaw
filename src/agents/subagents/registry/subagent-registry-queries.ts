@@ -100,6 +100,7 @@ export function listRunsForControllerFromRuns<T extends SubagentRunReadRecord>(
 
 /** Cached read index for display, controller grouping, and descendant queries. */
 export type SubagentRunReadIndex<T extends SubagentRunReadRecord = SubagentRunRecord> = {
+  inputs: { runs: Map<string, T>; inMemoryRuns: T[] };
   getDisplaySubagentRun(childSessionKey: string): T | null;
   latestRunsByChildSessionKey: ReadonlyMap<string, T>;
   countActiveDescendantRuns(rootSessionKey: string): number;
@@ -360,6 +361,7 @@ export function buildSubagentRunReadIndexWork<T extends SubagentRunReadRecord>(
   return (function* (): SynchronousWork<SubagentRunReadIndex<T>> {
     yield* groupRuns();
     return {
+      inputs: { runs, inMemoryRuns: [...inMemoryDisplayByChildSessionKey.values()] },
       getDisplaySubagentRun,
       latestRunsByChildSessionKey,
       countActiveDescendantRuns,

@@ -136,7 +136,7 @@ function runCodexAppServerSideQuestion(
   return runCodexAppServerSideQuestionImpl(params, { ...options, bindingStore });
 }
 
-function createFakeClient(options: { completeTurn?: boolean } = {}) {
+function createFakeClient(options: { completeTurn?: boolean; onTurnStart?: () => void } = {}) {
   const fixture = createFakeCodexAppServerClient();
   const client = Object.assign(fixture.client, {
     notifications: fixture.notifications,
@@ -166,6 +166,7 @@ function createFakeClient(options: { completeTurn?: boolean } = {}) {
       return {};
     }
     if (method === "turn/start") {
+      options.onTurnStart?.();
       if (options.completeTurn !== false) {
         queueMicrotask(() => {
           client.emit(agentDelta("side-thread", "turn-1", "Side answer."));
@@ -2177,7 +2178,8 @@ describe("runCodexAppServerSideQuestion", () => {
   it.each(["answer", "caller cancellation"] as const)(
     "revokes native hook authority on close while projecting the final %s",
     async (outcome) => {
-      const client = createFakeClient({ completeTurn: false });
+      const turnStarted = createDeferred<void>();
+      const client = createFakeClient({ completeTurn: false, onTurnStart: turnStarted.resolve });
       getSharedCodexAppServerClientMock.mockResolvedValue(client);
       const projecting = createDeferred<void>();
       const finishProjection = createDeferred<void>();
@@ -2199,9 +2201,12 @@ describe("runCodexAppServerSideQuestion", () => {
         runError = error;
       });
       try {
-        await vi.waitFor(() =>
-          expect(client.request.mock.calls.some(([method]) => method === "turn/start")).toBe(true),
-        );
+        await Promise.race([
+          turnStarted.promise,
+          settled.then(() => {
+            throw new Error("Side-question fixture ended before turn/start", { cause: runError });
+          }),
+        ]);
         const fork = client.request.mock.calls.find(([method]) => method === "thread/fork")?.[1];
         const relayId = extractRelayIdFromThreadConfig(
           (fork as { config?: Record<string, unknown> }).config,
@@ -2237,6 +2242,7 @@ describe("runCodexAppServerSideQuestion", () => {
           await expect(run).resolves.toEqual({ text: "Side answer." });
         }
       } finally {
+        controller.abort("fixture cleanup");
         finishProjection.resolve();
         await settled;
       }

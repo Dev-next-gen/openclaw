@@ -360,16 +360,17 @@ export class SqliteWorkerBroker {
 
   private async acquireSlot(): Promise<Slot> {
     const available = [...this.slots].filter((slot) => !slot.failed && !slot.retiring);
-    if (this.slots.size >= MAX_WORKERS) {
-      if (!available.length) {
-        await Promise.race([...this.slots].map((slot) => slot.exit));
-        return this.acquireSlot();
-      }
-      if (process.versions.bun) {
-        throw new SqliteWorkerError(
-          "Bun SQLite workers support at most four distinct open databases; close a store or use Node",
-          "overloaded",
-        );
+    // Return Bun to four shared workers after https://github.com/oven-sh/bun/pull/40005 ships.
+    if (this.slots.size >= (process.versions.bun ? MAX_STORES : MAX_WORKERS)) {
+      if (!available.length || process.versions.bun) {
+        const retiring = [...this.slots].filter((slot) => Boolean(slot.failed || slot.retiring));
+        if (retiring.length > 0) {
+          await Promise.race(retiring.map(({ exit }) => exit));
+          return this.acquireSlot();
+        }
+        if (process.versions.bun) {
+          throw new SqliteWorkerError("SQLite worker store capacity reached", "overloaded");
+        }
       }
       const selected = available.reduce((left, right) =>
         left.actors.size <= right.actors.size ? left : right,

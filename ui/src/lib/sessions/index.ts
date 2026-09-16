@@ -572,21 +572,24 @@ export function createSessionCapability(
     const runEnded =
       hasActiveRun === false || (status !== null && status !== undefined && status !== "running");
     const isTerminalMessage = event.event === "session.message" && runEnded;
-    // Only an existing Gateway roster member that remains active can be replaced directly.
+    // Snapshot-only lifecycle events preserve membership; mutations still refresh
+    // Gateway-owned filters, ownership ordering, and query facets.
     const primarySnapshotApplied =
-      isTerminalMessage &&
       reconciled.applied &&
       eventInfo !== null &&
+      eventInfo.reason === null &&
       eventInfo.archived !== true &&
       typeof payload?.session === "object" &&
       payload.session !== null &&
       roster.canApplyPrimarySnapshot() &&
-      state.result?.sessions.some((row) =>
-        uiSessionEventMatches(
-          { ...gateway.snapshot, sessionKey: row.key },
-          eventInfo.key,
-          eventInfo.agentId,
-        ),
+      state.result?.sessions.some(
+        (row) =>
+          row.archived !== true &&
+          uiSessionEventMatches(
+            { ...gateway.snapshot, sessionKey: row.key },
+            eventInfo.key,
+            eventInfo.agentId,
+          ),
       ) === true;
     let primaryPublished = false;
     if (
