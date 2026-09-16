@@ -67,6 +67,8 @@ export function projectSessionActivitySummary(
     entry: SessionEntry | undefined;
     enabled?: boolean;
     watermark?: SessionTranscriptWatermark;
+    /** Physical target for cold reads; pending work retains its configured-path identity. */
+    storeTarget?: { agentId: string; storePath: string };
   },
 ): SessionActivitySummary | undefined {
   const { entry } = params;
@@ -99,10 +101,10 @@ export function projectSessionActivitySummary(
   const watermark = summary
     ? (params.watermark ??
       readSessionTranscriptWatermark({
-        agentId: params.agentId,
+        agentId: params.storeTarget?.agentId ?? params.agentId,
         sessionId: entry.sessionId,
         sessionKey: params.key,
-        storePath,
+        storePath: params.storeTarget?.storePath ?? storePath,
       }))
     : undefined;
   const fresh =

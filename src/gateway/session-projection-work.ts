@@ -12,7 +12,7 @@ type SessionProjectionWorkBudget = {
   resumeAfterAwait: () => void;
 };
 
-function yieldProjectionWork(): Promise<void> {
+export function yieldSessionListWork(): Promise<void> {
   return (pendingYield ??= yieldToEventLoop().then(() => {
     sharedWorkStartedAt = performance.now();
     pendingYield = undefined;
@@ -43,7 +43,7 @@ export async function withSessionProjectionWorkBudget<T>(
     return await run({
       // Sample the clock in small batches without stacking per-caller work slices.
       shouldYield: () => ++checkedItems % 16 === 0 && workIsDue(),
-      yieldIfNeeded: () => (workIsDue() ? yieldProjectionWork().then(resumeAfterAwait) : undefined),
+      yieldIfNeeded: () => (workIsDue() ? yieldSessionListWork().then(resumeAfterAwait) : undefined),
       resumeAfterAwait,
     });
   } finally {

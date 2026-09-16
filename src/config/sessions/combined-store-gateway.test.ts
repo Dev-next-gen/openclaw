@@ -15,10 +15,7 @@ import {
 import { assertOpenClawDatabasesReady } from "../../state/openclaw-database-preflight.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
-import {
-  canPrewarmCombinedSessionStoresForGateway,
-  loadCombinedSessionStoreForGatewayCore,
-} from "./combined-store-gateway.js";
+import { loadCombinedSessionStoreForGatewayCore } from "./combined-store-gateway.js";
 import { persistSessionTranscriptTurn, replaceSessionEntrySync } from "./session-accessor.js";
 import { setCanonicalSqliteSessionMainKey } from "./session-canonical-key.js";
 
@@ -60,9 +57,6 @@ it("lists admitted sessions across cached targets while preserving a refused dat
       expect(Object.keys(combined.store)).toEqual(["agent:main:main"]);
       expect(combined.diagnostics?.join("\n")).toContain(refusal?.reason);
     }
-    expect(
-      canPrewarmCombinedSessionStoresForGateway(cfg, { agentIds: ["main", "cleaner"], maxRows: 1 }),
-    ).toBe(true);
     expect(() => loadCombinedSessionStoreForGatewayCore(cfg, { agentId: "cleaner" })).toThrow(
       refusal?.reason,
     );

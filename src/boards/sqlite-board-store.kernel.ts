@@ -289,15 +289,16 @@ export function hasBoardSession(database: BoardDatabaseHandle, sessionKey: strin
   }
 }
 
-export function readBoardSessionKeys(database: BoardDatabaseHandle): string[] {
+export function readBoardSessionKeys(database: BoardDatabaseHandle, sessionKey?: string): string[] {
   if (!boardTablesPresent(database)) {
     return [];
   }
   const db = getNodeSqliteKysely<BoardDatabase>(database.db);
+  const query = db.selectFrom("board_tabs").select("session_key").distinct();
   // Every persisted widget belongs to a tab, so tab owners cover the board inventory.
   return executeSqliteQuerySync(
     database.db,
-    db.selectFrom("board_tabs").select("session_key").distinct(),
+    sessionKey === undefined ? query : query.where("session_key", "=", sessionKey),
   ).rows.map((row) => row.session_key);
 }
 

@@ -53,7 +53,7 @@ describe("subagent registry query regressions", () => {
       endedAt: 30,
     });
     const runs = toRunMap([ungrouped, structuredClone(winner)]);
-    const memory = toRunMap([older, winner]);
+    const memory = toRunMap([older, winner, ungrouped]);
     const work = buildSubagentRunReadIndexWork(
       { runs, inMemoryRuns: memory.values(), now: 100 },
       () => true,
@@ -64,8 +64,14 @@ describe("subagent registry query regressions", () => {
     expect(index.inputs).toBeDefined();
     expect(index.inputs.runs).toBe(runs);
     expect(index.inputs.runs.get(ungrouped.runId)).toBe(ungrouped);
-    expect(index.inputs.inMemoryRuns).toHaveLength(1);
+    expect(index.inputs.inMemoryRuns).toHaveLength(2);
     expect(index.inputs.inMemoryRuns[0]).toBe(winner);
+    const candidates = index.runsByChildSessionKey.get(winner.childSessionKey);
+    expect(candidates).toHaveLength(2);
+    expect(candidates?.[0]).toBe(runs.get(winner.runId));
+    expect(candidates?.[1]).toBe(winner);
+    expect(index.runsByChildSessionKey.get(ungrouped.childSessionKey)).toEqual([ungrouped]);
+    expect(index.atTime(200).runsByChildSessionKey).toBe(index.runsByChildSessionKey);
     const replay = buildSubagentRunReadIndexFromRuns({ ...index.inputs, now: 200 });
     expect(replay.getDisplaySubagentRun(winner.childSessionKey)).toBe(winner);
     expect(replay.getDisplaySubagentRun(ungrouped.childSessionKey)).toBe(ungrouped);

@@ -37,6 +37,9 @@ const subagentRegistryReadMock = vi.hoisted(() => {
     }
     return {
       inputs: { runs: new Map(runsByChildSessionKey), inMemoryRuns: [] },
+      runsByChildSessionKey: new Map(
+        [...runsByChildSessionKey].map(([key, entry]) => [key, [entry]]),
+      ),
       runsByControllerSessionKey,
       swarmRunsByRequesterSessionKey: new Map(),
       getDisplaySubagentRun: vi.fn(

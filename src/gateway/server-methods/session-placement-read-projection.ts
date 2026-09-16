@@ -1,3 +1,10 @@
+import { readBoardSessionKeys } from "../../boards/sqlite-board-store.kernel.js";
+import type { GatewayStoredSessionTarget } from "../../config/sessions/combined-store-gateway.js";
+import type { SessionEntry } from "../../config/sessions/types.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
+import { projectSessionActivitySummary } from "../session-activity-summary-state.js";
+import { isSessionPermissionChangePending } from "../session-permission-change.js";
 import type { WorkerPlacementMoveIntent } from "../worker-environments/placement-move-intent.js";
 import {
   projectWorkerPlacementMove,
@@ -11,44 +18,48 @@ import type { GatewayRequestContext } from "./types.js";
 export type SessionPlacementReadContext = Pick<
   GatewayRequestContext,
   | "workerSessionPlacementService"
-  | "workerEnvironmentService"
   | "workerPlacementDiskSpaceReader"
   | "workerPlacementRunnerAvailabilityReader"
->;
+> & {
+  workerEnvironmentService?: Parameters<typeof readWorkerPlacementIdentity>[1];
+};
 
-function projectSessionPlacementFields(params: {
-  context: SessionPlacementReadContext;
-  sessionId: string | undefined;
-  placements?: ReadonlyMap<string, WorkerSessionPlacementRecord>;
-  workspaceResultReconcilingSessionIds?: ReadonlySet<string>;
-  moves?: ReadonlyMap<string, WorkerPlacementMoveIntent>;
-}) {
-  const placement = params.sessionId ? params.placements?.get(params.sessionId) : undefined;
-  const move = params.sessionId ? params.moves?.get(params.sessionId) : undefined;
+function prepareSessionPlacementFields(
+  context: SessionPlacementReadContext,
+  placement: WorkerSessionPlacementRecord | undefined,
+  move: WorkerPlacementMoveIntent | undefined,
+  workspaceResultReconciling: boolean,
+) {
+  const environment = placement?.environmentId
+    ? context.workerEnvironmentService?.get(placement.environmentId)
+    : undefined;
+  const identity = placement
+    ? readWorkerPlacementIdentity(placement, context.workerEnvironmentService)
+    : undefined;
   const failedRecoveryAction =
     placement?.state === "failed"
       ? isFailedWorkerPlacementEnvironmentGone({
-          environmentService: params.context.workerEnvironmentService,
+          environmentService: context.workerEnvironmentService,
           placement,
         })
         ? "restart"
         : "stop-first"
       : undefined;
-  return {
+  return () => ({
     ...(placement
       ? {
           placement: projectWorkerSessionPlacement(
             placement,
-            params.context.workerPlacementDiskSpaceReader?.read(placement),
-            params.context.workerPlacementRunnerAvailabilityReader?.read(placement),
-            readWorkerPlacementIdentity(placement, params.context.workerEnvironmentService),
+            context.workerPlacementDiskSpaceReader?.read(placement),
+            context.workerPlacementRunnerAvailabilityReader?.read(placement, environment ?? null),
+            identity,
             failedRecoveryAction,
-            params.workspaceResultReconcilingSessionIds?.has(placement.sessionId) ?? false,
+            workspaceResultReconciling,
           ),
         }
       : {}),
     ...(move ? { placementMove: projectWorkerPlacementMove(move) } : {}),
-  };
+  });
 }
 
 export function createSessionPlacementBatchProjector(
@@ -60,14 +71,18 @@ export function createSessionPlacementBatchProjector(
   const workspaceResultReconcilingSessionIds =
     context.workerSessionPlacementService?.getWorkspaceResultReconcilingSessionIds?.(sessionIds);
   const moves = context.workerSessionPlacementService?.getPlacementMoves?.(sessionIds);
-  return (sessionId: string | undefined) =>
-    projectSessionPlacementFields({
-      context,
+  const prepared = new Map(
+    sessionIds.map((sessionId) => [
       sessionId,
-      placements,
-      workspaceResultReconcilingSessionIds,
-      moves,
-    });
+      prepareSessionPlacementFields(
+        context,
+        placements?.get(sessionId),
+        moves?.get(sessionId),
+        workspaceResultReconcilingSessionIds?.has(sessionId) ?? false,
+      ),
+    ]),
+  );
+  return (sessionId: string | undefined) => prepared.get(sessionId ?? "")?.() ?? {};
 }
 
 export function readSessionPlacementFields(
@@ -78,4 +93,28 @@ export function readSessionPlacementFields(
     context,
     sessionId ? [{ sessionId }] : [{}],
   )(sessionId);
+}
+
+/** Acquire cold facts only for this dirty physical row; presentation reads live memory. */
+export function readSessionRowFacts(params: {
+  cfg: OpenClawConfig;
+  target: Pick<GatewayStoredSessionTarget, "agentId" | "storeTarget"> & { key: string };
+  entry: SessionEntry;
+  context?: SessionPlacementReadContext;
+}) {
+  const { cfg, target, entry } = params;
+  const placement = createSessionPlacementBatchProjector(params.context ?? {}, [entry]);
+  const activitySummary = projectSessionActivitySummary({ ...target, cfg, entry });
+  const board = withOpenClawAgentDatabaseReadOnly(
+    (database) => readBoardSessionKeys(database, target.key).length > 0,
+    { agentId: target.storeTarget.agentId, path: target.storeTarget.storePath },
+  );
+  return {
+    hasBoard: board.found && board.value,
+    present: () => ({
+      ...placement(entry.sessionId),
+      permissionModePending: isSessionPermissionChangePending(entry.sessionId),
+      activitySummary: activitySummary ? { ...activitySummary } : undefined,
+    }),
+  };
 }

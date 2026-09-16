@@ -10,7 +10,6 @@ import { selectModelCatalogRuntimeEntry } from "../agents/model-catalog-view.js"
 import type { ModelCatalogEntry } from "../agents/model-catalog.types.js";
 import { resolveSessionModelIdentityRef } from "../agents/session-model-ref.js";
 import { buildSubagentSessionListReadIndex } from "../agents/subagents/registry/subagent-registry-read.js";
-import type { SubagentRunReadRecord } from "../agents/subagents/registry/subagent-registry-read.types.js";
 import { captureRuntimeStateEnvironment } from "../config/paths.js";
 import { resolveSessionStorePathCore, type SessionEntry } from "../config/sessions.js";
 import type { GatewayStoredSessionTargets } from "../config/sessions/combined-store-gateway.js";
@@ -37,15 +36,6 @@ export function buildSessionListRowMetadataContext(params: {
 }): SessionListRowContext {
   const subagentRuns =
     params.subagentRuns ?? buildSubagentSessionListReadIndex(params.now, params.sessionKeys);
-  const { runs, inMemoryRuns } = subagentRuns.inputs;
-  const subagentRunsByChildSessionKey = new Map<string, SubagentRunReadRecord[]>();
-  for (const run of new Set([...runs.values(), ...inMemoryRuns])) {
-    const key = run.childSessionKey.trim();
-    const candidates = subagentRunsByChildSessionKey.get(key) ?? [];
-    candidates.push(run);
-    subagentRunsByChildSessionKey.set(key, candidates);
-  }
-  subagentRunsByChildSessionKey.delete("");
   const catalogEntries = new WeakMap<
     ModelCatalogEntry[],
     Map<string, ModelCatalogEntry | undefined>
@@ -56,7 +46,7 @@ export function buildSessionListRowMetadataContext(params: {
   >();
   return {
     subagentRuns,
-    subagentRunsByChildSessionKey,
+    subagentRunsByChildSessionKey: subagentRuns.runsByChildSessionKey,
     selectedModelByOverrideRef: new Map(),
     thinkingMetadataByModelRef: new Map(),
     findModelCatalogEntry: (catalog, query) => {

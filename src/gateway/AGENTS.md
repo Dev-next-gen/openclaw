@@ -59,6 +59,12 @@ runtime when they only need plugin-owned static descriptors.
 - Identity rows record provenance only. Authorization and decision consumption must use the parent approval and current live authority, never the companion row.
 - Preserve schema version and older-reader tolerance. Changes to this surface require enabled, disabled, integrity, downgrade, and candidate-reopen proof.
 
+## Session Row Projection
+
+- `session-row-projection.ts` owns resident materialized session rows. Owner publications through `sessionChanges` invalidate exact session identities; SQLite publications run after commit, and reads retain fresh sharing identity after yields.
+- Startup is per physical store: first admission, replacement, or reappearance after a hot `session.store` change hydrates that store once through the existing loader. Remove rows when their store leaves the topology. Incognito stores stay excluded across database generations.
+- After hydration, clean list/describe/event snapshots execute no SQLite statements. Dirty rows may acquire their cold inputs through existing exact-key readers with their existing transcript/usage bounds. Never scan an already resident store to serve a request.
+
 ## Verification
 
 - Benchmark the affected Gateway test file before/after with

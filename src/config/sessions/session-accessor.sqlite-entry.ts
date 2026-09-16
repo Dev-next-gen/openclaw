@@ -262,24 +262,6 @@ export function withSessionEntryReadOnlyScope<T>(
   }
 }
 
-/** Counts durable session rows without materializing entry JSON or warming the entry cache. */
-export function countSessionEntryRowsReadOnly(
-  scope: Omit<SessionEntryListScope, "sessionKeys"> = {},
-): number {
-  const resolved = resolveSqliteScope({ ...scope, sessionKey: "" });
-  const result = withOpenClawAgentDatabaseReadOnly((database) => {
-    const db = getSessionKysely(database.db);
-    const row = executeSqliteQueryTakeFirstSync(
-      database.db,
-      db
-        .selectFrom("session_nodes")
-        .select((expression) => expression.fn.countAll<number | bigint>().as("count")),
-    );
-    return row ? sqliteNumber(row.count) : 0;
-  }, toDatabaseOptions(resolved));
-  return result.found ? result.value : 0;
-}
-
 /**
  * Proves whether a durable store has a row in one of the requested lifecycle states.
  * Unknown existing schemas stay eligible so the writable owner can surface or repair them.

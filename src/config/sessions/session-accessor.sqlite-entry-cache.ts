@@ -55,6 +55,11 @@ type SqliteSessionEntryCacheWriteGeneration = {
 // structural/unknown writes invalidate. Without both, every read would re-query and re-parse
 // every entry_json document.
 const sessionEntryCaches = new WeakMap<DatabaseSync, SqliteSessionEntryCache>();
+/** Commit-driven projections borrow owner memory; ordinary reads still validate SQLite. */
+export function readCommittedSessionEntryCache(database: DatabaseSync) {
+  const cached = sessionEntryCaches.get(database);
+  return cached?.selectedKeys ? undefined : cached?.entries;
+}
 const sessionNodesGenerationTrackerSchemaVersions = new WeakMap<DatabaseSync, number>();
 
 function ensureSessionNodesGenerationTracker(database: DatabaseSync): void {
