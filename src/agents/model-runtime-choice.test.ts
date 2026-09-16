@@ -552,8 +552,7 @@ describe("prepared model support admission", () => {
     },
   );
 
-  it("uses native transport normalization for explicit, automatic and published aliases without discovery", async () => {
-    const { resolveXaiTransport } = await import("../../extensions/xai/provider-routing.js");
+  it("uses provider transport normalization for explicit, automatic and published aliases without discovery", async () => {
     const model = makeProviderModelFixture({
       provider: "xai",
       id: "grok-4.6",
@@ -576,7 +575,7 @@ describe("prepared model support admission", () => {
         label: "xAI",
         auth: [],
         prepareDynamicModel,
-        normalizeTransport: resolveXaiTransport,
+        normalizeTransport: () => ({ api: "openai-responses", baseUrl: model.baseUrl }),
       },
     });
     const owner = publish(() => true, config, {
