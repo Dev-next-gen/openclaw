@@ -33,10 +33,6 @@ import { selectAgentHarness, selectAgentHarnessForPreparedModelProviders } from 
 import { projectPreparedModelProvider } from "./support.js";
 import type { AgentHarnessAttemptParamsV2 } from "./types.js";
 
-vi.mock("openclaw/plugin-sdk/node-host", () => ({
-  resolveNodeHostExecutable: () => ({ executable: "/fixture/bin/opencode" }),
-}));
-
 let snapshot: ReturnType<typeof captureActivePluginRegistrySnapshot>;
 beforeEach(() => {
   snapshot = captureActivePluginRegistrySnapshot();
@@ -98,18 +94,25 @@ async function registerNativeRuntime(approval = false) {
     closeStream: async () => {},
   }));
   const runtime = {
+    inspectAgent: async (agent: string) => ({
+      id: agent,
+      name: "OpenCode",
+      launch: { kind: "installed" as const, argv: ["/fixture/bin/opencode", "acp"] },
+    }),
     ensureSession: vi.fn(async () => handle),
     findSession: async () => handle,
     startTurn,
     async *runTurn() {},
     getStatus: async () => ({
       models: {
-        currentModelId: `${selection.provider}/${selection.modelId}`,
-        availableModelIds: [`${selection.provider}/${selection.modelId}`],
+        currentModelId: selection.modelId,
+        availableModelIds: [selection.modelId],
+        availableModels: [{ modelId: selection.modelId, name: "Native fixture" }],
       },
     }),
     getCapabilities: async () => ({ controls: [] }),
     setMode: async () => {},
+    setModel: async () => {},
     setConfigOption: async () => {},
     doctor: async () => ({ ok: true, message: "ready" }),
     prepareFreshSession: async () => {},
@@ -146,10 +149,10 @@ async function registerNativeRuntime(approval = false) {
 }
 
 const selection = {
-  provider: "opencode",
+  provider: "acp-opencode",
   modelId: "native-only-fixture",
   config: {},
-  agentHarnessRuntimeOverride: "opencode",
+  agentHarnessRuntimeOverride: "acp-opencode",
 };
 
 it.each([false, true])(
@@ -177,7 +180,7 @@ it.each([false, true])(
         projectPreparedModelProvider({ plan: attempt.plan, attemptKind: attempt.kind }),
       ),
     });
-    expect(harness.id).toBe("opencode");
+    expect(harness.id).toBe("acp-opencode");
     await withOpenClawTestState({ label: "native-empty-provider" }, async (state) => {
       await fs.writeFile(
         path.join(state.workspaceDir, "AGENTS.md"),
@@ -308,7 +311,7 @@ it.each([false, true])(
           expect.objectContaining({
             agent: "opencode",
             agentCommand: ["/fixture/bin/opencode", "acp"],
-            model: `${selection.provider}/${selection.modelId}`,
+            model: selection.modelId,
           }),
         );
       } finally {
@@ -327,7 +330,9 @@ it.each(["endpoint", "transport", "profile", "policy"] as const)(
       kind === "endpoint"
         ? {
             models: {
-              providers: { opencode: { baseUrl: "https://custom.example.invalid", models: [] } },
+              providers: {
+                [selection.provider]: { baseUrl: "https://custom.example.invalid", models: [] },
+              },
             },
           }
         : {};

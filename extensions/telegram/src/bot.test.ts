@@ -2757,6 +2757,55 @@ describe("createTelegramBot", () => {
             authProfileOverrideCompactionCount: 2,
           },
         });
+        const modelCatalog = [
+          { provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false },
+          {
+            provider: "openai",
+            id: "gpt-4.1",
+            name: "GPT-4.1",
+            reasoning: false,
+            api: "openai-responses" as const,
+            baseUrl: "https://api.openai.com/v1",
+          },
+          { provider: "openai", id: "gpt-5", name: "GPT-5", reasoning: true },
+          {
+            provider: "anthropic",
+            id: "claude-sonnet-4-5",
+            name: "Claude Sonnet",
+            reasoning: true,
+          },
+        ];
+        if (!outcomeText) {
+          const { createModelRuntimeChoiceOwnerFixture } =
+            await import("../../../src/agents/model-runtime-choice.test-support.js");
+          const { setPreparedModelRuntimeAuthStore } =
+            await import("../../../src/agents/prepared-model-runtime-auth.js");
+          const publishedCatalog = await import("../../../src/agents/prepared-model-catalog.js");
+          const owner = createModelRuntimeChoiceOwnerFixture(
+            config,
+            () => true,
+            { modelCatalog: { entries: modelCatalog, routeVariants: modelCatalog } },
+            {
+              agentDir: telegramTestState.agentDir(),
+              workspaceDir: telegramTestState.workspaceDir,
+            },
+          );
+          setPreparedModelRuntimeAuthStore(owner, {
+            version: 1,
+            profiles: {
+              "team:prod": { type: "api_key", provider: "openai", key: "synthetic-openai" },
+              "anthropic:fixture": {
+                type: "api_key",
+                provider: "anthropic",
+                key: "synthetic-anthropic",
+              },
+            },
+          });
+          const lookup = vi
+            .spyOn(publishedCatalog, "getPublishedPreparedModelCatalogOwnerSnapshot")
+            .mockReturnValue(owner);
+          onTestFinished(() => lookup.mockRestore());
+        }
         vi.mocked(telegramBotDepsForTest.buildModelsProviderData).mockResolvedValueOnce({
           byProvider: new Map([
             ["openai", new Set(["gpt-4o", "gpt-4.1", "gpt-5"])],
@@ -2765,17 +2814,7 @@ describe("createTelegramBot", () => {
           providers: ["anthropic", "openai"],
           resolvedDefault: { provider: defaultProvider, model: defaultModel },
           modelNames: new Map(),
-          modelCatalog: [
-            { provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false },
-            { provider: "openai", id: "gpt-4.1", name: "GPT-4.1", reasoning: false },
-            { provider: "openai", id: "gpt-5", name: "GPT-5", reasoning: true },
-            {
-              provider: "anthropic",
-              id: "claude-sonnet-4-5",
-              name: "Claude Sonnet",
-              reasoning: true,
-            },
-          ],
+          modelCatalog,
         });
 
         loadConfig.mockReturnValue(config);
@@ -2865,17 +2904,17 @@ describe("createTelegramBot", () => {
     const storePath = createTelegramTestStorePath("native-model-only");
     const config = makeModelPickerConfig(storePath, { omitModels: true });
     vi.mocked(telegramBotDepsForTest.buildModelsProviderData).mockResolvedValueOnce({
-      byProvider: new Map([["opencode", new Set(["big-pickle"])]]),
-      providers: ["opencode"],
+      byProvider: new Map([["acp-opencode", new Set(["big-pickle"])]]),
+      providers: ["acp-opencode"],
       resolvedDefault: { provider: "anthropic", model: "claude-opus-4-6" },
       modelNames: new Map(),
       modelCatalog: [
         {
-          provider: "opencode",
+          provider: "acp-opencode",
           id: "big-pickle",
           name: "Big Pickle",
           reasoning: false,
-          nativeRuntime: "opencode",
+          nativeRuntime: "acp-opencode",
         },
       ],
     });
@@ -2885,23 +2924,23 @@ describe("createTelegramBot", () => {
     const { createEmptyPluginRegistry } = await import("openclaw/plugin-sdk/plugin-test-runtime");
     const registry = createEmptyPluginRegistry();
     registry.agentHarnesses.push({
-      pluginId: "opencode",
+      pluginId: "acpx",
       source: "test",
       harness: {
-        id: "opencode",
+        id: "acp-opencode",
         label: "OpenCode",
         authBootstrap: "harness",
-        supports: () => ({ supported: true }),
+        supports: ({ requestedRuntime }) => ({ supported: requestedRuntime === "acp-opencode" }),
         async runAttempt() {
           throw new Error("Model selection must not execute inference");
         },
       },
     });
     const nativeEntry = {
-      provider: "opencode",
+      provider: "acp-opencode",
       id: "big-pickle",
       name: "Big Pickle",
-      nativeRuntime: "opencode",
+      nativeRuntime: "acp-opencode",
     };
     const owner = createModelRuntimeChoiceOwnerFixture(
       config,
@@ -2912,6 +2951,9 @@ describe("createTelegramBot", () => {
       },
       { agentDir: telegramTestState.agentDir(), workspaceDir: telegramTestState.workspaceDir },
     );
+    const { setPreparedModelRuntimeAuthStore } =
+      await import("../../../src/agents/prepared-model-runtime-auth.js");
+    setPreparedModelRuntimeAuthStore(owner, { version: 1, profiles: {} });
     const lookup = vi
       .spyOn(publishedCatalog, "getPublishedPreparedModelCatalogOwnerSnapshot")
       .mockReturnValue(owner);
@@ -2923,26 +2965,26 @@ describe("createTelegramBot", () => {
       await getTelegramCallbackHandlerForTests()(
         createTelegramCallbackContext({
           id: "native-model-only",
-          data: "mdl_sel_opencode/big-pickle",
+          data: "mdl_sel_acp-opencode/big-pickle",
           message: { message_id: 17 },
         }),
       );
       expect.soft(apply).toHaveBeenCalledWith(
         expect.objectContaining({
           request: expect.objectContaining({
-            provider: "opencode",
+            provider: "acp-opencode",
             model: "big-pickle",
             isDefault: false,
             runtime: { kind: "unchanged" },
           }),
         }),
       );
-      expect.soft(firstEditMessageTextArg(2)).toContain("Runtime set to <b>opencode</b>");
+      expect.soft(firstEditMessageTextArg(2)).toContain("Runtime set to <b>acp-opencode</b>");
       expect.soft(firstEditMessageTextArg(2)).not.toContain("from configured policy");
       expect(readOnlySessionEntry(storePath)).toMatchObject({
-        providerOverride: "opencode",
+        providerOverride: "acp-opencode",
         modelOverride: "big-pickle",
-        agentRuntimeOverride: "opencode",
+        agentRuntimeOverride: "acp-opencode",
       });
     } finally {
       apply.mockRestore();
@@ -3061,7 +3103,7 @@ describe("createTelegramBot", () => {
       },
     } satisfies NonNullable<Parameters<typeof createTelegramBot>[0]["config"]>;
 
-    // Fresh config: default changed and GPT-5.6 Luna was added after startup.
+    // Fresh config: default changed and GPT-4.1 was added after startup.
     const freshConfig = {
       ...startupConfig,
       agents: {
@@ -3069,13 +3111,46 @@ describe("createTelegramBot", () => {
           model: "anthropic/claude-opus-4-6",
           models: {
             "openai/gpt-5.4": {},
-            "openai/gpt-5.6-luna": {},
+            "openai/gpt-4.1": {},
             "anthropic/claude-opus-4-6": {},
           },
         },
       },
     };
     const authorizationConfig = { ...freshConfig };
+    const { createModelRuntimeChoiceOwnerFixture } =
+      await import("../../../src/agents/model-runtime-choice.test-support.js");
+    const { setPreparedModelRuntimeAuthStore } =
+      await import("../../../src/agents/prepared-model-runtime-auth.js");
+    const publishedCatalog = await import("../../../src/agents/prepared-model-catalog.js");
+    const modelCatalog = [
+      { provider: "openai", id: "gpt-5.4", name: "GPT-5.4" },
+      {
+        provider: "openai",
+        id: "gpt-4.1",
+        name: "GPT-4.1",
+        api: "openai-responses" as const,
+        baseUrl: "https://api.openai.com/v1",
+      },
+      { provider: "anthropic", id: "claude-opus-4-6", name: "Claude Opus" },
+    ];
+    const owner = createModelRuntimeChoiceOwnerFixture(
+      freshConfig,
+      () => true,
+      { modelCatalog: { entries: modelCatalog, routeVariants: modelCatalog } },
+      { agentDir: telegramTestState.agentDir(), workspaceDir: telegramTestState.workspaceDir },
+    );
+    setPreparedModelRuntimeAuthStore(owner, {
+      version: 1,
+      profiles: {
+        "openai:fixture": { type: "api_key", provider: "openai", key: "synthetic-openai" },
+        "anthropic:fixture": { type: "api_key", provider: "anthropic", key: "synthetic-anthropic" },
+      },
+    });
+    const lookup = vi
+      .spyOn(publishedCatalog, "getPublishedPreparedModelCatalogOwnerSnapshot")
+      .mockReturnValue(owner);
+    onTestFinished(() => lookup.mockRestore());
 
     // Bot created with startup config; loadConfig now returns fresh config
     loadConfig.mockReturnValue(freshConfig);
@@ -3106,15 +3181,15 @@ describe("createTelegramBot", () => {
     await callbackHandler(
       createTelegramCallbackContext({
         id: "cbq-model-fresh-cfg-2",
-        data: "mdl_sel_openai/gpt-5.6-luna",
+        data: "mdl_sel_openai/gpt-4.1",
         message: { date: 1_736_380_801, message_id: 21 },
       }),
     );
 
-    const lunaEntry = readOnlySessionEntry(storePath);
-    expect(lunaEntry?.providerOverride).toBe("openai");
-    expect(lunaEntry?.modelOverride).toBe("gpt-5.6-luna");
-    expect(lunaEntry?.modelOverrideSource).toBe("user");
+    const addedModelEntry = readOnlySessionEntry(storePath);
+    expect(addedModelEntry?.providerOverride).toBe("openai");
+    expect(addedModelEntry?.modelOverride).toBe("gpt-4.1");
+    expect(addedModelEntry?.modelOverrideSource).toBe("user");
 
     dispatchReplyWithBufferedBlockDispatcher.mockClear();
     replySpy.mockClear();
@@ -3173,7 +3248,7 @@ describe("createTelegramBot", () => {
 
     const afterTurn = readOnlySessionEntry(storePath);
     expect(afterTurn?.providerOverride).toBe("openai");
-    expect(afterTurn?.modelOverride).toBe("gpt-5.6-luna");
+    expect(afterTurn?.modelOverride).toBe("gpt-4.1");
     expect(afterTurn?.modelOverrideSource).toBe("user");
   });
 
