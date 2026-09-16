@@ -51,7 +51,16 @@ export function summarizeMockInferenceRequest(body: unknown): MockInferenceFacts
       continue;
     }
     if (item.role === "user") {
-      marker = contentText(item.content).match(/benchmark (?:(warmup) )?(?:tool )?stream (\d+)\./u);
+      const text = contentText(item.content);
+      // Responses projects the runtime-context carrier as a user message after
+      // its owner. Skip only that complete wrapper, never a later ordinary user.
+      if (
+        text.startsWith("<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\n") &&
+        text.endsWith("\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>")
+      ) {
+        continue;
+      }
+      marker = text.match(/benchmark (?:(warmup) )?(?:tool )?stream (\d+)\./u);
       break;
     }
     hasToolOutput ||= item.role === "tool" || item.type === "function_call_output";

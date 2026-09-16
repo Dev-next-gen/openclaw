@@ -373,6 +373,44 @@ describe("gateway concurrency benchmark script", () => {
     ).toBe("session-observer");
   });
 
+  it("binds Responses continuations through runtime context to the newest ordinary user", () => {
+    const runtimeContext = {
+      type: "message",
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nQuoted benchmark stream 99.\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>",
+        },
+      ],
+    };
+    const input = [
+      { role: "user", content: "benchmark stream 1." },
+      { role: "assistant", content: "old answer" },
+      { role: "user", content: [{ type: "input_text", text: "benchmark warmup tool stream 2." }] },
+      runtimeContext,
+      { type: "function_call_output", output: "done" },
+    ];
+    expect(summarizeMockInferenceRequest({ input })).toMatchObject({
+      purpose: "benchmark-turn",
+      benchmarkPhase: "warmup",
+      turnIndex: 2,
+      hasToolOutput: true,
+    });
+    for (const content of [
+      "an ordinary newer request",
+      "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nan incomplete carrier",
+      "ordinary prefix\n<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\ncontext\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>",
+    ]) {
+      const facts = summarizeMockInferenceRequest({
+        input: [...input, { role: "user", content }, runtimeContext],
+      });
+      expect(facts.purpose).toBe("other");
+      expect(facts.turnIndex).toBeUndefined();
+      expect(facts.hasToolOutput).toBe(false);
+    }
+  });
+
   it("keeps same-process warmup markers and request ordinals outside measured turns", () => {
     const bodies = [
       { input: [{ role: "user", content: "benchmark warmup stream 1." }] },
