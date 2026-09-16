@@ -23,6 +23,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server-methods/native-hook-relay.test.ts",
   "src/gateway/server-methods/requester-cron-authority.integration.test.ts",
   "src/gateway/server-methods/server-methods.test.ts",
+  "src/gateway/server-methods/sessions-describe-worker.test.ts",
   "src/gateway/server-methods/sessions-list-persisted-worker.test.ts",
   "src/gateway/server-methods/worktrees.authorization.test.ts",
   "src/gateway/server-methods/worktrees.test.ts",

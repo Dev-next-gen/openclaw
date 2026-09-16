@@ -3,6 +3,7 @@ import { gcm } from "@noble/ciphers/aes.js";
 import { concatBytes, randomBytes } from "@noble/hashes/utils.js";
 import type { PluginRuntime } from "openclaw/plugin-sdk/core";
 import type {
+  OpenKeyedStoreOptions,
   PluginStateKeyedStore,
   PluginStateSyncKeyedStore,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
@@ -423,6 +424,7 @@ class ReefSqliteReplayStore implements ReplayStore {
 
 export class ReviewApprovalStore {
   readonly #store: PluginStateSyncKeyedStore<ReefReviewRecord>;
+  readonly #reader: PluginStateKeyedStore<ReefReviewRecord>;
   readonly #maxEntries: number;
 
   constructor(
@@ -431,11 +433,14 @@ export class ReviewApprovalStore {
     private readonly authoritySignal?: AbortSignal,
   ) {
     this.#maxEntries = maxEntries;
-    this.#store = runtime.state.openSyncKeyedStore<ReefReviewRecord>({
+    const options: OpenKeyedStoreOptions = {
       namespace: REEF_REVIEWS_NAMESPACE,
       maxEntries,
       overflowPolicy: "reject-new",
-    });
+    };
+    // Mutations must remain uninterrupted after the live channel-authority check.
+    this.#store = runtime.state.openSyncKeyedStore<ReefReviewRecord>(options);
+    this.#reader = runtime.state.openKeyedStore<ReefReviewRecord>(options);
   }
 
   #makeRoomForPendingReview(): void {
@@ -484,7 +489,8 @@ export class ReviewApprovalStore {
     approvalDigest: string,
   ): Promise<"none" | "pending" | { approved: boolean }> {
     this.authoritySignal?.throwIfAborted();
-    const current = this.#store.lookup(approvalDigest);
+    const current = await this.#reader.lookup(approvalDigest);
+    this.authoritySignal?.throwIfAborted();
     if (!current) {
       return "none";
     }
@@ -510,18 +516,19 @@ export class ReviewApprovalStore {
 
   async list(): Promise<ReviewRequest[]> {
     this.authoritySignal?.throwIfAborted();
-    return this.#store
-      .entries()
+    const entries = await this.#reader.entries();
+    this.authoritySignal?.throwIfAborted();
+    return entries
       .filter((entry) => entry.value.approved === undefined)
       .map((entry) => structuredClone(entry.value.review));
   }
 }
 
 export class ReefDeliveredStore {
-  readonly #delivered: PluginStateSyncKeyedStore<{ id: string }>;
+  readonly #delivered: PluginStateKeyedStore<{ id: string }>;
 
   constructor(runtime: PluginRuntime, maxEntries = REEF_DELIVERED_MAX_ENTRIES) {
-    this.#delivered = runtime.state.openSyncKeyedStore<{ id: string }>({
+    this.#delivered = runtime.state.openKeyedStore<{ id: string }>({
       namespace: REEF_DELIVERED_NAMESPACE,
       maxEntries,
       overflowPolicy: "reject-new",
@@ -532,16 +539,16 @@ export class ReefDeliveredStore {
   }
 
   async has(id: string): Promise<boolean> {
-    return this.#delivered.lookup(id)?.id === id;
+    return (await this.#delivered.lookup(id))?.id === id;
   }
 
   async status(id: string): Promise<"delivered" | undefined> {
-    return this.#delivered.lookup(id)?.id === id ? "delivered" : undefined;
+    return (await this.#delivered.lookup(id))?.id === id ? "delivered" : undefined;
   }
 
   async confirm(id: string): Promise<void> {
-    const inserted = this.#delivered.registerIfAbsent(id, { id });
-    if (!inserted && this.#delivered.lookup(id)?.id !== id) {
+    const inserted = await this.#delivered.registerIfAbsent(id, { id });
+    if (!inserted && (await this.#delivered.lookup(id))?.id !== id) {
       throw new Error("Failed persisting Reef delivered marker");
     }
   }

@@ -1,3 +1,4 @@
+import { isResponsesOutputLimitToolCallError } from "@openclaw/ai/diagnostics";
 import { isProviderRefusalAssistantError } from "@openclaw/llm-core/diagnostics";
 import { emitAgentEvent } from "../../../infra/agent-events.js";
 import { formatErrorMessage, toErrorObject } from "../../../infra/errors.js";
@@ -117,6 +118,20 @@ export async function recoverEmbeddedRunAttempt(input: {
   const terminalInterrupted = isEmbeddedRunTerminalInterrupted(terminalState.outcome);
   const currentAttemptReplaySafe = isCurrentAttemptReplaySafe(attempt);
   const settledEvidence = resolveSettledToolBatchEvidence(attempt);
+  // Embedded settings disable session retries; this owner must resume output limits.
+  const outputLimitAssistant = currentAttemptCompletedAssistant ?? attemptAssistant;
+  const outputLimitFailure = Boolean(
+    outputLimitAssistant && isResponsesOutputLimitToolCallError(outputLimitAssistant),
+  );
+  const canContinueOutputLimit =
+    !runtime.pluginHarnessOwnsTransport &&
+    !terminalInterrupted &&
+    !promptError &&
+    (currentAttemptReplaySafe || settledEvidence.allToolsProvenSettled) &&
+    attempt.itemLifecycle.activeCount === 0 &&
+    !settledEvidence.intentionalTermination &&
+    !hasAsyncActivity(attempt.toolMetas) &&
+    !attempt.didSendDeterministicApprovalPrompt;
   // A model idle timeout after settled tools can resume their recorded results.
   // Side effects still forbid replaying the original prompt or switching models.
   const canContinueSettledIdleTimeout =
@@ -318,6 +333,7 @@ export async function recoverEmbeddedRunAttempt(input: {
   ) {
     return retry();
   }
+  const recoveryReason = outputLimitFailure ? "output_limit" : failureReason;
   // The finished attempt has released its tools. Continue its transcript, including
   // partial output and uncertain effects; never resubmit the original user request.
   if (
@@ -335,9 +351,10 @@ export async function recoverEmbeddedRunAttempt(input: {
     !findCliTerminalStopError(promptError) &&
     (!promptError || promptErrorSource === "prompt") &&
     !isProviderRefusalAssistantError(attemptAssistant) &&
-    failureReason &&
+    (!outputLimitFailure || canContinueOutputLimit) &&
+    recoveryReason &&
     (await failoverRetryController.maybeRetryTransient({
-      reason: failureReason,
+      reason: recoveryReason,
       message: promptError ? formatErrorMessage(promptError) : assistantSignal?.message,
       retryAfterMs: promptError
         ? resolveRetryAfterMs(formatErrorMessage(promptError), Date.now(), promptError)
@@ -348,7 +365,7 @@ export async function recoverEmbeddedRunAttempt(input: {
           data: {
             phase: "retrying",
             message:
-              reason === "rate_limit"
+              reason === "rate_limit" || reason === "output_limit"
                 ? `Retrying… ${retryAttempt + 1}/${maxRetries + 1}`
                 : `Provider temporarily unavailable. Retrying in ${Math.ceil(delayMs / 1_000)}s (${retryAttempt}/${maxRetries}).`,
             retryAttempt,
@@ -369,7 +386,9 @@ export async function recoverEmbeddedRunAttempt(input: {
     sessionPromptState.continueFromCurrentTranscript({
       includeToolFailureInstruction: Boolean(attempt.lastToolError),
     });
-    return retry({ lastRetryFailoverReason: failureReason });
+    return retry({
+      lastRetryFailoverReason: outputLimitFailure ? input.lastRetryFailoverReason : failureReason,
+    });
   }
   if (
     !currentAttemptReplaySafe &&
