@@ -10,7 +10,8 @@ import { resolveRuntimeWorkerArgv } from "../../infra/runtime-worker-url.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { joinProcessCompletionAndOutput } from "../decoded-output.js";
 import { pipeProcessOutput } from "../pipe-output.js";
-import { prepareSecretInputStdio } from "../spawn-secret-input.js";
+import { prepareSecretInputStdio, type SpawnStdioEntry } from "../spawn-secret-input.js";
+import { reserveStdioEntry } from "../spawn-utils.js";
 import { createManagedChildStdin } from "./adapters/child-stdin.js";
 import { toStringEnv } from "./adapters/env.js";
 import { createOutputRelay, createProcessAdapterEvents } from "./adapters/process-events.js";
@@ -34,25 +35,12 @@ type ServiceChildRelayAdapter = SpawnProcessAdapter<NodeJS.Signals | null> & {
   closeStartGate?: () => void;
 } & Required<Pick<SpawnProcessAdapter<NodeJS.Signals | null>, "onExit" | "onError">>;
 type AuthorityState = "starting" | "active" | "closing" | "closed" | "identity-lost";
-type StdioEntry = "ignore" | "inherit" | "ipc" | "pipe" | number;
 
 const CONTROL_PENDING_LINE_LIMIT_BYTES = 256 * 1024;
 
 function readChildMessage(raw: unknown): ServiceChildRelayMessage | ServiceChildAnchorMessage {
   // SAFETY: the spawned relay or Job anchor is the sole writer on each private protocol channel.
   return raw as ServiceChildRelayMessage | ServiceChildAnchorMessage;
-}
-
-function reserveStdioEntry(stdio: StdioEntry[], value: StdioEntry): number {
-  let fd = 3;
-  while (stdio[fd] !== undefined && stdio[fd] !== "ignore") {
-    fd += 1;
-  }
-  while (stdio.length <= fd) {
-    stdio.push("ignore");
-  }
-  stdio[fd] = value;
-  return fd;
 }
 
 export async function createServiceChildRelayAdapter(
@@ -85,7 +73,7 @@ export async function createServiceChildRelayAdapter(
   const workerUrl = resolveRuntimeProcessEntrypointUrl(
     useWindowsJobAnchor ? "serviceChildWindowsJobAnchor" : "serviceChildRelay",
   );
-  const stdio: StdioEntry[] = useWindowsJobAnchor
+  const stdio: SpawnStdioEntry[] = useWindowsJobAnchor
     ? ["ignore", "ignore", "ignore"]
     : [params.stdinMode === "inherit" ? "inherit" : "pipe", "pipe", "pipe"];
   using secretDelivery = prepareSecretInputStdio(

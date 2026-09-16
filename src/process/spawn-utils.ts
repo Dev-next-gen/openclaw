@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { expectDefined } from "@openclaw/normalization-core";
 import { toErrorObject } from "../infra/errors.js";
+import type { SpawnStdioEntry } from "./spawn-secret-input.js";
 
 type SpawnWithFallbackResult = {
   child: ChildProcess;
@@ -16,6 +17,18 @@ type SpawnWithFallbackParams = {
   fallbacks?: SpawnOptions[];
   spawnImpl?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 };
+
+export function reserveStdioEntry(stdio: SpawnStdioEntry[], value: SpawnStdioEntry): number {
+  let fd = 3;
+  while (stdio[fd] !== undefined && stdio[fd] !== "ignore") {
+    fd += 1;
+  }
+  while (stdio.length <= fd) {
+    stdio.push("ignore");
+  }
+  stdio[fd] = value;
+  return fd;
+}
 
 function shouldRetry(err: unknown): boolean {
   const code =

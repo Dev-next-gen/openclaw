@@ -6,6 +6,8 @@ import {
   resolveRuntimeProcessEntrypointUrl,
 } from "../../infra/runtime-process-url.js";
 import { resolveRuntimeWorkerArgv } from "../../infra/runtime-worker-url.js";
+import type { SpawnStdioEntry } from "../spawn-secret-input.js";
+import { reserveStdioEntry } from "../spawn-utils.js";
 import { isOwnedProcessGroupGone } from "./service-child-group-ownership.js";
 import {
   OWNED_NODE_WORKER_ANCHOR_ARG,
@@ -13,7 +15,6 @@ import {
   type ServiceChildStart,
 } from "./service-child-protocol.js";
 
-type StdioEntry = "ignore" | "inherit" | "ipc" | number;
 declare const WORKER_DEPLOY_BUILD: boolean;
 
 if (typeof WORKER_DEPLOY_BUILD === "boolean" && WORKER_DEPLOY_BUILD) {
@@ -21,17 +22,6 @@ if (typeof WORKER_DEPLOY_BUILD === "boolean" && WORKER_DEPLOY_BUILD) {
     "serviceChildGroupAnchor",
     new URL("./service-child-group-anchor.mjs", import.meta.url),
   );
-}
-
-function reserveIpcFd(stdio: StdioEntry[]): void {
-  let fd = 3;
-  while (stdio[fd] !== undefined && stdio[fd] !== "ignore") {
-    fd += 1;
-  }
-  while (stdio.length <= fd) {
-    stdio.push("ignore");
-  }
-  stdio[fd] = "ipc";
 }
 
 function runServiceChildRelay(): void {
@@ -77,7 +67,7 @@ function runServiceChildRelay(): void {
     }
     const controlFd = start.controlFd;
     const anchorUrl = resolveRuntimeProcessEntrypointUrl("serviceChildGroupAnchor");
-    const stdio: StdioEntry[] = ["inherit", "inherit", "inherit"];
+    const stdio: SpawnStdioEntry[] = ["inherit", "inherit", "inherit"];
     while (stdio.length <= controlFd) {
       stdio.push("ignore");
     }
@@ -100,7 +90,7 @@ function runServiceChildRelay(): void {
       }
       stdio[start.secretFd] = start.secretFd;
     }
-    reserveIpcFd(stdio);
+    reserveStdioEntry(stdio, "ipc");
     try {
       const argv = resolveRuntimeWorkerArgv(anchorUrl);
       if (start.ownedWorker) {
