@@ -19,8 +19,19 @@ export function createMessageToolTurnAuthority(params: {
   const lookup =
     agentId && sessionKey ? { token, agentId, runId, sessionKey, sessionId } : undefined;
   const resolve = () => lookup && resolveMessageActionTurnAuthorization(lookup);
-  const policy = resolve()?.scheduled?.policy;
+  const scheduled = resolve()?.scheduled;
+  const policy = scheduled?.policy;
   const origin = policy?.mode === "account" ? policy.ownerOrigin : undefined;
+  const channels = origin?.kind === "external" ? [origin.channel] : [];
+  const requester = scheduled?.channelRequester;
+  if (
+    policy?.mode === "account" &&
+    requester?.channel === "discord" &&
+    requester.accountId === policy.ownerAccountId &&
+    !channels.includes(requester.channel)
+  ) {
+    channels.push(requester.channel);
+  }
   return {
     captureCaller: (signal: AbortSignal | undefined, capture: () => (() => void) | undefined) => {
       if (signal?.aborted) {
@@ -47,10 +58,10 @@ export function createMessageToolTurnAuthority(params: {
       };
     },
     scheduledAccountScope:
-      policy?.mode === "account" && origin && origin.kind !== "unknown"
+      policy?.mode === "account" && (origin?.kind === "local" || channels.length > 0)
         ? {
             accountId: policy.ownerAccountId,
-            ...(origin.kind === "external" ? { channel: origin.channel } : {}),
+            ...(origin?.kind === "local" ? {} : { channels }),
           }
         : undefined,
     assertCurrent: () => {

@@ -186,9 +186,14 @@ export function isScheduledMessageWriteAction(
 }
 
 type ScheduledMessageActionAccess = {
-  kind: "trusted-operator" | "account";
   assertCurrent: () => void;
-};
+} & (
+  | { kind: "trusted-operator" }
+  | {
+      kind: "account";
+      channelRequester?: NonNullable<MessageActionAuthorization["scheduled"]>["channelRequester"];
+    }
+);
 
 /** Validates a live scheduled grant's scope; each action consumer owns admission. */
 function resolveScheduledMessageActionAccess(params: {
@@ -210,6 +215,21 @@ function resolveScheduledMessageActionAccess(params: {
     throw new Error(
       `Scheduled ${params.channel}:${params.action} cannot use another creator account.`,
     );
+  }
+  if (params.action === "channel-edit" && normalizeMessageChannel(params.channel) === "discord") {
+    const requester = authority.channelRequester;
+    if (!requester) {
+      throw new Error(
+        "This account-bound automation needs fresh Discord requester authorization for channel-edit. " +
+          "From its original Discord conversation and account, edit it with an explicit toolsAllow cap including message, or recreate it there.",
+      );
+    }
+    if (requester.channel !== "discord" || requester.accountId !== policy.ownerAccountId) {
+      throw new Error(
+        "Scheduled Discord channel-edit requires its authenticated requester account and channel.",
+      );
+    }
+    return { kind: "account", channelRequester: requester, assertCurrent: authority.assertCurrent };
   }
   const origin = policy.ownerOrigin;
   if (
@@ -525,7 +545,8 @@ function prepareScheduledMessageWriteContext(
   if (!access) {
     return undefined;
   }
-  if (policy === "operator" && access.kind !== "trusted-operator") {
+  const channelRequester = access.kind === "account" ? access.channelRequester : undefined;
+  if (policy === "operator" && access.kind !== "trusted-operator" && !channelRequester) {
     throw new Error(
       `Scheduled ${ctx.channel}:${action} requires a job authorized by an operator. Account jobs cannot inherit operator administration.`,
     );
@@ -542,7 +563,14 @@ function prepareScheduledMessageWriteContext(
     context: {
       ...prepared.actionContext,
       accountId,
-      senderIsOwner: policy === "operator" ? true : prepared.actionContext.senderIsOwner,
+      ...(channelRequester
+        ? {
+            requesterAccountId: channelRequester.accountId,
+            requesterSenderId: channelRequester.senderId,
+            senderIsOwner: false,
+            toolContext: undefined,
+          }
+        : { senderIsOwner: policy === "operator" ? true : prepared.actionContext.senderIsOwner }),
       conversationReadOrigin:
         policy === "operator"
           ? prepared.actionContext.conversationReadOrigin

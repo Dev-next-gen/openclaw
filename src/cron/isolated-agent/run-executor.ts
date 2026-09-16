@@ -453,7 +453,7 @@ function createCronPromptExecutor(
       agentId: params.agentId,
       runId,
       sessionKey: params.runSessionKey,
-      jobId: params.job.id,
+      job: params.job,
       toolsAllow: params.agentPayload?.toolsAllow,
       scheduledToolPolicy,
       executionIdentity: params.executionIdentity,
