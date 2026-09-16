@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveCronJobBoundSessionKeys } from "../cron/job-session-bindings.js";
 import type { CronJob } from "../cron/types.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
+import { sessionChanges } from "../sessions/session-row-changes.js";
 
 type SessionAutomationSource = {
   /** Current in-memory cron jobs; undefined until the cron store is loaded. */
@@ -47,6 +48,7 @@ export function registerSessionAutomationSource(
   source = next;
   memo = null;
   sourceVersion += 1;
+  sessionChanges.emit({ all: true, scope: "automation" });
 }
 
 /**
@@ -60,11 +62,13 @@ export function unregisterSessionAutomationSource(owner: SessionAutomationSource
   source = null;
   memo = null;
   sourceVersion += 1;
+  sessionChanges.emit({ all: true, scope: "automation" });
 }
 
 /** Called from the cron onEvent hook after any job/store change. */
 export function bumpSessionAutomationVersion(): void {
   sourceVersion += 1;
+  sessionChanges.emit({ all: true, scope: "automation" });
 }
 
 /** sessions.list cache fence input: hasAutomation is projected per row from

@@ -19,6 +19,7 @@ import {
   legacyAcpMigrationBindingMatches,
   recordLegacyAcpMigrationCompletion,
 } from "../../infra/legacy-acp-migration-source.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { withExistingOpenClawStateDatabaseReadOnly } from "../../state/openclaw-state-db-readonly.js";
 import {
   type OpenClawStateDatabaseOptions,
@@ -267,6 +268,7 @@ export function writeAcpSessionMetaForMigration(params: {
   runOpenClawStateWriteTransaction(
     (database) => {
       upsertAcpSessionMetaRow(database.db, row);
+      sessionChanges.emit({ all: true, scope: "acp" }, database.db);
     },
     { database: params.database, env: params.env, path: params.databasePath },
   );
@@ -342,6 +344,7 @@ export function repairAcpSessionMetaKeyForMigration(params: {
           .deleteFrom("acp_sessions")
           .where("session_key", "=", row.session_key),
       );
+      sessionChanges.emit({ all: true, scope: "acp" }, database.db);
       repaired = true;
     },
     { env: params.env, path: params.databasePath },
@@ -624,6 +627,10 @@ export async function upsertAcpSessionMeta(params: {
               .where("session_key", "=", key),
           );
         }
+        sessionChanges.emit(
+          { agentId: storeEntry.agentId, sessionKey: patched?.sessionKey ?? storageSessionKey },
+          database.db,
+        );
       },
       { env: params.env, path: params.databasePath },
     );
@@ -716,6 +723,10 @@ export async function upsertAcpSessionMeta(params: {
           );
         }
       }
+      sessionChanges.emit(
+        { agentId: storeEntry.agentId, sessionKey: persisted.sessionKey },
+        database.db,
+      );
     },
     { env: params.env, path: params.databasePath },
   );

@@ -22,6 +22,7 @@ import type {
   WorkerSshEndpoint,
 } from "../../plugins/capability-provider.types.js";
 import { isValidSecretRef } from "../../secrets/ref-contract.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { ensureWorkerEnvironmentNodeEnrollmentSchema } from "../../state/openclaw-state-db-schema-additive.js";
 import type {
   DB as StateDatabase,
@@ -820,7 +821,14 @@ export function createWorkerEnvironmentStore(
   const read = () => openOpenClawStateDatabase({ path }).db;
   let inventoryVersion = 0;
   const write = <T>(operation: (db: DatabaseSync) => T): T => {
-    const result = runOpenClawStateWriteTransaction(({ db }) => operation(db), { path });
+    const result = runOpenClawStateWriteTransaction(
+      ({ db }) => {
+        const value = operation(db);
+        sessionChanges.emit({ all: true, scope: "worker-environments" }, db);
+        return value;
+      },
+      { path },
+    );
     // Device pairing's nodeDeviceId patch deliberately stays outside this version:
     // it changes no identity/epoch/state input. Runner availability owns its own fence.
     inventoryVersion += 1;

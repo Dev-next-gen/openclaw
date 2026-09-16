@@ -11,6 +11,7 @@ import {
 } from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { sessionChanges } from "../sessions/session-row-changes.js";
 import { resolveSessionStoreKey } from "./session-store-key.js";
 
 export type ActivitySummaryTarget = { key: string; agentId: string };
@@ -55,6 +56,7 @@ export function setSessionActivitySummaryState(
     return false;
   }
   version += 1;
+  sessionChanges.emit({ sessionKey: target.key, agentId: target.agentId });
   return true;
 }
 

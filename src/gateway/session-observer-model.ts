@@ -24,6 +24,7 @@ import type { AgentEventPayload } from "../infra/agent-events.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { redactToolPayloadText } from "../logging/redact.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
+import { sessionChanges } from "../sessions/session-row-changes.js";
 import type {
   SessionEventSubscriberRegistry,
   SessionMessageSubscriberRegistry,
@@ -357,7 +358,15 @@ export async function defaultPersistDigest(params: {
       applied = true;
       return { observerDigest: params.digest };
     },
-    { preserveActivity: true },
+    {
+      preserveActivity: true,
+      onCommitted: () =>
+        sessionChanges.emit({
+          sessionKey: params.sessionKey,
+          agentId: params.agentId,
+          storePath: params.storePath,
+        }),
+    },
   );
   if (applied) {
     sessionObserverDigestVersion += 1;

@@ -15,6 +15,7 @@ import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { getAgentEventLifecycleGeneration, type AgentEventPayload } from "../infra/agent-events.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { parseCronRunScopeSuffix } from "../sessions/session-key-utils.js";
+import { sessionChanges } from "../sessions/session-row-changes.js";
 import {
   recordGatewaySessionRunFailure,
   resolveSessionRunError,
@@ -459,6 +460,12 @@ export async function persistGatewaySessionLifecycleEvent(params: {
       skipMaintenance: true,
       takeCacheOwnership: true,
       requireWriteSuccess: true,
+      onCommitted: () =>
+        sessionChanges.emit({
+          sessionKey: sessionEntry.canonicalKey,
+          agentId: sessionEntry.agentId,
+          storePath: sessionEntry.storePath,
+        }),
       ...(params.assertCommitAllowed ? { assertCommitAllowed: params.assertCommitAllowed } : {}),
     },
   );

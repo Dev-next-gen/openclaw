@@ -5,6 +5,7 @@ import {
   runSqliteDeferredTransactionSync,
   runSqliteImmediateTransactionSync,
 } from "../infra/sqlite-transaction.js";
+import { sessionChanges } from "../sessions/session-row-changes.js";
 import { ensureOpenClawAgentBoardSchemaInTransaction } from "../state/openclaw-agent-board-schema.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
@@ -170,6 +171,7 @@ function upsertTabs(
         ),
     );
   }
+  sessionChanges.emit({ sessionKey: next.sessionKey, storePath: database.path }, database.db);
 }
 
 function updateWidgetLayouts(

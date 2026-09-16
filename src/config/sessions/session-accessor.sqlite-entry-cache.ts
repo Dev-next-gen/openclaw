@@ -7,6 +7,7 @@ import {
 } from "../../infra/kysely-sync.js";
 import { readSqliteDataVersion } from "../../infra/node-sqlite.js";
 import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { tableExists } from "../../state/openclaw-state-db-schema-helpers.js";
 import { validateDeliveryCanonicalSessionEntry } from "./session-accessor.sqlite-entry-read.js";
@@ -431,10 +432,15 @@ export function publishSessionEntryCacheInvalidation(
 ): void {
   if (update && writeGeneration) {
     publishSqliteSessionEntryCacheUpsert(database, update, writeGeneration);
-    return;
+  } else {
+    // A cold write has no snapshot to patch; do not hydrate owner/participants or prompt JSON.
+    publishTrackedCacheUpdate(database, () => sessionEntryCaches.delete(database.db));
   }
-  // A cold write has no snapshot to patch; do not hydrate owner/participants or prompt JSON.
-  publishTrackedCacheUpdate(database, () => sessionEntryCaches.delete(database.db));
+  const scope = { agentId: database.agentId, storePath: database.path };
+  sessionChanges.emit(
+    update ? { ...scope, sessionKey: update.sessionKey } : { all: true, scope },
+    database.db,
+  );
 }
 
 /** Refresh participant projections without reloading unchanged session-entry JSON. */

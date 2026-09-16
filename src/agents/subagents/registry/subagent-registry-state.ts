@@ -3,6 +3,7 @@ import {
   emitSessionLifecycleEvent,
   type SessionLifecycleEvent,
 } from "../../../sessions/session-lifecycle-events.js";
+import { sessionChanges } from "../../../sessions/session-row-changes.js";
 import { runOutsideAsyncWorkScope } from "../../../shared/async-work-scope.js";
 import { isStateDatabaseReadAdmissionInvalidatedError } from "../../../state/openclaw-state-db-async-lifecycle.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
@@ -140,7 +141,15 @@ type SubagentRegistryPersistListener = () => void;
 
 const SUBAGENT_REGISTRY_PERSIST_LISTENERS = new Set<SubagentRegistryPersistListener>();
 
-function emitSubagentRegistryPersisted(): void {
+function emitSubagentRegistryPersisted(keys?: Array<string | undefined>): void {
+  if (!keys?.length) {
+    sessionChanges.emit({ all: true, scope: "subagent-runs" });
+  }
+  for (const sessionKey of new Set(keys)) {
+    if (sessionKey) {
+      sessionChanges.emit({ sessionKey });
+    }
+  }
   for (const listener of SUBAGENT_REGISTRY_PERSIST_LISTENERS) {
     try {
       listener();
@@ -246,7 +255,18 @@ function rememberSubagentRunsSnapshot<T extends SubagentRunReadRecord>(
 function rememberPersistedSubagentRunsSnapshot(
   runs: Map<string, SubagentRunRecord>,
   changedRunIds?: readonly string[],
-): void {
+): Array<string | undefined> | undefined {
+  const previous = persistedSubagentSessionListRunsReadCache.state.snapshot;
+  const keys =
+    previous &&
+    changedRunIds?.flatMap((runId) =>
+      [previous.get(runId), runs.get(runId)].flatMap((run) => [
+        run?.childSessionKey,
+        run?.requesterSessionKey,
+        run?.controllerSessionKey,
+        run?.swarmRequesterSessionKey,
+      ]),
+    );
   for (const cache of [
     persistedSubagentRunsReadCache,
     persistedSubagentSessionListRunsReadCache,
@@ -254,6 +274,7 @@ function rememberPersistedSubagentRunsSnapshot(
   ]) {
     rememberSubagentRunsSnapshot(cache, runs, changedRunIds);
   }
+  return keys;
 }
 
 /** Publishes registry rows already committed by a cross-owner shared-state transaction. */
@@ -262,10 +283,10 @@ export function publishSubagentRunsAfterAtomicStore(
   changedRunIds: readonly string[],
   deferredObserverEvents: Array<() => void>,
 ): void {
-  rememberPersistedSubagentRunsSnapshot(runs, changedRunIds);
+  const keys = rememberPersistedSubagentRunsSnapshot(runs, changedRunIds);
   const events = updateCommittedSwarmNotifications(runs, changedRunIds);
   deferredObserverEvents.push(() => {
-    emitSubagentRegistryPersisted();
+    emitSubagentRegistryPersisted(keys);
     events.forEach(emitSessionLifecycleEvent);
   });
 }
@@ -323,9 +344,9 @@ function persistSubagentRuns(
     }
   }
   // In-process readers must observe the authoritative memory snapshot before the wake.
-  rememberPersistedSubagentRunsSnapshot(runs, changedRunIds);
+  const keys = rememberPersistedSubagentRunsSnapshot(runs, changedRunIds);
   const events = committed ? updateCommittedSwarmNotifications(runs, changedRunIds) : [];
-  emitSubagentRegistryPersisted();
+  emitSubagentRegistryPersisted(keys);
   events.forEach(emitSessionLifecycleEvent);
 }
 
@@ -350,7 +371,7 @@ export function restoreSubagentRunsFromDisk(params: {
   mergeOnly?: boolean;
 }) {
   const restored = loadSubagentRegistryFromSqlite();
-  rememberPersistedSubagentRunsSnapshot(restored);
+  const keys = rememberPersistedSubagentRunsSnapshot(restored);
   let added = 0;
   for (const [runId, entry] of restored.entries()) {
     if (!runId || !entry) {
@@ -369,7 +390,7 @@ export function restoreSubagentRunsFromDisk(params: {
     subagentRuns.commitOwnership(entry);
     added += 1;
   }
-  emitSubagentRegistryPersisted();
+  emitSubagentRegistryPersisted(keys);
   return added;
 }
 
