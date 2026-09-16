@@ -22,7 +22,10 @@ import {
 } from "./session-canonical-key.js";
 import { listSessionMembershipKeysInDatabase } from "./session-sharing-store.js";
 
-export function openExistingSqliteWorkerBackend(
+// The worker loader requires this export name for existing-database admission.
+export { openSessionListSqliteWorkerBackend as openExistingSqliteWorkerBackend };
+
+function openSessionListSqliteWorkerBackend(
   input: { agentId: string; identity: string },
   context: { databasePath: string },
 ): SqliteWorkerBackend<SessionListWorkerOperations> {
