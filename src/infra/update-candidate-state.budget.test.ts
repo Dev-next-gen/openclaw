@@ -275,6 +275,15 @@ it.each(
   },
 );
 
+// Insert fixture code behind the real executable, preserving argv-based Windows
+// launch and the actual process/output/cleanup owners. Progress probes run unchanged.
+function useRehearsalWorkerFixture(runner: string): void {
+  const run = commands.runUtf8CommandWithTimeout;
+  vi.spyOn(commands, "runUtf8CommandWithTimeout").mockImplementation((argv, options) =>
+    run(argv.includes("--eval") ? argv : [process.execPath, runner, ...argv.slice(1)], options),
+  );
+}
+
 it.each(["stdout", "stderr"] as const)(
   "terminates a rehearsal worker exceeding its %s limit",
   async (stream) => {
@@ -283,20 +292,16 @@ it.each(["stdout", "stderr"] as const)(
     const runner = path.join(root, "overflow.mjs");
     await fs.writeFile(
       runner,
-      `#!/usr/bin/env node
+      `
     import fs from "node:fs";
-    import { spawnSync } from "node:child_process";
-    if (process.argv.includes("--eval")) {
-      process.exit(spawnSync(process.execPath, process.argv.slice(2), { stdio: "inherit" }).status ?? 1);
-    }
     for await (const chunk of process.stdin) {}
     process.on("SIGTERM", () => {});
     fs.writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
     process[${JSON.stringify(stream)}].write("x".repeat(2 * 1024 * 1024));
     setInterval(() => {}, 1000);
   `,
-      { mode: 0o755 },
     );
+    useRehearsalWorkerFixture(runner);
     const controller = new AbortController();
     let deadlineReached = false;
     const deadline = realSetTimeout(() => {
@@ -311,7 +316,6 @@ it.each(["stdout", "stderr"] as const)(
           candidateRoot: root,
           env: { TMPDIR: root },
           workerEnv: () => ({ ...process.env }),
-          nodeRunner: runner,
           signal: controller.signal,
         }),
       ).rejects.toThrow(/^Update state snapshot failed \(output-limit\):/);
@@ -338,12 +342,9 @@ it("refuses a grown WAL family at the post-inventory capacity gate", async () =>
   // Execute the real inventory child, then grow the synthetic WAL before the parent remeasures it.
   await fs.writeFile(
     runner,
-    `#!/usr/bin/env node
+    `
     import fs from "node:fs";
     import { spawnSync } from "node:child_process";
-    if (process.argv.includes("--eval")) {
-      process.exit(spawnSync(process.execPath, process.argv.slice(2), { stdio: "inherit" }).status ?? 1);
-    }
     let input = "";
     for await (const chunk of process.stdin) input += chunk;
     const request = JSON.parse(input);
@@ -356,8 +357,8 @@ it("refuses a grown WAL family at the post-inventory capacity gate", async () =>
     }
     process.stdout.write(child.stdout);
   `,
-    { mode: 0o755 },
   );
+  useRehearsalWorkerFixture(runner);
   try {
     db.exec(
       "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE payload(bytes BLOB);",
@@ -377,7 +378,6 @@ it("refuses a grown WAL family at the post-inventory capacity gate", async () =>
       candidateRoot: root,
       env: { TMPDIR: root },
       workerEnv: () => ({ ...process.env, OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }),
-      nodeRunner: runner,
       signal: controller.signal,
     });
     const outcome = operation.then(

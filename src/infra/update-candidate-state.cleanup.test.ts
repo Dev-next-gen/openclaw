@@ -480,6 +480,9 @@ setInterval(() => {}, 60_000);
 it.each(["cancel", "deadline", "disk-full", "cooperative-cancel"] as const)(
   "settles the actual rehearsal backup child before removing scratch on %s",
   async (failure) => {
+    // POSIX signal exit leaves extinction uncertain; Windows joins taskkill
+    // and reports forced cleanup, so cancellation can remove the owned scratch.
+    const retainsScratch = failure === "cooperative-cancel" && process.platform !== "win32";
     const stateDir = path.join(root, "backup-failure");
     const source = path.join(stateDir, "state", "openclaw.sqlite");
     await createDatabase(
@@ -543,11 +546,11 @@ it.each(["cancel", "deadline", "disk-full", "cooperative-cancel"] as const)(
       }
       const result = await outcome;
       expect(result).toMatchObject({ error: expect.any(Error) });
-      if (failure === "cooperative-cancel") {
+      if (retainsScratch) {
         expect(result).toMatchObject({ error: { cleanup: "uncertain" } });
       } else if ("error" in result) {
         expect(String(result.error)).toContain(
-          failure === "cancel"
+          failure === "cancel" || failure === "cooperative-cancel"
             ? "cancel rehearsal proof"
             : failure === "deadline"
               ? "made no progress"
@@ -555,7 +558,7 @@ it.each(["cancel", "deadline", "disk-full", "cooperative-cancel"] as const)(
         );
       }
       await waitForDead(child.pid, 5_000);
-      if (failure === "cooperative-cancel") {
+      if (retainsScratch) {
         expect((await fs.stat(scratch)).isDirectory()).toBe(true);
       } else {
         await expect(fs.stat(scratch)).rejects.toMatchObject({ code: "ENOENT" });
