@@ -528,7 +528,7 @@ function renderNativeModels(props: ModelSetupViewProps) {
       <div class="settings-section__header"><h2>${t("modelSetup.nativeModels.title")}</h2></div>
       <p class="muted">${t("modelSetup.nativeModels.body")}</p>
       ${props.nativeModelsStatus === "loading" ? html`<p role="status">${t("modelSetup.nativeModels.loading")}</p>` : nothing}
-      ${props.nativeModelsStatus === "ready" && models.length === 0 ? html`<p role="status">${t("modelSetup.nativeModels.empty")}</p>` : nothing}
+      ${props.nativeModelsStatus === "ready" && models.length === 0 && !props.nativeModelError ? html`<p role="status">${t("modelSetup.nativeModels.empty")}</p>` : nothing}
       ${renderModelPicker({
         label: t("modelSetup.nativeModels.choose"),
         value: props.nativeModel ?? "",

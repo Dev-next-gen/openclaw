@@ -149,6 +149,7 @@ describe("Model Setup native Use", () => {
       expect(page.querySelector('[data-native-model-setup] [role="alert"]')).not.toBeNull(),
     );
     expect(page.textContent).not.toContain("Checking installed agents");
+    expect(page.textContent).not.toContain("No models are available from installed agents.");
     agents.dispose();
   });
 });
