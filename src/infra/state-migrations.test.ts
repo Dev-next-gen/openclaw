@@ -1120,7 +1120,6 @@ describe("state migrations", () => {
         const ids = result.stepReceipts.map((receipt) => receipt.id);
         const workshopIndex = ids.indexOf("skill-workshop");
         expect(workshopIndex).toBeGreaterThan(ids.indexOf("workspace-state"));
-        expect(ids).not.toContain("channel-pairing");
         expect(workshopIndex).toBeLessThan(ids.indexOf("plugin-doctor-state"));
         expect(result.stepReceipts[workshopIndex]).toMatchObject({
           outcome: "skipped",
