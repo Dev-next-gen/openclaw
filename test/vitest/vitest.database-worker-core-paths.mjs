@@ -69,6 +69,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/subagents/completion/subagent-completion-admission.store.test.ts",
   "src/commands/doctor-maintenance.worker.test.ts",
   "src/flows/doctor-health.dangling-workshop-index.test.ts",
+  "src/flows/doctor-health.test.ts",
   "src/entry.memory-json.test.ts",
   "src/gateway/server-methods/memory-search.test.ts",
   "src/logging/diagnostic-session-context.test.ts",
