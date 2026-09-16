@@ -515,11 +515,12 @@ class CronPage extends OpenClawLightDomElement {
 
   private submitForm(options: { runNow?: boolean } = {}) {
     this.runCronAdminTask(async (cronState) => {
+      const editing = Boolean(cronState.cronEditingJob);
       const result = await addCronJob(cronState);
       if (!result.saved) {
         return;
       }
-      if (cronState.cronEditingJob) {
+      if (editing || cronState.cronEditingJob) {
         return;
       }
       if (options.runNow && result.jobId) {
