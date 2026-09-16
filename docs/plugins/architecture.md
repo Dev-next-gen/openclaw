@@ -228,6 +228,10 @@ lifetime. Agent and authentication facts belong to each task; plugin registratio
 and captured source remain with the shared inventory. Standalone hosts that supply
 their own environment retain an isolated catalog worker for that environment.
 
+Credential persistence publishes fresh shared-store ownership before credential
+discovery. Login and explicit auth refresh join the credential owner's publication
+instead of creating another catalog generation for the same change.
+
 Model-catalog workers keep their captured plugin files in a worker-owned directory.
 The parent removes any remaining captures after that worker exits,
 including cancellation and crashes. Files remain available while the worker is
