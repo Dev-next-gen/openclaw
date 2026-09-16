@@ -2,9 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AcpPermissionHandler } from "acpx/runtime";
 import { consumeAcpTurnStream } from "openclaw/plugin-sdk/acp-runtime";
 import {
-  buildCurrentInboundPrompt,
   clearActiveEmbeddedRun,
-  formatHarnessApprovalPresentation,
   resolveBootstrapContextForRun,
   resolveAgentHarnessBeforePromptBuildResult,
   setActiveEmbeddedRun,
@@ -175,10 +173,8 @@ export async function runAcpHarnessAttempt(params: {
         })
       : undefined;
     const built = await resolveAgentHarnessBeforePromptBuildResult({
-      prompt: buildCurrentInboundPrompt({
-        context: input.currentInboundContext,
-        prompt: input.prompt,
-      }),
+      prompt: input.prompt,
+      currentInboundContext: input.currentInboundContext,
       messages,
       developerInstructions: [
         ...(bootstrap?.contextFiles.map((file) => `${file.path}\n${file.content}`) ?? []),
@@ -208,10 +204,8 @@ export async function runAcpHarnessAttempt(params: {
         const approvalSignal = AbortSignal.any([signal, context.signal]);
         const detail = JSON.stringify(request.raw.toolCall);
         const requestResult = await input.hostCapabilities.requestApproval({
-          ...formatHarnessApprovalPresentation({
-            title: `${params.label} permission request`,
-            description: request.raw.toolCall.title ?? "Native tool action",
-          }),
+          title: `${params.label} permission request`,
+          description: request.raw.toolCall.title ?? "Native tool action",
           detail,
           signal: approvalSignal,
           severity: "warning",

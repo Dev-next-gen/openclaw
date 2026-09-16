@@ -228,7 +228,13 @@ it.each([undefined, "full"] as const)(
       });
       const { input } = await f.prepare("Use the selected runtime");
       input.permissionMode = permissionMode;
+      input.currentInboundContext = { text: "  channel context  ", promptJoiner: "\n" };
       const result = await harness.runAttempt(input);
+      expect(f.startTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining("Current turn:\nchannel context\nUse the selected runtime"),
+        }),
+      );
       expect(result).toMatchObject({
         terminal: { kind: "ok" },
         currentAttemptAssistant: { __openclaw: { runId: input.runId } },
@@ -310,7 +316,7 @@ it.each(["plain-model", "$runtime|openai|fixture-model(openai)", "vendor/nested/
 );
 
 it.each(["allow-once", "deny"] as const)(
-  "waits for final %s after approval acknowledgment and bounds presentation",
+  "waits for final %s after approval acknowledgment and delegates presentation",
   async (decision) => {
     await withFixture(async (f) => {
       const attempt = await f.prepare("Edit the document");
@@ -339,9 +345,9 @@ it.each(["allow-once", "deny"] as const)(
           expect.objectContaining({ approvalId: "approval" }),
         );
         const request = attempt.requestApproval.mock.calls[0]![0];
-        expect(request.title.length).toBeLessThanOrEqual(80);
-        expect(request.description.length).toBeLessThanOrEqual(512);
-        expect(request.title).not.toContain("\u001b");
+        expect(request.title).toBe("OpenCode permission request");
+        expect(request.description).toBe("\u001b[31mEdit\u001b[0m " + "long ".repeat(400));
+        expect(request.detail).toContain("toolCallId");
         answer.resolve({ decision, terminalReason: "user" });
         const result = await running;
         expect(action).toBe(decision === "allow-once" ? "allow_once" : "reject_once");

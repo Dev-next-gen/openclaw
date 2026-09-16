@@ -92,18 +92,18 @@ caller-owned `eventGate`. Close `eventGate.open` when the caller aborts to suppr
 Use `onBeforePrompt` to recheck current authority before submission and `onPromptStarted` to
 record that the admitted input reached the backend.
 
-Use `buildCurrentInboundPrompt` from `openclaw/plugin-sdk/agent-harness-runtime` to combine
-the current prompt with its inbound context and channel-provided joiner. Frame ordinary chat
+Pass optional `currentInboundContext` to `resolveAgentHarnessBeforePromptBuildResult` from
+`openclaw/plugin-sdk/agent-harness-runtime`. It combines the prompt with its inbound context
+and channel-provided joiner before prompt hooks run. Frame ordinary chat
 with prose section labels so a leading file path cannot become a native slash command. Keep
 one admitted user turn while assigning each provider attempt its own request and reply identity.
 
-Import `formatHarnessApprovalPresentation` from `openclaw/plugin-sdk/agent-harness-runtime` to
-prepare an approval title and description within the shared display bounds. A host
-`requestApproval` response acknowledges the request with an ID. Call `waitForApproval` with
+Host `requestApproval` normalizes the title and description within the shared display bounds
+and preserves full action evidence in `detail`. Its response acknowledges the request with
+an ID. Call `waitForApproval` with
 that ID to obtain the decision, then recheck the turn's signal and authority before allowing
 the native operation.
 
-Use the plugin approval timeout independently of the agent-run timeout. Keep title and
-description within the approval protocol's display limits. Pass full action evidence in
-`detail`; authenticated Control UI reviewers can inspect it, while channel messages retain
+Use the plugin approval timeout independently of the agent-run timeout. Authenticated
+Control UI reviewers can inspect `detail`, while channel messages retain
 the bounded description. Oversized detail is rejected by the existing request schema.

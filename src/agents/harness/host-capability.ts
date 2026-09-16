@@ -63,6 +63,7 @@ import {
   resolveAgentQuestionAnswerAuthority,
   withAgentQuestionAnswerAuthority,
 } from "./host-private-capabilities.js";
+import { formatHarnessApprovalPresentation } from "./native-hook-relay-approval-presentation.js";
 import { createSessionNodeAuthorities } from "./node-execution-authority.js";
 
 type AgentHarnessHostAttempt = Partial<EmbeddedRunAttemptParams> &
@@ -569,8 +570,7 @@ export function createAgentHarnessHostCapabilities(params: {
                   "plugin.approval.request",
                   { timeoutMs: request.transportTimeoutMs ?? request.timeoutMs },
                   {
-                    title: request.title,
-                    description: request.description,
+                    ...formatHarnessApprovalPresentation(request),
                     ...(request.detail !== undefined ? { detail: request.detail } : {}),
                     severity: request.severity,
                     toolName: request.toolName,

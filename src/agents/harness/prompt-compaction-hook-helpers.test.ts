@@ -14,6 +14,36 @@ afterEach(() => {
 
 describe("resolveAgentHarnessBeforePromptBuildResult", () => {
   it.each([false, true])(
+    "preserves inbound context through prompt hooks (hooks=%s)",
+    async (hooks) => {
+      const handler = vi.fn(async () => ({ prependContext: "before", appendContext: "after" }));
+      if (hooks) {
+        initializeGlobalHookRunner(
+          createMockPluginRegistry([{ hookName: "before_prompt_build", handler }]),
+        );
+      }
+      const result = await resolveAgentHarnessBeforePromptBuildResult({
+        prompt: "hello",
+        currentInboundContext: { text: "  channel context  ", promptJoiner: "\n" },
+        currentUserMessage: "hello",
+        developerInstructions: "base",
+        messages: [],
+        ctx: {},
+      });
+      const inputPrompt = "channel context\nhello";
+      expect(result.prompt).toBe(hooks ? "before\n\n" + inputPrompt + "\n\nafter" : inputPrompt);
+      const start = hooks ? "before\n\n".length : 0;
+      expect(result.promptInputRange).toEqual({ start, end: start + inputPrompt.length });
+      if (hooks) {
+        expect(handler).toHaveBeenCalledWith(
+          expect.objectContaining({ prompt: inputPrompt, currentUserMessage: "hello" }),
+          expect.anything(),
+        );
+      }
+    },
+  );
+
+  it.each([false, true])(
     "preserves the admitted request through projected prompts (authorized=%s)",
     async (authorized) => {
       const handler = vi.fn(async (_event: unknown) => undefined);
