@@ -757,11 +757,12 @@ describe("agent harness host capability", () => {
       });
       expect(payload).toHaveProperty("title", expect.stringMatching(/^Title long /));
       expect(payload).toHaveProperty("description", expect.stringMatching(/^Edit\nlong /));
-      expect(JSON.stringify(payload)).not.toContain("\\u202e");
+      expect(payload).toHaveProperty("description", expect.not.stringContaining("\u202e"));
       expect(payload).toMatchObject({
-        title: expect.stringMatching(/^[^\u001b]{1,80}$/),
+        title: expect.stringMatching(/^[\s\S]{1,80}$/),
         description: expect.stringMatching(/^[\s\S]{1,512}$/),
       });
+      expect(payload).not.toMatchObject({ title: expect.stringContaining("\u001b") });
       expect(callOptions).toEqual({
         expectFinal: false,
         requireAgentRuntimeIdentity: true,
