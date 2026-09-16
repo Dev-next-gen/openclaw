@@ -554,7 +554,10 @@ describe("CronService authenticated caller origin", () => {
 
       expect(
         await cron.add(
-          { ...declaration, payload: { ...declaration.payload, message: "changed report" } },
+          {
+            ...declaration,
+            payload: { kind: "agentTurn", message: "changed report", toolsAllow: ["message"] },
+          },
           { scheduledToolPolicy: requesterPolicy, toolsAllowProvenance: localProvenance },
         ),
       ).toMatchObject({ created: false, updated: true });
