@@ -72,7 +72,7 @@ describe("background work admission", () => {
       const nextTaskId = queueState.nextTaskId;
       const nextQueueSequence = queueState.nextQueueSequence;
       const ownGet = Object.getOwnPropertyDescriptor(lanes, "get");
-      const originalGet = lanes.get;
+      const originalGet = lanes.get.bind(lanes);
       let memberReads = 0;
       let snapshot: ReturnType<typeof getBackgroundWorkSnapshot>;
       // Count real native-map reads without retaining a million mock call records.
@@ -80,7 +80,7 @@ describe("background work admission", () => {
         configurable: true,
         value: (lane: string) => {
           memberReads += 1;
-          return originalGet.call(lanes, lane);
+          return originalGet(lane);
         },
       });
       try {
