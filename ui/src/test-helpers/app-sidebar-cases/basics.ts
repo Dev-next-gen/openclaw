@@ -308,7 +308,7 @@ describe("AppSidebar agent chip", () => {
     // createSessionState stamps ascending updatedAt, so the last key is newest.
     expect(setSessionKey).not.toHaveBeenCalled();
     expect(onNavigate).toHaveBeenCalledWith("chat", {
-      pathname: "/chat/main/00000002",
+      pathname: "/chat/main/00000002000040008000000000000000",
       search: `?${SESSION_NAVIGATION_KEY_PARAM}=${encodeURIComponent(taskKey)}`,
     });
   });

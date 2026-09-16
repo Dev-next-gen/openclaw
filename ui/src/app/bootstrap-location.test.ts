@@ -203,7 +203,7 @@ describe("resolveInitialApplicationLocation", () => {
         snapshot: { phase: "connected", client: {}, hello: null },
         subscribe: vi.fn(() => () => undefined),
       } as unknown as ApplicationContext<RouteId>["gateway"],
-      agentsList: () => ({ defaultId: "main", mainKey: "main", agents: [] }),
+      agentsList: () => ({ defaultId: "main", mainKey: "main", scope: "global", agents: [] }),
       signal: new AbortController().signal,
     });
     expect(resolved).toEqual({

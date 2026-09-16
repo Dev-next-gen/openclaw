@@ -38,14 +38,14 @@ export function controlUiSessionPath(
   basePath = "",
   namespace: "chat" | "dashboard" = "chat",
 ): string {
-  return (
-    buildControlUiSessionPath({
-      namespace,
-      sessionKey,
-      fallbackAgentId: sessionKey.split(":")[1] || "main",
-      basePath,
-    }) ?? `${basePath}/chat`
-  );
+  const pathname = buildControlUiSessionPath({
+    namespace,
+    sessionKey,
+    fallbackAgentId: sessionKey.split(":")[1] || "main",
+    basePath,
+    shortIdLength: 32,
+  });
+  return pathname ?? `${basePath}/chat`;
 }
 
 export function controlUiSessionUrl(
