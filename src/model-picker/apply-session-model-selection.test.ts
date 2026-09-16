@@ -453,8 +453,8 @@ describe("applySessionModelSelection", () => {
     {
       action: "automatic selection",
       runtime: { kind: "unchanged" } as const,
-      runtimeChange: { kind: "set", runtime: "openclaw" },
-      expectedRuntime: "openclaw",
+      runtimeChange: { kind: "clear" },
+      expectedRuntime: undefined,
     },
   ])(
     "selects a cross-provider default with $action and clears incompatible auth",
@@ -731,7 +731,7 @@ describe("applySessionModelSelection", () => {
       initial: "openclaw",
       runtime: { kind: "unchanged" } as const,
       expected: "openclaw",
-      runtimeChange: { kind: "set", runtime: "openclaw" },
+      runtimeChange: undefined,
       agentRuntime: "openclaw",
     },
   ])(

@@ -1,6 +1,8 @@
 /** Prepared plugin metadata handoff for runtime model normalization. */
 import { normalizeOptionalAgentRuntimeId } from "../../agents/agent-runtime-id.js";
+import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.js";
+import { resolveCliRuntimeExecutionProvider } from "../../agents/model-runtime-aliases.js";
 import {
   findNormalizedProviderKey,
   modelKey,
@@ -8,6 +10,7 @@ import {
   normalizeProviderId,
 } from "../../agents/model-selection.js";
 import { RUNTIME_MODEL_VISIBILITY_NORMALIZATION } from "../../agents/model-visibility-policy.js";
+import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getCurrentPluginMetadataSnapshot } from "../../plugins/current-plugin-metadata-snapshot.js";
@@ -126,7 +129,39 @@ export async function prepareModelSelectionRuntime(params: {
     };
   }
   let validateRuntimeSelection: (() => string | undefined) | undefined;
-  if (runtime.kind === "set" || !params.rawRuntime) {
+  let inheritedCliRuntime: string | undefined;
+  let needsRuntimeChoice = runtime.kind === "set";
+  if (!params.rawRuntime) {
+    const runtimeFacts = {
+      agentId: params.agentId,
+      provider: params.provider,
+      modelId: params.model,
+      modelApi: selected?.api,
+      modelBaseUrl: selected?.baseUrl,
+    };
+    const policy = resolveAgentHarnessPolicy({ ...runtimeFacts, config: params.cfg });
+    const effectiveRuntime = resolveEffectiveAgentRuntime({
+      ...runtimeFacts,
+      cfg: params.cfg,
+      sessionEntry,
+    });
+    if (runtime.kind === "clear" || !sessionEntry?.agentRuntimeOverride) {
+      inheritedCliRuntime = resolveCliRuntimeExecutionProvider({
+        cfg: params.cfg,
+        agentId: params.agentId,
+        provider: params.provider,
+        modelId: params.model,
+        authProfileId: sessionEntry?.authProfileOverride,
+      });
+    }
+    needsRuntimeChoice = Boolean(
+      selected?.nativeRuntime ||
+      effectiveRuntime !== "openclaw" ||
+      inheritedCliRuntime ||
+      (policy.forcedByEnvironment && policy.runtime !== "openclaw"),
+    );
+  }
+  if (needsRuntimeChoice) {
     const { preparePublishedModelRuntimeChoice } =
       await import("../../agents/model-runtime-choice.js");
     const choice = await preparePublishedModelRuntimeChoice({
@@ -134,9 +169,9 @@ export async function prepareModelSelectionRuntime(params: {
       sessionEntry,
       runtimeId: runtime.kind === "set" ? runtime.runtime : undefined,
       preferredRuntimeId:
-        runtime.kind === "unchanged"
+        (runtime.kind === "unchanged"
           ? normalizeOptionalAgentRuntimeId(sessionEntry?.agentRuntimeOverride)
-          : undefined,
+          : undefined) ?? inheritedCliRuntime,
     });
     if (choice.kind === "unavailable") {
       return { status: "rejected", reason: "invalid-runtime", message: choice.message };

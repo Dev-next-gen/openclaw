@@ -39,9 +39,21 @@ export function registerModelOnlyRuntimeTests(harness: {
   describe("model-only session runtime selection", () => {
     it("leaves no new session when its model-only runtime owner expires before commit", async () => {
       const sessionKey = "agent:main:model-only-runtime-stale";
+      const requestContext = harness.context();
+      requestContext.loadGatewayModelCatalogSnapshot.mockResolvedValue(
+        harness.catalogSnapshot([
+          {
+            provider: "anthropic",
+            id: "claude-sonnet-4-6",
+            name: "Native model",
+            reasoning: false,
+            nativeRuntime: "claude-cli",
+          },
+        ]),
+      );
       harness.prepare.mockResolvedValue({
         kind: "ready",
-        runtimeId: "openclaw",
+        runtimeId: "claude-cli",
         validate: vi
           .fn<() => string | undefined>()
           .mockReturnValueOnce(undefined)
@@ -54,7 +66,7 @@ export function registerModelOnlyRuntimeTests(harness: {
           model: "anthropic/claude-sonnet-4-6",
           commandSource: "test",
           operatorRoleActor: { kind: "system" },
-          loadGatewayModelCatalogSnapshot: harness.context().loadGatewayModelCatalogSnapshot,
+          loadGatewayModelCatalogSnapshot: requestContext.loadGatewayModelCatalogSnapshot,
         }),
       ).rejects.toThrow("The selected runtime is no longer available.");
       expect(loadSessionEntry({ agentId: "main", sessionKey })).toBeUndefined();

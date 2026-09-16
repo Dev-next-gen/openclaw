@@ -62,8 +62,11 @@ function hasAllowedPluginForAuthTest(cfg: unknown, pluginId: string): boolean {
 
 // Runtime eligibility belongs to the published-owner tests; these cases exercise its consumers.
 vi.mock("../../agents/model-runtime-choice.js", () => ({
-  preparePublishedModelRuntimeChoice: vi.fn(async () => ({
+  preparePublishedModelRuntimeChoice: vi.fn<
+    typeof import("../../agents/model-runtime-choice.js").preparePublishedModelRuntimeChoice
+  >(async ({ runtimeId, preferredRuntimeId }) => ({
     kind: "ready",
+    runtimeId: runtimeId ?? preferredRuntimeId ?? "openclaw",
     validate: () => undefined,
   })),
 }));
@@ -358,6 +361,7 @@ import {
   clearRuntimeAuthProfileStoreSnapshots,
   replaceRuntimeAuthProfileStoreSnapshots,
 } from "../../agents/auth-profiles.js";
+import { preparePublishedModelRuntimeChoice } from "../../agents/model-runtime-choice.js";
 import type { ModelAliasIndex } from "../../agents/model-selection.js";
 import type { ModelDefinitionConfig, OpenClawConfig } from "../../config/config.js";
 import type { InternalSessionEntry, SessionEntry } from "../../config/sessions.js";
@@ -428,7 +432,7 @@ vi.mock("../../agents/prepared-model-catalog.js", async () => {
     { provider: "localai", id: "ultra-chat", name: "Ultra Chat" },
   ];
   const loadModelCatalog = vi.fn(async () => entries);
-  return {
+  const catalog = {
     readPreparedModelCatalog: loadModelCatalog,
     loadProviderScopedThinkingCatalog: loadModelCatalog,
     loadPreparedModelCatalogOwnerSnapshot: vi.fn(() => {
@@ -497,6 +501,12 @@ vi.mock("../../agents/prepared-model-catalog.js", async () => {
         isCurrent: () => true,
       });
     },
+  };
+  return {
+    ...catalog,
+    loadPublishedPreparedModelCatalogOwnerSnapshot: async (
+      params: Parameters<typeof catalog.getPublishedPreparedModelCatalogOwnerSnapshot>[0],
+    ) => catalog.getPublishedPreparedModelCatalogOwnerSnapshot(params),
   };
 });
 
@@ -2701,11 +2711,15 @@ describe("handleDirectiveOnly model persist behavior (fixes #1435)", () => {
     const directives = parseInlineSessionDirectives("/model openai/gpt-4o");
     const sessionEntry = createSessionEntry();
 
-    await handleDirectiveOnly(
-      createHandleParams({
-        directives,
-        sessionEntry,
-      }),
+    await vi.mocked(preparePublishedModelRuntimeChoice).withImplementation(
+      async () => ({ kind: "ready", runtimeId: "codex", validate: () => undefined }),
+      () =>
+        handleDirectiveOnly(
+          createHandleParams({
+            directives,
+            sessionEntry,
+          }),
+        ),
     );
 
     expect(queueMocks.refreshQueuedFollowupSession).toHaveBeenCalledWith({

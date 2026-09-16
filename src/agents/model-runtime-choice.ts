@@ -1,6 +1,8 @@
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { findModelInCatalog } from "./model-catalog-lookup.js";
 import { modelKey } from "./model-ref-shared.js";
+import { createModelCatalogIdentityKeyResolver } from "./openai-model-routes.js";
 import { resolveProviderModelMaterializationAuthMode } from "./provider-model-route-auth.js";
 
 /** Bind runtime selection and its commit check to the current published model owner. */
@@ -57,9 +59,11 @@ export async function preparePublishedModelRuntimeChoice(params: {
         : undefined,
     profileProvider: params.sessionEntry?.providerOverride ?? params.sessionEntry?.modelProvider,
   });
-  let entry = decisions.snapshot.entries.find(
-    (row) => modelKey(row.provider, row.id) === modelKey(params.provider, params.model),
-  );
+  let entry =
+    findModelInCatalog(decisions.snapshot.entries, params.provider, params.model) ??
+    decisions.snapshot.entries.find(
+      (row) => modelKey(row.provider, row.id) === modelKey(params.provider, params.model),
+    );
   if (!entry) {
     // Explicit selections may be outside finite browse inventory. The normal
     // resolver still owns the requested model's provider and physical route.
@@ -108,8 +112,10 @@ export async function preparePublishedModelRuntimeChoice(params: {
     }
     entry = modelCatalogRowToEntry(resolved.model);
   }
+  const identityKey = createModelCatalogIdentityKeyResolver();
+  const selectedIdentity = identityKey(entry);
   const variants = decisions.snapshot.routeVariants.filter(
-    (row) => modelKey(row.provider, row.id) === modelKey(entry.provider, entry.id),
+    (row) => identityKey(row) === selectedIdentity,
   );
   const choices = await decisions.runtimeChoices(entry, variants.length ? variants : [entry]);
   const runtimeId =
