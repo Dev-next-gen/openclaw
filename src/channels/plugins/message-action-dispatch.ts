@@ -9,7 +9,9 @@ import {
   prepareMessageActionWriteAuthority,
   withMessageActionWriteAuthority,
 } from "../../infra/outbound/message-action-write-authority.js";
+import { normalizeAccountId } from "../../routing/account-id.js";
 import { withChannelReadAuthority } from "../../shared/channel-read-authority.js";
+import { normalizeMessageChannel } from "../../utils/message-channel-normalize.js";
 import { normalizeConversationReadInvocationOrigin } from "./conversation-read-origin.js";
 import { resolveChannelDefaultAccountId } from "./helpers.js";
 import {
@@ -174,7 +176,7 @@ export function isScheduledMessageWriteAction(action: string): action is "channe
 }
 
 type ScheduledMessageActionAccess = {
-  kind: "trusted-operator";
+  kind: "trusted-operator" | "account";
   assertCurrent: () => void;
 };
 
@@ -183,18 +185,33 @@ function resolveScheduledMessageActionAccess(params: {
   authorization?: MessageActionAuthorization;
   action: ChannelMessageActionName;
   channel: string;
+  accountId?: string | null;
 }): ScheduledMessageActionAccess | undefined {
   const authority = params.authorization?.scheduled;
   if (!authority) {
     return undefined;
   }
   authority.assertCurrent();
-  if (authority.policy.mode !== "trusted") {
+  const policy = authority.policy;
+  if (policy.mode === "trusted") {
+    return { kind: "trusted-operator", assertCurrent: authority.assertCurrent };
+  }
+  if (!params.accountId || normalizeAccountId(params.accountId) !== policy.ownerAccountId) {
     throw new Error(
-      `Scheduled ${params.channel}:${params.action} requires an operator-created job.`,
+      `Scheduled ${params.channel}:${params.action} cannot use another creator account.`,
     );
   }
-  return { kind: "trusted-operator", assertCurrent: authority.assertCurrent };
+  const origin = policy.ownerOrigin;
+  if (
+    !origin ||
+    origin.kind === "unknown" ||
+    (origin.kind === "external" && normalizeMessageChannel(params.channel) !== origin.channel)
+  ) {
+    throw new Error(
+      `Scheduled ${params.channel}:${params.action} requires matching recorded creator origin.`,
+    );
+  }
+  return { kind: "account", assertCurrent: authority.assertCurrent };
 }
 
 function resolveMessageActionReadEnforcement(params: {
@@ -322,11 +339,14 @@ function prepareMessageActionReadContext(
           authorization: ctx.messageActionAuthorization,
           action,
           channel: ctx.channel,
+          accountId: ctx.accountId,
         })
       : undefined;
   const origin = (
     scheduledAccess
-      ? "direct-operator"
+      ? scheduledAccess.kind === "trusted-operator"
+        ? "direct-operator"
+        : "delegated"
       : normalizeConversationReadInvocationOrigin(ctx.conversationReadOrigin)
   ) as ServerOwnedConversationReadOrigin;
   const { messageActionAuthorization: _authorization, ...pluginContext } = ctx;
@@ -482,6 +502,7 @@ function prepareScheduledMessageWriteContext(
     authorization: ctx.messageActionAuthorization,
     action: prepared.actionContext.action,
     channel: ctx.channel,
+    accountId,
   });
   if (access?.kind !== "trusted-operator") {
     throw new Error(

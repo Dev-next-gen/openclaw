@@ -41,6 +41,7 @@ import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../src/state/openclaw-state-db.js";
+import { createAccountOwnedScheduledJob } from "./helpers/cron/account-owned-scheduled-job.js";
 import { createDeferred, withTestTimeout } from "./helpers/promise.js";
 import { runQaGatewayFixture } from "./helpers/qa-gateway-cleanup.js";
 import { createScheduledMessageReadModel } from "./helpers/scheduled-message-read-model.js";
@@ -64,6 +65,7 @@ const modelToken = "synthetic-scheduled-model-token";
 type ScheduledMessageScenario = {
   title: string;
   runtime: "claude-cli" | "openclaw";
+  creator?: "trusted" | "account";
   action: "read" | "channel-info" | "channel-edit";
   disableBeforeResponse?: 200 | 429;
 };
@@ -89,6 +91,18 @@ const scenarios: ScheduledMessageScenario[] = [
     disableBeforeResponse: 200,
   },
   { title: "openclaw/channel-edit", runtime: "openclaw", action: "channel-edit" },
+  {
+    title: "account/claude-cli/channel-info",
+    runtime: "claude-cli",
+    creator: "account",
+    action: "channel-info",
+  },
+  {
+    title: "account/openclaw/read",
+    runtime: "openclaw",
+    creator: "account",
+    action: "read",
+  },
 ];
 
 // Uses the maintained control/JSONL child protocol from anthropic/cli-process.test.ts.
@@ -159,7 +173,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 
 type McpResponse = {
   result?: {
-    tools?: Array<{ name: string }>;
+    tools?: Array<{ name: string; inputSchema?: unknown }>;
     content?: Array<{ type: string; text?: string }>;
     isError?: boolean;
   };
@@ -184,15 +198,19 @@ async function closeServer(server: Server): Promise<void> {
   }
 }
 
-describe("operator-created scheduled message actions", () => {
+describe("scheduled message actions", () => {
   const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
   it.each(scenarios)("$title", { timeout: 60_000 }, async (scenario) => {
-    const { runtime, action, disableBeforeResponse } = scenario;
+    const { runtime, action, disableBeforeResponse, creator = "trusted" } = scenario;
+    // Local creator turns use the default account identity, independent of provider defaults.
+    const creatorAccountId = "default";
+    const expectedProviderToken =
+      creator === "account" ? "synthetic-creator-discord-token" : providerToken;
     const actionParams = {
       action,
       channel: "discord",
-      accountId: "default",
+      ...(creator === "trusted" ? { accountId: creatorAccountId } : {}),
       ...(action === "read"
         ? { target: `channel:${channelId}`, limit: 1 }
         : action === "channel-edit"
@@ -219,11 +237,22 @@ describe("operator-created scheduled message actions", () => {
     const assertToolResult = (text: string) => {
       expect(JSON.parse(text)).toMatchObject(expectedResult);
     };
+    const assertAccountToolSchema =
+      creator === "account"
+        ? (schema: unknown) => {
+            const properties = isRecord(schema) ? schema.properties : undefined;
+            const actionSchema = isRecord(properties) ? properties.action : undefined;
+            const advertisedActions = isRecord(actionSchema) ? actionSchema.enum : undefined;
+            expect(advertisedActions).toContain(action);
+            expect(advertisedActions).not.toContain(action === "read" ? "channel-info" : "read");
+          }
+        : undefined;
     const embeddedModel = createScheduledMessageReadModel({
       modelId: embeddedModelId,
       apiKey: modelToken,
       actionParams,
       assertToolResult,
+      assertToolSchema: assertAccountToolSchema,
     });
     const isolatedHome = expectDefined(process.env.OPENCLAW_TEST_HOME, "isolated test HOME");
     const root = tempDirs.make("scheduled-message-read-", isolatedHome);
@@ -327,7 +356,8 @@ describe("operator-created scheduled message actions", () => {
               await embeddedModel.respond(req, res);
               return;
             }
-            const authorizationMatches = req.headers.authorization === `Bot ${providerToken}`;
+            const authorizationMatches =
+              req.headers.authorization === `Bot ${expectedProviderToken}`;
             requests.push({ method: req.method ?? "", path: url.pathname, authorizationMatches });
             expect(authorizationMatches, "Discord fixture authorization matches").toBe(true);
             if (req.method === "PATCH" && url.pathname === `/api/v10/channels/${channelId}`) {
@@ -452,12 +482,32 @@ describe("operator-created scheduled message actions", () => {
               },
             },
           },
-          tools: { allow: ["message"] },
+          tools: { allow: creator === "account" ? ["message", "automations"] : ["message"] },
           plugins: { allow: ["anthropic", "discord"], slots: { memory: "none" } },
           channels: {
             discord: {
               enabled: true,
-              token: providerToken,
+              ...(creator === "account"
+                ? {
+                    defaultAccount: "other",
+                    accounts: {
+                      default: {
+                        token: expectedProviderToken,
+                        actions: {
+                          messages: action === "read",
+                          channelInfo: action === "channel-info",
+                        },
+                      },
+                      other: {
+                        token: "synthetic-other-discord-token",
+                        actions: {
+                          messages: action === "channel-info",
+                          channelInfo: action === "read",
+                        },
+                      },
+                    },
+                  }
+                : { token: providerToken }),
               groupPolicy: "allowlist",
               guilds: { [guildId]: { channels: { "*": { enabled: true } } } },
             },
@@ -556,7 +606,7 @@ describe("operator-created scheduled message actions", () => {
         const { fetchChannelInfoDiscord } = await import("../extensions/discord/runtime-api.js");
         const metadata = await fetchChannelInfoDiscord(channelId, {
           cfg: runtimeConfig,
-          accountId: "default",
+          accountId: creatorAccountId,
         }).catch((error: unknown) => {
           throw new Error(diagnostics({ metadataError: describeFixtureError(error) }));
         });
@@ -584,19 +634,61 @@ describe("operator-created scheduled message actions", () => {
           wakeMode: "next-heartbeat",
           payload: {
             kind: "agentTurn",
-            message: `Use message action ${action} for Discord channel ${channelId} with account default.`,
+            message: `Use message action ${action} for Discord channel ${channelId}${creator === "trusted" ? " with account default" : " without an accountId argument"}.`,
             toolsAllow: ["message"],
           },
-          delivery: { mode: "none" },
+          delivery:
+            creator === "account"
+              ? { mode: "none", channel: "discord", accountId: "other" }
+              : { mode: "none" },
         } satisfies CronJobCreate;
-        const created = await gateway.client.request<{ id: string }>("cron.add", params);
+        const creatorSessionKey = "agent:main:scheduled-account-creator";
+        const created =
+          creator === "trusted"
+            ? await gateway.client.request<{ id: string }>("cron.add", params)
+            : await createAccountOwnedScheduledJob({
+                cfg: runtimeConfig,
+                gatewayPort,
+                agentId: "main",
+                accountId: creatorAccountId,
+                sessionKey: creatorSessionKey,
+                model: {
+                  provider: runtime === "openclaw" ? embedded.providerId : "anthropic",
+                  model: runtime === "openclaw" ? embedded.modelId : modelId,
+                },
+                job: params,
+              });
         scheduledJob.id = created.id;
         const storePath = resolveCronJobsStorePathFromConfig(getRuntimeConfig());
         const job = expectDefined(
           (await loadCronStore(storePath)).jobs.find((entry) => entry.id === created.id),
           "persisted scheduled job",
         );
-        expect(job.scheduledToolPolicy).toEqual({ version: 1, mode: "trusted" });
+        if (creator === "trusted") {
+          expect(job.scheduledToolPolicy).toEqual({ version: 1, mode: "trusted" });
+        } else {
+          expect(job.owner).toEqual({
+            agentId: "main",
+            sessionKey: creatorSessionKey,
+            accountId: creatorAccountId,
+          });
+          expect(job.scheduledToolPolicy).toEqual({
+            version: 1,
+            mode: "account",
+            ownerSessionKey: creatorSessionKey,
+            ownerAccountId: creatorAccountId,
+          });
+          expect(job.toolsAllowProvenance).toEqual({
+            version: 1,
+            source: "final-executable-surface",
+            callerOrigin: { kind: "local" },
+          });
+          expect(job.delivery).toMatchObject({
+            mode: "none",
+            channel: "discord",
+            accountId: "other",
+          });
+        }
         expect(job).toMatchObject({ payload: { toolsAllow: ["message"] } });
         expect(
           await gateway.client.request("cron.run", { id: job.id, mode: "force" }),
@@ -674,9 +766,11 @@ describe("operator-created scheduled message actions", () => {
             expect(await waitForActiveCronTaskRuns(10_000)).toEqual({ drained: true, active: 0 });
             expect(getSuspensionVisibleCronTaskRunCount({ agentId: "main" })).toBe(0);
           }
-          expect(observation.listed.result?.tools).toContainEqual(
-            expect.objectContaining({ name: "message" }),
+          const messageTool = expectDefined(
+            observation.listed.result?.tools?.find((tool) => tool.name === "message"),
+            "scheduled CLI message tool",
           );
+          assertAccountToolSchema?.(messageTool.inputSchema);
           expect(observation.reply.error, diagnostics(observation.reply)).toBeUndefined();
           expect(observation.reply.result?.isError, diagnostics(observation.reply)).toBe(
             disableBeforeResponse === 429,

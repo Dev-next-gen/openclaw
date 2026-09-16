@@ -1,5 +1,9 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
+import {
+  ErrorCodes,
+  errorShape,
+  type MessageActionParams,
+} from "../../../packages/gateway-protocol/src/index.js";
 import {
   isFencedProviderReadAction,
   isScheduledMessageWriteAction,
@@ -26,20 +30,27 @@ export function createMessageActionRuntimeAuthority(
     Parameters<GatewayRequestHandlers["message.action"]>[0],
     "client" | "context" | "respond" | "sessionMutationCommitGuard"
   > & {
-    action: string;
+    request: Pick<MessageActionParams, "action" | "accountId" | "params">;
     authorization?: MessageActionAuthorization;
   },
 ) {
-  const assertScheduledReadCurrent = isFencedProviderReadAction(params.action)
+  const assertScheduledReadCurrent = isFencedProviderReadAction(params.request.action)
     ? params.authorization?.scheduled?.assertCurrent
     : undefined;
-  const assertScheduledWriteCurrent = isScheduledMessageWriteAction(params.action)
+  const assertScheduledWriteCurrent = isScheduledMessageWriteAction(params.request.action)
     ? params.authorization?.scheduled?.assertCurrent
     : undefined;
   const assertScheduledActionCurrent = assertScheduledReadCurrent ?? assertScheduledWriteCurrent;
+  const scheduledPolicy = assertScheduledReadCurrent
+    ? params.authorization?.scheduled?.policy
+    : undefined;
   return {
     assertScheduledReadCurrent,
     assertScheduledWriteCurrent,
+    routeAccountId:
+      normalizeOptionalString(params.request.accountId) ??
+      normalizeOptionalString(params.request.params.accountId) ??
+      (scheduledPolicy?.mode === "account" ? scheduledPolicy.ownerAccountId : undefined),
     agentRuntimeAuthority: createAgentRuntimeAuthorityGuard(
       params.client,
       params.context,

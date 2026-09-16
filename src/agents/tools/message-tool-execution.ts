@@ -248,6 +248,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
           currentThreadTs,
           currentMessageId: options.currentMessageId,
           currentAccountId: agentAccountId,
+          scheduledAccountScope: turnAuthority.scheduledAccountScope,
           sessionKey: options.agentSessionKey,
           sessionId: options.sessionId,
           agentId: resolvedAgentId,
@@ -340,6 +341,8 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
       const scheduledWrite = isScheduledMessageWriteAction(action)
         ? messageActionAuthorization.scheduled
         : undefined;
+      const scheduledReadAccountId =
+        scheduledRead?.policy.mode === "account" ? scheduledRead.policy.ownerAccountId : undefined;
       if (normalizeOptionalString(options?.messageActionTurnCapability) && !trustedTurnContext) {
         decisions.recordTurnCapabilityInactive();
         throw new Error("message action turn capability is no longer active");
@@ -431,7 +434,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
         targets: params.targets,
         fallbackChannel: effectiveCurrentChannel.currentChannelProvider,
         accountId: requestedAccountId,
-        fallbackAccountId: agentAccountId,
+        fallbackAccountId: scheduledReadAccountId ?? agentAccountId,
       });
       // Broadcast execution only narrows on an explicit non-all channel. Target
       // prefixes cannot authorize fewer providers than the runner will execute.
@@ -443,7 +446,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
         validateExplicitMessageAccountSelection({
           cfg: rawConfig,
           channel: unscopedExplicitBroadcast ? undefined : scope.channel,
-          accountId: requestedAccountId,
+          accountId: requestedAccountId ?? scheduledReadAccountId,
           checkResolvedAccount: false,
         }),
       );
@@ -489,7 +492,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
       ).resolvedConfig;
       assertActionCurrent();
 
-      const accountId = explicitAccountId ?? agentAccountId;
+      const accountId = explicitAccountId ?? scheduledReadAccountId ?? agentAccountId;
       const pollVoteEchoRoute = resolvePollVoteEchoRoute({
         action,
         args: params,

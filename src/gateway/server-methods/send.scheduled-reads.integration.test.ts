@@ -63,8 +63,20 @@ function discordMessages(content: string) {
   return [{ id: "100000000000000003", channel_id: channelId, content }];
 }
 
+function accountPolicy(
+  channel = "discord",
+): Extract<ScheduledToolPolicyContext, { mode: "account" }> {
+  return {
+    version: 1,
+    mode: "account",
+    ownerSessionKey: `agent:main:${channel}:channel:creator`,
+    ownerAccountId: "creator",
+    ownerOrigin: { kind: "external", channel },
+  };
+}
+
 async function createFixture(state: OpenClawTestState) {
-  const cfg: OpenClawConfig = {
+  let cfg: OpenClawConfig = {
     agents: { defaults: { workspace: state.workspaceDir } },
     channels: {
       discord: {
@@ -72,6 +84,7 @@ async function createFixture(state: OpenClawTestState) {
         defaultAccount: "creator",
         accounts: {
           creator: { token: "synthetic-creator-provider-fixture" },
+          other: { token: "synthetic-other-provider-fixture" },
         },
         groupPolicy: "allowlist",
         guilds: { [guildId]: { channels: { [channelId]: { enabled: true } } } },
@@ -96,14 +109,22 @@ async function createFixture(state: OpenClawTestState) {
   const providerRead = vi.fn<() => Promise<Response>>(async () =>
     Response.json(discordMessages(`fresh-${++sequence}`)),
   );
-  const httpRequests: Array<{ method: string; path: string }> = [];
+  const httpRequests: Array<{ method: string; path: string; creatorCredentials: boolean }> = [];
   const unexpectedRequests: string[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn<typeof fetch>(async (input, init) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       const method = init?.method ?? (input instanceof Request ? input.method : "GET");
-      httpRequests.push({ method, path: url.pathname });
+      const headers = new Headers(
+        init?.headers ?? (input instanceof Request ? input.headers : undefined),
+      );
+      httpRequests.push({
+        method,
+        path: url.pathname,
+        creatorCredentials:
+          headers.get("authorization") === "Bot synthetic-creator-provider-fixture",
+      });
       if (url.origin === "https://discord.com" && method === "GET") {
         if (url.pathname === `/api/v10/channels/${channelId}`) {
           return Response.json({ id: channelId, guild_id: guildId, type: 0, name: "fixture" });
@@ -159,7 +180,7 @@ async function createFixture(state: OpenClawTestState) {
       },
     };
   };
-  const client = createClient({ version: 1, mode: "trusted" });
+  const client = createClient(accountPolicy());
   const context = {
     getRuntimeConfig: () => cfg,
     dedupe: new Map(),
@@ -171,7 +192,20 @@ async function createFixture(state: OpenClawTestState) {
     unexpectedRequests,
     createClient,
     revoke: () => permission.abort(new Error("scheduled message permission revoked")),
-    read: async (requestClient = client): Promise<Parameters<RespondFn>> => {
+    setDefaultAccount: async (accountId: string) => {
+      cfg = {
+        ...cfg,
+        channels: {
+          ...cfg.channels,
+          discord: { ...cfg.channels?.discord, defaultAccount: accountId },
+        },
+      };
+      await state.writeConfig(cfg);
+      setRuntimeConfigSnapshot(cfg, cfg);
+    },
+    read: async (
+      options: { accountId?: string; client?: GatewayClient } = {},
+    ): Promise<Parameters<RespondFn>> => {
       const respond = vi.fn<RespondFn>();
       await messageActionHandler({
         req: { type: "req", id: "scheduled-read", method: "message.action" },
@@ -179,12 +213,13 @@ async function createFixture(state: OpenClawTestState) {
           channel: "discord",
           action: "read",
           params: { channelId, limit: 1 },
+          ...(options.accountId ? { accountId: options.accountId } : {}),
           sessionKey,
           sessionId,
           idempotencyKey: "same-scheduled-read",
         },
         context,
-        client: requestClient,
+        client: options.client ?? client,
         isWebchatConnect: () => false,
         respond,
       });
@@ -290,18 +325,39 @@ describe("Gateway scheduled reads through an installed Discord plugin", () => {
     });
   });
 
-  it("does not grant an account-owned scheduled capability operator read access", async () => {
+  it.each(["account", "provider", "unknown origin", "missing origin"] as const)(
+    "does not reuse a successful key with a mismatched creator %s",
+    async (mismatch) => {
+      await withFixture(async (fixture) => {
+        expectRead(await fixture.read(), "fresh-1");
+        const requestsBeforeMismatch = fixture.httpRequests.length;
+        const policy = accountPolicy(mismatch === "provider" ? "slack" : "discord");
+        if (mismatch === "unknown origin") {
+          policy.ownerOrigin = { kind: "unknown" };
+        } else if (mismatch === "missing origin") {
+          delete policy.ownerOrigin;
+        }
+        const response = await fixture.read(
+          mismatch === "account"
+            ? { accountId: "other" }
+            : { client: fixture.createClient(policy) },
+        );
+        expectDenied(
+          response,
+          mismatch === "account" ? "another creator account" : "matching recorded creator origin",
+        );
+        expect(fixture.httpRequests).toHaveLength(requestsBeforeMismatch);
+      });
+    },
+  );
+
+  it("keeps omitted-account reads on the creator when the provider default changes", async () => {
     await withFixture(async (fixture) => {
       expectRead(await fixture.read(), "fresh-1");
-      const requestsBeforeMismatch = fixture.httpRequests.length;
-      const accountClient = fixture.createClient({
-        version: 1,
-        mode: "account",
-        ownerSessionKey: sessionKey,
-        ownerAccountId: "creator",
-      });
-      expectDenied(await fixture.read(accountClient), "requires an operator-created job");
-      expect(fixture.httpRequests).toHaveLength(requestsBeforeMismatch);
+      await fixture.setDefaultAccount("other");
+      expectRead(await fixture.read(), "fresh-2");
+      expect(fixture.providerRead).toHaveBeenCalledTimes(2);
+      expect(fixture.httpRequests.every((request) => request.creatorCredentials)).toBe(true);
     });
   });
 });
