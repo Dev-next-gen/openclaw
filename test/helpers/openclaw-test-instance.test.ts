@@ -1686,7 +1686,7 @@ describe("openclaw test instance", () => {
     const processState = createGatewayProcessState({ exitCode: exitedLeader ? 7 : null });
     // SAFETY: The stub supplies every process and pipe member consumed by the stopper.
     const child = Object.assign(processState, {
-      pid: 12345,
+      pid: process.pid,
       kill: vi.fn(() => true),
       stdout,
       stderr,
@@ -1728,14 +1728,20 @@ describe("openclaw test instance", () => {
       return { status: scenario.taskkillStatus, signal: null };
     });
     try {
-      const stopped = await testing.stopGatewayProcess(
+      const stop = testing.stopGatewayProcess(
         child,
         Date.now() + 500,
         250,
         { platform: "win32", runTaskkill },
         stopLog,
       );
-      expect(stopped).toBe(scenario.stopped);
+      let stopped = false;
+      if (scenario.label === "unverified tree" || scenario.label === "taskkill timeout") {
+        await expect(stop).rejects.toThrow("Windows taskkill failed:");
+      } else {
+        stopped = await stop;
+        expect(stopped).toBe(scenario.stopped);
+      }
       const threw = scenario.label === "taskkill exception";
       expect(runTaskkill).toHaveBeenCalledTimes(
         exitedLeader ? 0 : scenario.taskkillStatus === 0 || threw ? 1 : 2,
@@ -1771,7 +1777,7 @@ describe("openclaw test instance", () => {
         }
         expect(diagnostic).toEqual({
           reason: threw ? "exception" : heldPipe ? "close-incomplete" : "termination-indeterminate",
-          pid: 12345,
+          pid: process.pid,
           exitCode: exitedLeader ? 7 : null,
           signalCode: heldPipe ? "SIGTERM" : null,
           stdoutClosed: heldPipe,

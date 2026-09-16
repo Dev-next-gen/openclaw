@@ -496,7 +496,7 @@ setInterval(() => {}, 1_000);
       });
       expect(runTaskkill).toHaveBeenNthCalledWith(1, taskkillPath, ["/PID", "12345", "/T"], {
         killSignal: "SIGKILL",
-        stdio: "ignore",
+        stdio: ["ignore", "pipe", "pipe"],
         timeout: 10_000,
       });
 
@@ -506,7 +506,7 @@ setInterval(() => {}, 1_000);
       });
       expect(runTaskkill).toHaveBeenNthCalledWith(2, taskkillPath, ["/PID", "12345", "/T", "/F"], {
         killSignal: "SIGKILL",
-        stdio: "ignore",
+        stdio: ["ignore", "pipe", "pipe"],
         timeout: 10_000,
       });
       expect(child.kill).not.toHaveBeenCalled();
@@ -542,7 +542,7 @@ setInterval(() => {}, 1_000);
     withDefaultWindowsSystemRoot(() => {
       const child = {
         kill: vi.fn(),
-        pid: 12345,
+        pid: process.pid,
       };
       const runTaskkill = vi
         .fn()
@@ -554,23 +554,33 @@ setInterval(() => {}, 1_000);
         runTaskkill,
       });
 
-      expect(runTaskkill).toHaveBeenNthCalledWith(1, taskkillPath, ["/PID", "12345", "/T"], {
-        killSignal: "SIGKILL",
-        stdio: "ignore",
-        timeout: 10_000,
-      });
-      expect(runTaskkill).toHaveBeenNthCalledWith(2, taskkillPath, ["/PID", "12345", "/T", "/F"], {
-        killSignal: "SIGKILL",
-        stdio: "ignore",
-        timeout: 10_000,
-      });
+      expect(runTaskkill).toHaveBeenNthCalledWith(
+        1,
+        taskkillPath,
+        ["/PID", String(child.pid), "/T"],
+        {
+          killSignal: "SIGKILL",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: 10_000,
+        },
+      );
+      expect(runTaskkill).toHaveBeenNthCalledWith(
+        2,
+        taskkillPath,
+        ["/PID", String(child.pid), "/T", "/F"],
+        {
+          killSignal: "SIGKILL",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: 10_000,
+        },
+      );
       expect(child.kill).not.toHaveBeenCalled();
     });
   });
 
   it("preserves stdio-only taskkill and falls back after both trusted attempts fail", () => {
     withDefaultWindowsSystemRoot(() => {
-      const child = { kill: vi.fn(() => true), pid: 12345 };
+      const child = { kill: vi.fn(() => true), pid: process.pid };
       const runTaskkill = vi.fn(() => ({ error: undefined, status: 1 }));
 
       expect(
@@ -579,13 +589,23 @@ setInterval(() => {}, 1_000);
           runTaskkill,
           taskkillTimeoutMs: null,
         }),
-      ).toEqual({ processTreeState: "indeterminate" });
-      expect(runTaskkill).toHaveBeenNthCalledWith(1, taskkillPath, ["/PID", "12345", "/T"], {
-        stdio: "ignore",
-      });
-      expect(runTaskkill).toHaveBeenNthCalledWith(2, taskkillPath, ["/PID", "12345", "/T", "/F"], {
-        stdio: "ignore",
-      });
+      ).toEqual({ processTreeState: "indeterminate", error: expect.any(Error) });
+      expect(runTaskkill).toHaveBeenNthCalledWith(
+        1,
+        taskkillPath,
+        ["/PID", String(child.pid), "/T"],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      expect(runTaskkill).toHaveBeenNthCalledWith(
+        2,
+        taskkillPath,
+        ["/PID", String(child.pid), "/T", "/F"],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
       expect(child.kill).toHaveBeenCalledWith("SIGTERM");
     });
   });
@@ -1342,7 +1362,7 @@ setInterval(() => {}, 1_000);
         ["/PID", String(childPid), "/T", "/F"],
         {
           killSignal: "SIGKILL",
-          stdio: "ignore",
+          stdio: ["ignore", "pipe", "pipe"],
           timeout: 10_000,
         },
       );

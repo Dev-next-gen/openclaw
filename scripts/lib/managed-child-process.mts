@@ -13,7 +13,10 @@ const PROCESS_GROUP_DRAIN_TIMEOUT_MS = 5_000;
 const PROCESS_GROUP_POLL_MS = 25;
 const TASKKILL_TIMEOUT_MS = 10_000;
 type ProcessTreeState = "indeterminate" | "live" | "signaled" | "terminated";
-type ManagedChildTermination = { processTreeState: Exclude<ProcessTreeState, "live"> };
+type ManagedChildTermination = {
+  processTreeState: Exclude<ProcessTreeState, "live">;
+  error?: Error;
+};
 type ManagedProcessGroupErrorPolicy = "alive-on-eperm" | "indeterminate" | "verify-leader";
 type ManagedProcessGroupChild = {
   exitCode?: number | null;
@@ -31,7 +34,15 @@ type TaskkillRunner = (
   command: string,
   args: string[],
   options: { killSignal?: NodeJS.Signals; stdio?: StdioOptions; timeout?: number },
-) => { error?: Error; status: number | null } | undefined;
+) =>
+  | {
+      error?: Error;
+      status: number | null;
+      signal?: NodeJS.Signals | null;
+      stdout?: Buffer | string | null;
+      stderr?: Buffer | string | null;
+    }
+  | undefined;
 type ManagedChildTerminationOptions = {
   onChildSignalError?: (error: unknown) => void;
   onProcessGroupSignalError?: (error: unknown) => void;
@@ -181,17 +192,19 @@ export function terminateManagedChild(
   }
   const taskkillOptions: Parameters<TaskkillRunner>[2] =
     taskkillTimeoutMs === null
-      ? { stdio: "ignore" }
-      : { killSignal: "SIGKILL", stdio: "ignore", timeout: taskkillTimeoutMs };
+      ? { stdio: ["ignore", "pipe", "pipe"] }
+      : { killSignal: "SIGKILL", stdio: ["ignore", "pipe", "pipe"], timeout: taskkillTimeoutMs };
   const result = runTaskkill(taskkillPath, args, taskkillOptions);
-  if (!result?.error && result?.status === 0) {
+  if ((!result?.error && result?.status === 0) || hasManagedChildExited(child)) {
     return { processTreeState: "terminated" };
   }
+  const attempts = [result];
   if (signal !== "SIGKILL") {
     const forceResult = runTaskkill(taskkillPath, [...args, "/F"], taskkillOptions);
-    if (!forceResult?.error && forceResult?.status === 0) {
+    if ((!forceResult?.error && forceResult?.status === 0) || hasManagedChildExited(child)) {
       return { processTreeState: "terminated" };
     }
+    attempts.push(forceResult);
   }
   try {
     child.kill(signal);
@@ -199,7 +212,40 @@ export function terminateManagedChild(
     onChildSignalError?.(error);
     // The leader may already be gone, but failed taskkill leaves descendants unverified.
   }
-  return { processTreeState: "indeterminate" };
+  const taskkill = attempts.map((attempt) => ({
+    status: attempt?.status ?? null,
+    signal: attempt?.signal ?? null,
+    stdout: attempt?.stdout?.toString() ?? "",
+    stderr: attempt?.stderr?.toString() ?? "",
+    error: attempt?.error?.message,
+  }));
+  return {
+    processTreeState: "indeterminate",
+    error: Object.assign(
+      createManagedCommandCleanupError(
+        `Windows taskkill failed: ${JSON.stringify(taskkill)}`,
+        child,
+        platform,
+        "indeterminate",
+      ),
+      { taskkill },
+    ),
+  };
+}
+
+function hasManagedChildExited(child: ManagedProcessGroupChild): boolean {
+  if (child.exitCode != null || child.signalCode != null) {
+    return true;
+  }
+  if (child.pid) {
+    // spawnSync blocks exit-event delivery; query the kernel before the caller drains output.
+    try {
+      process.kill(child.pid, 0);
+    } catch (error) {
+      return isMissingProcessError(error);
+    }
+  }
+  return false;
 }
 
 export function inspectManagedProcessGroup(
@@ -541,7 +587,19 @@ async function finalizeManagedChild(
   // Normal exit has no grace period: surviving group members are a failure.
   const startedAt = Date.now();
   const forceDelay = signal ? forceKillDelayMs : 0;
-  const termination =
+  const signalErrors: unknown[] = [];
+  const recordSignalError = (error: unknown) => {
+    if (!isMissingProcessError(error)) {
+      signalErrors.push(error);
+    }
+  };
+  const terminationOptions = {
+    platform,
+    runTaskkill,
+    onChildSignalError: recordSignalError,
+    onProcessGroupSignalError: recordSignalError,
+  };
+  const termination: ManagedChildTermination | undefined =
     !signal &&
     inspectManagedProcessGroup(child, {
       deadlineAt: startedAt + forceDelay + drainTimeoutMs,
@@ -549,13 +607,14 @@ async function finalizeManagedChild(
       platform,
     }) === "dead"
       ? { processTreeState: "terminated" }
-      : terminateManagedChild(child, signal ?? "SIGKILL", { platform, runTaskkill });
+      : terminateManagedChild(child, signal ?? "SIGKILL", terminationOptions);
   if (platform === "win32" && termination?.processTreeState !== "terminated") {
     throw createManagedCommandCleanupError(
       "Windows taskkill could not verify managed process tree exit",
       child,
       platform,
       "indeterminate",
+      termination?.error,
     );
   }
   // POSIX probes share the original budget; Windows retains its existing
@@ -601,7 +660,7 @@ async function finalizeManagedChild(
     if (!forced && (now >= forceAt || (forceKillOnLeaderExit && exited))) {
       forced = true;
       if (groupState !== "dead") {
-        terminateManagedChild(child, "SIGKILL", { platform, runTaskkill });
+        terminateManagedChild(child, "SIGKILL", terminationOptions);
       }
     }
     if (now >= deadline) {
@@ -620,6 +679,9 @@ async function finalizeManagedChild(
     child,
     platform,
     groupState === "live" ? "live" : "indeterminate",
+    signalErrors.length
+      ? new AggregateError(signalErrors, "Managed process signaling failed")
+      : undefined,
   );
 }
 
@@ -633,9 +695,10 @@ function createManagedCommandSetupCleanupError(error: unknown, cleanupError: unk
 
 function createManagedCommandCleanupError(
   message: string,
-  child: ChildProcess,
+  child: ManagedProcessGroupChild,
   platform: NodeJS.Platform,
   processTreeState: ProcessTreeState,
+  cause?: unknown,
 ) {
   const processGroupId =
     platform !== "win32" &&
@@ -644,7 +707,7 @@ function createManagedCommandCleanupError(
     child.pid > 1
       ? child.pid
       : undefined;
-  return Object.assign(new Error(message), {
+  return Object.assign(new Error(message, { cause }), {
     code: "EPROCESSGROUP_CLEANUP_FAILED",
     ...(platform === "win32" ? { manualRecoveryRequired: true } : {}),
     ...(processGroupId === undefined ? {} : { processGroupId }),

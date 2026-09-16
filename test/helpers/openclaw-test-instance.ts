@@ -580,21 +580,25 @@ async function stopGatewayProcess(
     }
     // Taskkill owns its bounded synchronous TERM/force sequence. Node cannot observe
     // exit or pipe closure until it returns, so charge the existing close allowance afterward.
+    let termination: ReturnType<typeof terminateManagedChild>;
     try {
-      const termination = terminateManagedChild(
-        child,
-        options.forceWindowsTree ? "SIGKILL" : "SIGTERM",
-        { platform, runTaskkill },
-      );
-      if (termination?.processTreeState !== "terminated") {
-        return failed("termination-indeterminate");
-      }
-      return (
-        (await waitForGatewayClose(child, stopTimeoutMs, platform)) || failed("close-incomplete")
-      );
+      termination = terminateManagedChild(child, options.forceWindowsTree ? "SIGKILL" : "SIGTERM", {
+        platform,
+        runTaskkill,
+      });
     } catch (error) {
       return failed("exception", error);
     }
+    if (termination?.processTreeState !== "terminated") {
+      failed("termination-indeterminate");
+      if (termination?.error) {
+        throw termination.error;
+      }
+      return false;
+    }
+    return (
+      (await waitForGatewayClose(child, stopTimeoutMs, platform)) || failed("close-incomplete")
+    );
   }
   const signals = ["SIGTERM", "SIGKILL"] as const;
   // An exited leader can leave inherited stdio open in descendants. Let it
