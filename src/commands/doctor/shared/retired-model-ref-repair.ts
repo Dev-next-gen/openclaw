@@ -23,7 +23,11 @@ import {
   projectProviderModelRouteConfig,
 } from "../../../agents/provider-model-route.js";
 import { mergeAgentModelEntryForConfig } from "../../../config/model-input.js";
-import { resolveMergedModelProviderConfig } from "../../../config/model-provider-config.js";
+import {
+  findConfiguredProviderModel,
+  projectModelProviderConfig,
+  resolveMergedModelProviderConfig,
+} from "../../../config/model-provider-config.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import {
@@ -40,6 +44,8 @@ import { listMutableCodexRouteAgentEntries } from "./codex-route-agent-entries.j
 import { readModelConfigPrimaryRef } from "./codex-route-model-ref.js";
 import { rewriteModelReferenceSlot } from "./codex-route-model-slots.js";
 
+type ModelRetirementScope = "route" | "owner" | "provider";
+
 export type ModelRefRepair =
   | { kind: "unchanged" }
   | { kind: "replace"; modelRef: string; reason: "reference-preservation" }
@@ -47,9 +53,9 @@ export type ModelRefRepair =
       kind: "replace";
       modelRef: string;
       reason: "retirement";
-      retirementScope: "route" | "provider";
+      retirementScope: ModelRetirementScope;
     }
-  | { kind: "clear"; provider: string; modelRef: string; retirementScope: "route" | "provider" };
+  | { kind: "clear"; provider: string; modelRef: string; retirementScope: ModelRetirementScope };
 export type ModelRefRepairResolver = (params: {
   modelRef: string;
   agentId?: string;
@@ -231,26 +237,36 @@ export function createRetiredModelRefRepairResolver(params: {
       return validatePolicy(preserved);
     }
     let rule = owner.suppression()({ provider, id, unconditionalOnly: true });
-    const retirementScope = rule?.retirement ? "provider" : "route";
+    let retirementScope: ModelRetirementScope = rule?.retirement ? "provider" : "route";
     if (!rule?.retirement) {
       const pinnedProfileId =
         (input.authProfileSource === "user" || input.authProfileSource === "user-link"
           ? input.authProfileId
           : undefined) ?? parsed.profile;
       const preferredProfileId = pinnedProfileId ? undefined : input.authProfileId;
-      const auth = owner.auth(pinnedProfileId ?? preferredProfileId).evaluateModelAuth(provider, {
-        modelId: id,
-        pinnedProfileId,
-        preferredProfileId,
-      });
+      const auth = owner
+        .auth(pinnedProfileId ?? preferredProfileId)
+        .evaluateRuntimeModelAuth(provider, {
+          modelId: id,
+          pinnedProfileId,
+          preferredProfileId,
+        });
       // Missing catalog/auth evidence is not proof of retirement. In particular,
       // a native account owned by a runtime cannot be inferred from OAuth elsewhere.
       const configured =
         auth.routeResolution === null &&
+        !auth.availabilityAuthoritative &&
         (auth.selectedAuthMode !== undefined || auth.availability === true)
           ? resolveMergedModelProviderConfig(params.cfg, provider)
           : undefined;
-      const baseUrl = auth.selectedRoute?.baseUrl ?? configured?.baseUrl;
+      const configuredModel = findConfiguredProviderModel(configured, provider, id, (modelId) =>
+        canonicalizeProviderModelId(provider, modelId),
+      );
+      const configuredRoute = configured && {
+        api: configuredModel?.api ?? configured.api,
+        baseUrl: configuredModel?.baseUrl ?? configured.baseUrl,
+      };
+      const baseUrl = auth.selectedRoute?.baseUrl ?? configuredRoute?.baseUrl;
       if (!baseUrl) {
         warn(
           `Retained ${canonical} for agent "${agentId}": its exact authentication route is unavailable. Restore that provider account and rerun openclaw doctor --fix, or choose a current model explicitly.`,
@@ -264,8 +280,35 @@ export function createRetiredModelRefRepairResolver(params: {
             config: params.cfg,
             route: auth.selectedRoute,
           })
-        : params.cfg;
+        : projectModelProviderConfig(params.cfg, provider, {
+            api: configuredRoute?.api,
+            baseUrl,
+          });
       rule = owner.suppression(routeConfig)({ provider, id, baseUrl });
+      if (rule?.retirement) {
+        const routes =
+          auth.routeResolution?.kind === "routes"
+            ? auth.routeResolution.routes
+            : configuredRoute
+              ? [configuredRoute]
+              : [];
+        const successor = rule.retirement.replacedBy;
+        if (
+          routes.length > 0 &&
+          routes.every((route) => {
+            const retirement = owner.suppression(
+              projectModelProviderConfig(params.cfg, provider, route),
+            )({
+              provider,
+              id,
+              baseUrl: route.baseUrl,
+            })?.retirement;
+            return retirement !== undefined && retirement.replacedBy === successor;
+          })
+        ) {
+          retirementScope = "owner";
+        }
+      }
     }
     if (!rule?.retirement) {
       return validatePolicy(preserved);
@@ -312,19 +355,22 @@ export function createRetiredModelRefRepairResolver(params: {
         `Retained shared model reference "${input.modelRef}": agent authentication routes require different repairs. Choose a current model in each affected agent's model configuration.`,
       );
     }
-    if (!consistent) {
-      return authRepair;
-    }
-    if (first.kind === "unchanged") {
+    if (!consistent || first.kind === "unchanged") {
       return authRepair;
     }
     // Shared metadata remains valid if any owner still offers another auth route.
-    return "retirementScope" in first &&
-      decisions.some(
-        (decision) => "retirementScope" in decision && decision.retirementScope === "route",
-      )
-      ? { ...first, retirementScope: "route" }
-      : first;
+    if (!("retirementScope" in first)) {
+      return first;
+    }
+    const scopes = decisions.flatMap((decision) =>
+      "retirementScope" in decision ? [decision.retirementScope] : [],
+    );
+    const retirementScope = scopes.includes("route")
+      ? "route"
+      : scopes.includes("owner")
+        ? "owner"
+        : "provider";
+    return { ...first, retirementScope };
   };
 }
 
@@ -465,6 +511,11 @@ export function repairRetiredModelSlots(params: RetiredModelSlotRepair): void {
       continue;
     }
     const retain = "retirementScope" in decision && decision.retirementScope === "route";
+    if (retain && asOptionalRecord(models[modelRef])?.alias) {
+      params.warnings?.push(
+        `Retained ${params.path}.models.${modelRef} alias: applicable authentication routes do not share a verified successor. Choose its model target explicitly.`,
+      );
+    }
     const existing = models[replacement];
     const source = retain ? modelSettingsWithoutAlias(models[modelRef]) : models[modelRef];
     const settings =

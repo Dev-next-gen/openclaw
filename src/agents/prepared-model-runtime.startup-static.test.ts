@@ -231,7 +231,8 @@ vi.mock("./runtime-plugins.js", () => ({
   loadAgentRuntimePluginRegistryHandle: mocks.loadAgentRuntimePluginRegistryHandle,
 }));
 
-vi.mock("./embedded-agent-runner/model.static-catalog.js", () => ({
+vi.mock("./embedded-agent-runner/model.static-catalog.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./embedded-agent-runner/model.static-catalog.js")>()),
   loadBundledProviderStaticCatalogContextModels: mocks.loadStaticCatalog,
   createBundledStaticCatalogModelResolver: () => mocks.resolveStaticCatalogModel,
 }));

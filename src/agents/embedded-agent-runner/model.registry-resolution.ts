@@ -29,7 +29,6 @@ import {
   DEFAULT_PROVIDER_RUNTIME_HOOKS,
   normalizeResolvedModel,
   type ProviderRuntimeHooks,
-  resolveProviderTransport,
 } from "./model.provider-hooks.js";
 import {
   resolveBundledStaticCatalogModel,
@@ -62,9 +61,13 @@ export function resolveExplicitModelWithRegistry(params: {
   workspaceDir?: string;
   runtimeHooks?: ProviderRuntimeHooks;
   preparedInlineProviderModels?: readonly InlineModelEntry[];
+  preparedCatalogModel?: ProviderRuntimeModel;
   getStaticCatalogModel?: () => StaticCatalogFallbackModel | undefined;
 }): ExplicitModelResolution | undefined {
   const { provider, modelId, modelRegistry, cfg, agentDir, workspaceDir, runtimeHooks } = params;
+  if (shouldUnconditionallySuppress({ provider, id: modelId, config: cfg, workspaceDir })) {
+    return { kind: "suppressed" };
+  }
   const providerMetadataOwners = getRegistryProviderMetadataOwners(modelRegistry);
   const providerConfig = resolveConfiguredProviderConfig(cfg, provider);
   const inlineMatch = findInlineModelMatch({
@@ -73,130 +76,82 @@ export function resolveExplicitModelWithRegistry(params: {
     provider,
     modelId,
   });
-  if (inlineMatch?.api) {
-    const transport = resolveProviderTransport({
-      provider,
-      modelId,
-      api: inlineMatch.api,
-      baseUrl: inlineMatch.baseUrl ?? providerConfig?.baseUrl,
-      cfg,
-      workspaceDir,
-      runtimeHooks,
-    });
-    if (
-      shouldSuppressConfiguredModel({
-        provider,
-        modelId,
-        cfg,
-        workspaceDir,
-        baseUrl: transport.baseUrl,
-      })
-    ) {
-      return { kind: "suppressed" };
+  const inlineModel = inlineMatch?.api ? inlineMatch : undefined;
+  const registryModel = params.preparedCatalogModel ?? modelRegistry.find(provider, modelId);
+  const staticCatalogModel = inlineModel ? params.getStaticCatalogModel?.() : undefined;
+  // Inline config owns transport and sizing; the captured catalog owns its lower price schedule.
+  const discoveredModel = inlineModel
+    ? {
+        ...mergeStaticCatalogInlineModel(staticCatalogModel, inlineModel as Model),
+        cost: registryModel?.cost ?? staticCatalogModel?.cost ?? inlineModel.cost,
+      }
+    : registryModel;
+  if (!discoveredModel) {
+    // An authored row without transport cannot borrow provider fallback authority.
+    if (inlineMatch) {
+      return undefined;
     }
-    const staticCatalogModel = params.getStaticCatalogModel?.();
-    // Inline config owns transport and sizing; the current registry owns the lower price schedule.
-    const catalogCost =
-      modelRegistry.find(provider, modelId)?.cost ?? staticCatalogModel?.cost ?? inlineMatch.cost;
-    return {
-      kind: "resolved",
-      source: "configured",
-      model: normalizeResolvedModel({
-        provider,
-        cfg,
-        agentDir,
-        workspaceDir,
-        model: applyConfiguredProviderOverrides({
-          provider,
-          discoveredModel: {
-            ...mergeStaticCatalogInlineModel(staticCatalogModel, inlineMatch as Model),
-            cost: catalogCost,
-          },
-          providerConfig,
-          modelId,
-          cfg,
-          manifestAlias: params.manifestAlias,
-          providerMetadataOwners,
-          runtimeHooks,
-          workspaceDir,
-          preferDiscoveredTransport: true,
-          staticCatalogModel,
-        }),
-        runtimeHooks,
-      }),
-    };
-  }
-  if (
-    shouldUnconditionallySuppress({
-      provider,
-      id: modelId,
-      ...(cfg ? { config: cfg } : {}),
-      ...(workspaceDir ? { workspaceDir } : {}),
-    })
-  ) {
-    return { kind: "suppressed" };
-  }
-  const model = modelRegistry.find(provider, modelId) as Model | null;
-  if (model) {
-    const configuredBaseUrl =
-      typeof providerConfig?.baseUrl === "string" ? providerConfig.baseUrl : undefined;
-    const discoveredBaseUrl =
-      typeof (model as { baseUrl?: unknown }).baseUrl === "string"
-        ? (model as { baseUrl: string }).baseUrl
-        : undefined;
-    const effectiveBaseUrl = configuredBaseUrl ?? discoveredBaseUrl;
     const error = buildSuppressedBuiltInModelError({
       provider,
       id: modelId,
       config: cfg,
-      baseUrl: effectiveBaseUrl,
+      baseUrl: providerConfig?.baseUrl,
+      workspaceDir,
+    });
+    return error ? { kind: "suppressed", error } : undefined;
+  }
+  const overriddenModel = applyConfiguredProviderOverrides({
+    provider,
+    discoveredModel,
+    providerConfig,
+    modelId,
+    cfg,
+    manifestAlias: params.manifestAlias,
+    providerMetadataOwners,
+    runtimeHooks,
+    workspaceDir,
+    preferDiscoveredTransport: Boolean(inlineModel),
+    staticCatalogModel,
+    getStaticCatalogModel: params.getStaticCatalogModel,
+  });
+  if (!overriddenModel) {
+    return undefined;
+  }
+  const model = normalizeResolvedModel({
+    provider,
+    cfg,
+    agentDir,
+    workspaceDir,
+    model: overriddenModel,
+    runtimeHooks,
+  });
+  // Suppression follows the normalized model-level route, including custom endpoint overrides.
+  if (
+    !inlineModel ||
+    shouldSuppressConfiguredModel({ provider, modelId, cfg, workspaceDir, baseUrl: model.baseUrl })
+  ) {
+    const error = buildSuppressedBuiltInModelError({
+      provider,
+      id: modelId,
+      config: cfg,
+      baseUrl: model.baseUrl,
       workspaceDir,
     });
     if (error) {
       return { kind: "suppressed", error };
     }
-    return {
-      kind: "resolved",
-      source: "registry",
-      dropOnRuntimeMiss:
-        normalizeProviderId(provider) === "openai" &&
-        modelId.trim().toLowerCase() === "gpt-5.3-codex-spark" &&
-        !effectiveBaseUrl,
-      model: normalizeResolvedModel({
-        provider,
-        cfg,
-        agentDir,
-        workspaceDir,
-        model: applyConfiguredProviderOverrides({
-          provider,
-          discoveredModel: model,
-          providerConfig,
-          modelId,
-          cfg,
-          manifestAlias: params.manifestAlias,
-          providerMetadataOwners,
-          runtimeHooks,
-          getStaticCatalogModel: params.getStaticCatalogModel,
-          workspaceDir,
-        }),
-        runtimeHooks,
-      }),
-    };
   }
-
-  // An inline row without an API cannot resolve by itself. Keep it from falling
-  // through to a synthetic provider fallback that would invent transport authority.
-  if (inlineMatch) {
-    return undefined;
-  }
-  const error = buildSuppressedBuiltInModelError({
-    provider,
-    id: modelId,
-    config: cfg,
-    baseUrl: providerConfig?.baseUrl,
-    workspaceDir,
-  });
-  return error ? { kind: "suppressed", error } : undefined;
+  return inlineModel
+    ? { kind: "resolved", source: "configured", model }
+    : {
+        kind: "resolved",
+        source: "registry",
+        model,
+        dropOnRuntimeMiss:
+          normalizeProviderId(provider) === "openai" &&
+          modelId.trim().toLowerCase() === "gpt-5.3-codex-spark" &&
+          !(providerConfig?.baseUrl ?? discoveredModel.baseUrl),
+      };
 }
 
 export function resolveDynamicModelAuthProfile(params: {
@@ -319,6 +274,9 @@ function resolvePluginDynamicModelWithRegistry(
     }),
     getStaticCatalogModel: params.getStaticCatalogModel,
   });
+  if (!overriddenDynamicModel) {
+    return undefined;
+  }
   return normalizeResolvedModel({
     provider,
     cfg,

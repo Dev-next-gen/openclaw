@@ -1,6 +1,7 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { Model } from "../../llm/types.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
+import { providerOwnsDynamicModelPreparation } from "../../plugins/provider-runtime.js";
 import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
 import { resolveDefaultAgentDir } from "../agent-scope.js";
 import type { AuthProfileCredential } from "../auth-profiles/types.js";
@@ -64,6 +65,8 @@ type AsyncModelResolutionOptions = CommonModelResolutionOptions & {
   agentRuntimeId?: string;
   skipAgentDiscovery?: boolean;
   preparedModelRuntime?: PreparedModelRuntimeSnapshot;
+  /** Resolve local provider facts without starting asynchronous catalog discovery. */
+  deferProviderDynamicModelPreparation?: boolean;
 };
 
 /** Creates isolated model/auth stores for harnesses that own model discovery themselves. */
@@ -105,7 +108,12 @@ type ModelResolution = {
   modelRegistry: ModelRegistry;
 } & (
   | { model: Model; logicalRef: Readonly<ModelRef>; error?: undefined }
-  | { model?: undefined; error: string }
+  | {
+      model?: undefined;
+      error: string;
+      /** Local preparation exhausted its facts without invoking the provider's async model owner. */
+      deferred?: "provider-dynamic-model";
+    }
 );
 
 export async function resolveModelAsync(
@@ -295,12 +303,16 @@ export async function resolveModelAsync(
         modelId: normalizedRef.model,
         cfg,
         manifestAlias: normalizedRef.manifestAlias,
+        providerMetadataOwners: preparedMetadataSnapshot?.owners,
         runtimeHooks,
         workspaceDir,
         preferDiscoveredModelMetadata: true,
         preferDiscoveredTransport: options?.preferBundledStaticCatalogTransport,
         staticCatalogModel: catalogModel,
       });
+      if (!overriddenStaticCatalogModel) {
+        return undefined;
+      }
       return normalizeResolvedModel({
         provider: normalizedRef.provider,
         cfg,
@@ -320,22 +332,24 @@ export async function resolveModelAsync(
         authProfileMode: options?.authProfileMode,
         preferredProfile: options?.preferredProfile,
       });
-      const preparedDynamicModel = await runtimeHooks.prepareProviderDynamicModel({
-        provider: normalizedRef.provider,
-        config: cfg,
-        workspaceDir,
-        context: {
-          config: cfg,
-          agentDir: resolvedAgentDir,
-          ...(options?.agentRuntimeId ? { agentRuntimeId: options.agentRuntimeId } : {}),
-          workspaceDir,
-          provider: normalizedRef.provider,
-          modelId: normalizedRef.model,
-          modelRegistry,
-          providerConfig,
-          ...authProfile,
-        },
-      });
+      const preparedDynamicModel = options?.deferProviderDynamicModelPreparation
+        ? undefined
+        : await runtimeHooks.prepareProviderDynamicModel({
+            provider: normalizedRef.provider,
+            config: cfg,
+            workspaceDir,
+            context: {
+              config: cfg,
+              agentDir: resolvedAgentDir,
+              ...(options?.agentRuntimeId ? { agentRuntimeId: options.agentRuntimeId } : {}),
+              workspaceDir,
+              provider: normalizedRef.provider,
+              modelId: normalizedRef.model,
+              modelRegistry,
+              providerConfig,
+              ...authProfile,
+            },
+          });
       return resolveModelWithPreparedRegistry({
         provider: normalizedRef.provider,
         modelId: normalizedRef.model,
@@ -377,6 +391,7 @@ export async function resolveModelAsync(
         cfg,
         agentDir: resolvedAgentDir,
         manifestAlias: normalizedRef.manifestAlias,
+        providerMetadataOwners: preparedMetadataSnapshot?.owners,
         workspaceDir,
         runtimeHooks,
         getStaticCatalogModel: getManifestStaticCatalogModel,
@@ -402,6 +417,14 @@ export async function resolveModelAsync(
         workspaceDir,
         runtimeHooks,
       }),
+      ...(options?.deferProviderDynamicModelPreparation &&
+      providerOwnsDynamicModelPreparation({
+        provider: normalizedRef.provider,
+        config: cfg,
+        workspaceDir,
+      })
+        ? { deferred: "provider-dynamic-model" as const }
+        : {}),
       authStorage,
       modelRegistry,
     };

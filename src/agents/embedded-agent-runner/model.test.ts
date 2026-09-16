@@ -80,7 +80,8 @@ vi.mock("../../plugins/provider-runtime.js", () => ({
   shouldPreferProviderRuntimeResolvedModel: () => false,
 }));
 
-vi.mock("../model-suppression.js", () => {
+vi.mock("../model-suppression.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../model-suppression.js")>();
   // Mirrors the canonical manifest-driven suppression in
   // extensions/qwen/openclaw.plugin.json and src/plugins/manifest-model-suppression.ts.
   function isQwenCodingPlanBaseUrl(value: string | undefined): boolean {
@@ -123,6 +124,7 @@ vi.mock("../model-suppression.js", () => {
   }
 
   return {
+    ...actual,
     shouldSuppressBuiltInModelCore: ({
       provider,
       id,
@@ -1943,43 +1945,34 @@ describe("resolveModel", () => {
     expect(model).not.toHaveProperty("maxTokensSource");
   });
 
-  it("defaults baseUrl-only Google fallback models to native Gemini transport", async () => {
-    const cfg = makeProviderConfig("google", {
-      baseUrl: "https://generativelanguage.googleapis.com",
-    });
-
-    const result = await resolveModelForTest(
-      "google",
-      "gemini-2.5-flash-lite",
-      state.agentDir(),
-      cfg,
-    );
-    const model = expectResolvedModel(result);
-
-    expect(model.provider).toBe("google");
-    expect(model.id).toBe("gemini-2.5-flash-lite");
-    expect(model.api).toBe("google-generative-ai");
-    expect(model.baseUrl).toBe("https://generativelanguage.googleapis.com/v1beta");
-  });
-
-  it("defaults baseUrl-only Google Vertex fallback models to native Vertex transport", async () => {
-    const cfg = makeProviderConfig("google-vertex", {
+  it.each([
+    {
+      provider: "google",
+      id: "gemini-2.5-flash-lite",
+      api: "google-generative-ai",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+      configuredBaseUrl: "https://generativelanguage.googleapis.com",
+    },
+    {
+      provider: "google-vertex",
+      id: "gemini-2.5-flash",
+      api: "google-vertex",
       baseUrl: "https://aiplatform.googleapis.com",
-    });
-
-    const result = await resolveModelForTest(
-      "google-vertex",
-      "gemini-2.5-flash",
-      state.agentDir(),
-      cfg,
-    );
-    const model = expectResolvedModel(result);
-
-    expect(model.provider).toBe("google-vertex");
-    expect(model.id).toBe("gemini-2.5-flash");
-    expect(model.api).toBe("google-vertex");
-    expect(model.baseUrl).toBe("https://aiplatform.googleapis.com");
-  });
+      configuredBaseUrl: "https://aiplatform.googleapis.com",
+    },
+  ])(
+    "defaults supported $provider models to native transport",
+    async ({ configuredBaseUrl, ...row }) => {
+      resolveBundledStaticCatalogModelMock.mockReturnValue({ ...makeModel(row.id), ...row });
+      const cfg = makeProviderConfig(row.provider, { baseUrl: configuredBaseUrl });
+      const result = await resolveModelForTest(row.provider, row.id, state.agentDir(), cfg);
+      const model = expectResolvedModel(result);
+      expect(model.provider).toBe(row.provider);
+      expect(model.id).toBe(row.id);
+      expect(model.api).toBe(row.api);
+      expect(model.baseUrl).toBe(row.baseUrl);
+    },
+  );
 
   it("clamps per-model maxTokens to the per-model context window", async () => {
     resolveBundledStaticCatalogModelMock.mockReturnValueOnce({
@@ -2671,10 +2664,11 @@ describe("resolveModel", () => {
     });
   });
 
-  it("normalizes Google fallback baseUrls for custom providers", async () => {
+  it("normalizes Google baseUrls for explicitly configured custom provider models", async () => {
     const cfg = makeProviderConfig("google-paid", {
       baseUrl: "https://generativelanguage.googleapis.com",
       api: "google-generative-ai",
+      models: [{ id: "missing-model", name: "Configured model" }],
     });
 
     const result = await resolveModelForTest("google-paid", "missing-model", state.agentDir(), cfg);

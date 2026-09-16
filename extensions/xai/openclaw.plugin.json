@@ -114,7 +114,7 @@
         "model": "auto",
         "reason": "The OpenClaw xAI OAuth auto selector has retired; use a concrete model.",
         "retirement": { "replacedBy": "grok-4.6" },
-        "when": { "baseUrlHosts": ["cli-chat-proxy.grok.com"] }
+        "when": { "baseUrlHosts": ["cli-chat-proxy.grok.com", "api.x.ai"] }
       },
       {
         "provider": "xai",

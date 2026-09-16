@@ -19,6 +19,8 @@ export type PreparedConfiguredRuntimeModel = Readonly<{
   provider: string;
   modelId: string;
   model: ProviderRuntimeModel;
+  /** Alias authorized for explicit selection in this agent's configuration generation. */
+  selectionAlias?: string;
 }>;
 
 /**

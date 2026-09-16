@@ -1,16 +1,89 @@
 // System prompt config tests cover config-to-prompt parameter resolution through
 // the canonical agent prompt facade.
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import * as ttsSettings from "../tts/tts-settings.js";
+import * as preparedModelCatalog from "./prepared-model-catalog.js";
+import { completeConfiguredRuntimeModels } from "./prepared-model-runtime.configured-completion.js";
+import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.types.js";
+import { AuthStorage, ModelRegistry } from "./sessions/index.js";
 import { buildConfiguredAgentSystemPrompt } from "./system-prompt-config.js";
 import * as systemPrompt from "./system-prompt.js";
+import { makeProviderModelFixture } from "./test-helpers/provider-model-fixture.js";
 
 vi.mock("../tts/tts-settings.js", () => ({
   buildTtsSystemPromptHint: vi.fn(() => undefined),
   resolveModelOverridePolicy: vi.fn(),
   setTtsMachinePrefsPathResolver: vi.fn(),
 }));
+
+afterEach(() => vi.restoreAllMocks());
+
+function preparedOwner(config: OpenClawConfig, modelIds: string[], agentId = "main") {
+  const configuredRuntimeModels = modelIds.map((modelId) => ({
+    provider: "fixture",
+    modelId,
+    model: makeProviderModelFixture({
+      provider: "fixture",
+      id: modelId,
+      api: "openai-responses",
+      baseUrl: "https://models.example.test/v1",
+    }),
+  }));
+  const entries = configuredRuntimeModels.map(({ provider, modelId, model }) => ({
+    provider,
+    id: modelId,
+    name: model.name,
+  }));
+  const metadataSnapshot = createPluginMetadataSnapshotFixture();
+  const templateAuthStorage = AuthStorage.inMemory({});
+  const publishedModels = completeConfiguredRuntimeModels(
+    {
+      input: { config, agentId, agentDir: `/tmp/openclaw/${agentId}/agent` },
+      env: {},
+      authStore: { version: 1, profiles: {} },
+      templateAuthStorage,
+      credentials: {},
+      providerIds: ["fixture"],
+      configuredModelRefs: modelIds.map((modelId) => ({ provider: "fixture", modelId })),
+      configuredRuntimeModels,
+      runtimeCapabilityModels: [],
+      configuredGeneratedCatalogPluginIds: [],
+    },
+    {
+      pluginMetadataSnapshot: metadataSnapshot,
+      inlineProviderModels: [],
+      configuredCatalogEntries: entries,
+    },
+    ModelRegistry.inMemory(templateAuthStorage),
+  );
+  const owner = {
+    config,
+    observationConfig: config,
+    catalogOwner: { agentId, workspaceDir: "/tmp/openclaw" },
+    agentId,
+    agentDir: `/tmp/openclaw/${agentId}/agent`,
+    workspaceDir: "/tmp/openclaw",
+    activeProjectKeys: [],
+    authModes: {},
+    metadataSnapshot,
+    isCurrent: vi.fn(() => true),
+    allowGatewaySubagentBinding: false,
+    modelCatalog: { entries, routeVariants: entries },
+    configuredRuntimeModels: publishedModels,
+    inlineProviderModels: [],
+    createStores: vi.fn<PreparedModelRuntimeSnapshot["createStores"]>(() => {
+      throw new Error("Prompt rendering must not create runtime stores");
+    }),
+    loadFullModelCatalog: vi.fn<NonNullable<PreparedModelRuntimeSnapshot["loadFullModelCatalog"]>>(
+      () => {
+        throw new Error("Prompt rendering must not discover provider models");
+      },
+    ),
+  } satisfies PreparedModelRuntimeSnapshot;
+  return owner;
+}
 
 function buildPrompt(config: OpenClawConfig, agentId = "main", sessionKey?: string): string {
   return buildConfiguredAgentSystemPrompt({
@@ -30,8 +103,14 @@ describe("buildConfiguredAgentSystemPrompt", () => {
         .spyOn(ttsSettings, "buildTtsSystemPromptHint")
         .mockReturnValue("Fixture first voice guidance.");
       const models = { "fixture/model": { alias: "Before" } };
+      const config: OpenClawConfig = {
+        plugins: { enabled: false },
+        agents: { defaults: { models } },
+      };
+      const owner = preparedOwner(config, ["model"]);
       const params = {
-        config: { agents: { defaults: { models } } },
+        config,
+        preparedModelRuntime: owner,
         workspaceDir: "/tmp/openclaw",
         includeMemorySection: false,
       };
@@ -40,13 +119,21 @@ describe("buildConfiguredAgentSystemPrompt", () => {
         expect(full).toContain("- Before: fixture/model");
         expect(full).toContain("Fixture first voice guidance.");
         hint.mockClear();
+        owner.isCurrent.mockClear();
         const reduced = buildConfiguredAgentSystemPrompt({ ...params, promptMode });
         expect(hint).not.toHaveBeenCalled();
+        expect(owner.isCurrent).not.toHaveBeenCalled();
         expect(reduced).not.toContain("## Model Aliases");
         expect(reduced).not.toContain("## Voice (TTS)");
         expect(buildConfiguredAgentSystemPrompt(params)).toBe(full);
 
-        models["fixture/model"].alias = "After";
+        owner.isCurrent.mockReturnValue(false);
+        const nextConfig: OpenClawConfig = {
+          ...config,
+          agents: { defaults: { models: { "fixture/model": { alias: "After" } } } },
+        };
+        params.config = nextConfig;
+        params.preparedModelRuntime = preparedOwner(nextConfig, ["model"]);
         hint.mockReturnValue("Fixture current voice guidance.");
         hint.mockClear();
         expect(buildConfiguredAgentSystemPrompt({ ...params, promptMode })).toBe(reduced);
@@ -56,11 +143,136 @@ describe("buildConfiguredAgentSystemPrompt", () => {
         expect(refreshed).not.toContain("- Before: fixture/model");
         expect(refreshed).toContain("Fixture current voice guidance.");
         expect(refreshed).not.toContain("Fixture first voice guidance.");
+        expect(owner.createStores).not.toHaveBeenCalled();
+        expect(owner.loadFullModelCatalog).not.toHaveBeenCalled();
       } finally {
         hint.mockRestore();
       }
     },
   );
+
+  it("advertises supported aliases without discovering models during repeated renders", () => {
+    const config: OpenClawConfig = {
+      plugins: { enabled: false },
+      agents: {
+        defaults: {
+          model: "fixture/current",
+          models: {
+            "fixture/unsupported": { alias: "Unavailable" },
+            "fixture/current": { alias: "Current" },
+          },
+        },
+      },
+    };
+    const owner = preparedOwner(config, ["current"]);
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected network"));
+    for (let index = 0; index < 3; index++) {
+      const prompt = buildConfiguredAgentSystemPrompt({
+        config,
+        agentId: "main",
+        workspaceDir: "/tmp/openclaw",
+        preparedModelRuntime: owner,
+      });
+      expect(prompt).toContain("- Current: fixture/current");
+      expect(prompt).not.toContain("Unavailable");
+      expect(prompt).not.toContain("fixture/unsupported");
+    }
+    expect(owner.createStores).not.toHaveBeenCalled();
+    expect(owner.loadFullModelCatalog).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("applies per-agent alias overrides and manual model policy", () => {
+    const config: OpenClawConfig = {
+      plugins: { enabled: false },
+      agents: {
+        defaults: {
+          model: "fixture/current",
+          models: {
+            "fixture/current": { alias: "Shared" },
+            "fixture/other": { alias: "Other" },
+          },
+        },
+        entries: {
+          writer: {
+            models: { "fixture/current": { alias: "Writer" } },
+            modelPolicy: { allow: ["fixture/current"] },
+          },
+        },
+      },
+    };
+    const prompt = buildConfiguredAgentSystemPrompt({
+      config,
+      agentId: "writer",
+      workspaceDir: "/tmp/openclaw",
+      preparedModelRuntime: preparedOwner(config, ["current", "other"], "writer"),
+    });
+    expect(prompt).toContain("- Writer: fixture/current");
+    expect(prompt).not.toContain("- Shared:");
+    expect(prompt).not.toContain("- Other:");
+  });
+
+  it("stops advertising aliases after the prepared owner becomes stale", () => {
+    const config: OpenClawConfig = {
+      plugins: { enabled: false },
+      agents: { defaults: { models: { "fixture/current": { alias: "Current" } } } },
+    };
+    const owner = preparedOwner(config, ["current"]);
+    const params = {
+      config,
+      agentId: "main",
+      workspaceDir: "/tmp/openclaw",
+      preparedModelRuntime: owner,
+    };
+    expect(buildConfiguredAgentSystemPrompt(params)).toContain("- Current: fixture/current");
+    owner.isCurrent.mockReturnValue(false);
+    expect(buildConfiguredAgentSystemPrompt(params)).not.toContain("## Model Aliases");
+    expect(owner.loadFullModelCatalog).not.toHaveBeenCalled();
+  });
+
+  it("advertises only the selected target when configured models share a bare alias", () => {
+    const config: OpenClawConfig = {
+      plugins: { enabled: false },
+      agents: {
+        defaults: {
+          model: "fixture/current",
+          models: {
+            "fixture/current": { alias: "Shared" },
+            "fixture/other": { alias: "Shared" },
+          },
+        },
+      },
+    };
+    const prompt = buildConfiguredAgentSystemPrompt({
+      config,
+      agentId: "main",
+      workspaceDir: "/tmp/openclaw",
+      preparedModelRuntime: preparedOwner(config, ["current", "other"]),
+    });
+    expect(prompt).toContain("- Shared: fixture/other");
+    expect(prompt).not.toContain("- Shared: fixture/current");
+  });
+
+  it("uses the published owner scoped to the render's config, agent, and workspace", () => {
+    const config: OpenClawConfig = {
+      plugins: { enabled: false },
+      agents: { defaults: { models: { "fixture/current": { alias: "Current" } } } },
+    };
+    const lookup = vi
+      .spyOn(preparedModelCatalog, "getPreparedModelCatalogOwnerSnapshot")
+      .mockReturnValue(preparedOwner(config, ["current"], "writer"));
+    const prompt = buildConfiguredAgentSystemPrompt({
+      config,
+      agentId: "writer",
+      workspaceDir: "/tmp/openclaw",
+    });
+    expect(lookup).toHaveBeenCalledWith({
+      config,
+      agentId: "writer",
+      workspaceDir: "/tmp/openclaw",
+    });
+    expect(prompt).toContain("- Current: fixture/current");
+  });
 
   it.each([
     { name: "absent", config: undefined },

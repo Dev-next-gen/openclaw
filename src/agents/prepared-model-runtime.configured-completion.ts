@@ -2,6 +2,13 @@ import { buildModelCatalogMergeKey } from "@openclaw/model-catalog-core/model-ca
 import { findNormalizedProviderValue } from "@openclaw/model-catalog-core/provider-id";
 import { resolveLoadedProviderRuntimePlugin } from "../plugins/provider-hook-runtime.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
+import { buildConfiguredFallbackModel } from "./embedded-agent-runner/model.configured-fallback.js";
+import { resolveExplicitModelWithRegistry } from "./embedded-agent-runner/model.registry-resolution.js";
+import { resolveManifestModelCatalogProviderAliasMetadata } from "./embedded-agent-runner/model.static-catalog.js";
+import { modelCatalogRowToEntry } from "./model-catalog-entry.js";
+import { modelKey } from "./model-ref-shared.js";
+import { resolveDefaultModelForAgent } from "./model-selection-config.js";
+import { buildAllowedModelSet, buildModelAliasIndex } from "./model-selection-shared.js";
 import type { PreparedModelRuntimeAgentFacts } from "./prepared-model-runtime.catalog-contract.js";
 import type {
   PreparedConfiguredRuntimeModel,
@@ -14,9 +21,58 @@ export function completeConfiguredRuntimeModels(
   pluginGeneration: PreparedModelRuntimePluginGeneration,
   modelRegistry: ModelRegistry,
 ): readonly PreparedConfiguredRuntimeModel[] {
-  if (!pluginGeneration.pluginRegistry) {
-    return agentFacts.configuredRuntimeModels;
-  }
+  const prepareAliases = (models: readonly PreparedConfiguredRuntimeModel[]) => {
+    const { config, agentId } = agentFacts.input;
+    const defaults = resolveDefaultModelForAgent({ cfg: config, agentId });
+    const selection = {
+      cfg: config,
+      agentId,
+      defaultProvider: defaults.provider,
+      defaultModel: defaults.model,
+      manifestPlugins: pluginGeneration.pluginMetadataSnapshot.plugins,
+    };
+    const aliases = buildModelAliasIndex(selection);
+    const selectedAliases = new Map(
+      [...aliases.byAlias.values()].map(({ alias, ref }) => [
+        modelKey(ref.provider, ref.model),
+        alias,
+      ]),
+    );
+    const policy =
+      selectedAliases.size > 0
+        ? buildAllowedModelSet({
+            ...selection,
+            catalog: [
+              ...modelRegistry.getAll().map(modelCatalogRowToEntry),
+              ...models.map(({ model }) => modelCatalogRowToEntry(model)),
+            ],
+          })
+        : undefined;
+    return models.map((entry) => {
+      const alias = selectedAliases.get(modelKey(entry.provider, entry.modelId));
+      // Keep the catalog donor for later account materialization; only its admitted
+      // configured transport can advertise an alias in this generation.
+      const supported =
+        alias && policy?.allows({ provider: entry.provider, model: entry.modelId })
+          ? resolveExplicitModelWithRegistry({
+              provider: entry.provider,
+              modelId: entry.modelId,
+              preparedCatalogModel: entry.model,
+              modelRegistry,
+              cfg: config,
+              agentDir: agentFacts.input.agentDir,
+              workspaceDir: agentFacts.input.workspaceDir,
+              manifestAlias: resolveManifestModelCatalogProviderAliasMetadata({
+                provider: entry.provider,
+                modelId: entry.modelId,
+                cfg: config,
+                workspaceDir: agentFacts.input.workspaceDir,
+              }),
+            })
+          : undefined;
+      return { ...entry, selectionAlias: supported?.kind === "resolved" ? alias : undefined };
+    });
+  };
   const { input, configuredModelRefs, configuredRuntimeModels, env } = agentFacts;
   const { config, agentDir, workspaceDir } = input;
   // Both startup and full discovery complete static misses from their captured registry;
@@ -27,6 +83,9 @@ export function completeConfiguredRuntimeModels(
       pluginRegistry: pluginGeneration.pluginRegistry,
     },
     () => {
+      if (!pluginGeneration.pluginRegistry) {
+        return prepareAliases(configuredRuntimeModels);
+      }
       const existing = new Map(
         configuredRuntimeModels.map((configured) => [
           buildModelCatalogMergeKey(configured.provider, configured.modelId),
@@ -60,12 +119,26 @@ export function completeConfiguredRuntimeModels(
             providerConfig:
               config.models?.providers?.[provider] ??
               findNormalizedProviderValue(config.models?.providers, provider),
+          }) ??
+          buildConfiguredFallbackModel({
+            provider,
+            modelId,
+            cfg: config,
+            agentDir,
+            workspaceDir,
+            providerMetadataOwners: pluginGeneration.pluginMetadataSnapshot.owners,
+            manifestAlias: resolveManifestModelCatalogProviderAliasMetadata({
+              provider,
+              modelId,
+              cfg: config,
+              workspaceDir,
+            }),
           });
         if (model) {
           completed.push({ ...ref, model });
         }
       }
-      return completed;
+      return prepareAliases(completed);
     },
   );
 }
