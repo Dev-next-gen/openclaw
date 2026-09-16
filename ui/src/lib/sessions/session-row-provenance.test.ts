@@ -7,6 +7,62 @@ import {
 } from "./session-row-provenance.ts";
 
 describe("session row provenance", () => {
+  it("advances read freshness without replacing unchanged presentation rows", () => {
+    const provenance = createSessionRowProvenance();
+    const initial: GatewaySessionRow = {
+      key: "agent:main:unchanged",
+      sessionId: "unchanged",
+      kind: "direct",
+      label: "Current",
+      snapshotAt: 100,
+    };
+    const fresh = { ...initial, snapshotAt: 200 };
+    provenance.observeReadRow(initial, 1);
+    provenance.observeReadRow(fresh, 2);
+    const projected = provenance.mergeRow(initial, fresh);
+    expect(projected).toBe(initial);
+    expect(provenance.fieldObservation(projected, "label").source.snapshotAt).toBe(200);
+    const stale = { ...initial, label: "Stale", snapshotAt: 150 };
+    provenance.observeReadRow(stale, 3);
+    expect(provenance.mergeRow(projected, stale)).toBe(projected);
+    expect(projected.label).toBe("Current");
+  });
+
+  const orders = [
+    [0, 1, 2],
+    [0, 2, 1],
+    [1, 0, 2],
+    [1, 2, 0],
+    [2, 0, 1],
+    [2, 1, 0],
+  ] as const;
+  it.each(orders.flatMap((observed) => orders.map((merged) => ({ observed, merged }))))(
+    "orders sampled reads independently of completion and merge order ($observed / $merged)",
+    ({ observed, merged }) => {
+      const provenance = createSessionRowProvenance();
+      const base: GatewaySessionRow = {
+        key: "agent:main:mixed-reads",
+        sessionId: "mixed-reads",
+        kind: "direct",
+        updatedAt: 10,
+      };
+      const rows = [
+        { ...base, label: "fresh list", snapshotAt: 200 },
+        { ...base, label: "later descriptor", snapshotAt: 250 },
+        { ...base, label: "cached old list", snapshotAt: 100 },
+      ] as const;
+      for (const index of observed) {
+        provenance.observeReadRow(rows[index], index + 1, "main");
+      }
+      const result = merged.reduce<GatewaySessionRow>(
+        (current, index) => provenance.mergeRow(current, rows[index]),
+        rows[merged[0]],
+      );
+      expect(result.label).toBe("later descriptor");
+      expect(provenance.rowRevision(result)).toBe(3);
+    },
+  );
+
   it("retains fallback ownership when a self-projection materializes an unobserved row", () => {
     const provenance = createSessionRowProvenance();
     const row: GatewaySessionRow = { key: "global", sessionId: "session", kind: "global" };

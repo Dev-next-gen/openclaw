@@ -349,6 +349,8 @@ function shouldNeverBundleDeclarationDependency(id: string): boolean {
 
 function shouldAlwaysBundleDependency(id: string): boolean {
   return (
+    // Keep htmlparser2's decoder version intact instead of binding it to the root major.
+    id === "entities/decode" ||
     id === "openclaw/plugin-sdk/ssrf-runtime-internal" ||
     id === "@openclaw/normalization-core" ||
     id.startsWith("@openclaw/normalization-core/") ||
