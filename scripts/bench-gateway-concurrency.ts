@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 // Bench Gateway Concurrency script measures gateway probes during synthetic streaming turns.
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import {
   copyFileSync,
   cpSync,
@@ -1747,6 +1748,7 @@ async function runGatewaySample(options: {
           SUCCESS_MARKER: STREAM_SUCCESS_MARKER,
         },
       });
+      await once(mockProvider, "spawn");
       mockOutput = captureChildOutput(mockProvider);
       await waitForMockServer(mockPort, options.deadlineAt);
       mockCheckpoints.push(await readMockRequests(mockPort, options.deadlineAt));
@@ -1811,6 +1813,8 @@ async function runGatewaySample(options: {
           signal,
         };
       });
+      // A failed launch emits error instead of exit; reject into teardown before polling readiness.
+      await once(gateway, "spawn");
       gatewayOutput = captureChildOutput(gateway);
       const ready = await waitForInitialProbe({
         deadlineAt: options.deadlineAt,

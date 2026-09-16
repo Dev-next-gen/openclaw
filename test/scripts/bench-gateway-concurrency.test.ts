@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import type { Profiler } from "node:inspector";
 import { createServer as createRawServer, type Socket } from "node:net";
@@ -1567,6 +1567,101 @@ describe("gateway concurrency benchmark script", () => {
         server.close((error) => (error ? reject(error) : resolve()));
       });
     }
+  });
+
+  it.skipIf(process.platform !== "linux").each([
+    ["mock", "ENOENT"],
+    ["missing-taskset", "ENOENT"],
+    ["non-executable-taskset", "EACCES"],
+    ["gateway-exit", "gateway did not become ready"],
+  ])("cleans up the real sample after %s startup failure", async (fault, expectedError) => {
+    await withTempDir("gateway-startup-failure-", async (dir) => {
+      const runtime = `${dir}/runtime`;
+      const bin = `${dir}/bin`;
+      const entry = `${dir}/entry.mjs`;
+      const recordPath = `${dir}/mock.json`;
+      const preload = `${dir}/capture-spawn.mjs`;
+      await mkdir(`${dir}/gateway/protocol`, { recursive: true });
+      await mkdir(runtime);
+      await mkdir(bin);
+      await writeFile(`${dir}/gateway/protocol/index.js`, "exports.PROTOCOL_VERSION = 3;\n");
+      await writeFile(entry, "process.exit(23);\n");
+      if (fault === "non-executable-taskset") {
+        await writeFile(`${bin}/taskset`, "not executable\n", { mode: 0o600 });
+      }
+      // Keep real OS children and Node's error/exitCode ordering. Only the mock
+      // sibling failure substitutes a missing executable at the spawn boundary.
+      await writeFile(
+        preload,
+        `import childProcess from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const spawn = childProcess.spawn;
+childProcess.spawn = (command, args, options) => {
+  const mock = args[0] === "scripts/e2e/mock-openai-server.mjs";
+  const child = spawn(mock && ${JSON.stringify(fault === "mock")} ? ${JSON.stringify(`${bin}/missing-node`)} : command, args, options);
+  if (mock) writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ pid: child.pid ?? null }));
+  return child;
+};
+syncBuiltinESMExports();\n`,
+      );
+      let mockPid: number | null = null;
+      const mockAlive = () => {
+        if (mockPid === null) {
+          return false;
+        }
+        try {
+          process.kill(-mockPid, 0);
+          return true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+            return false;
+          }
+          throw error;
+        }
+      };
+      try {
+        const result = spawnSync(
+          testNodeExecPath,
+          [
+            "--import",
+            preload,
+            "scripts/bench-gateway-concurrency.ts",
+            "--entry",
+            entry,
+            "--concurrency",
+            "1",
+            "--runs",
+            "1",
+            "--warmup",
+            "0",
+            ...(fault.includes("taskset") ? ["--gateway-cpus", "0"] : []),
+          ],
+          {
+            cwd: process.cwd(),
+            env: { ...process.env, PATH: bin, TMPDIR: runtime, TMP: runtime, TEMP: runtime },
+            encoding: "utf8",
+            timeout: 10_000,
+          },
+        );
+        mockPid = (JSON.parse(await readFile(recordPath, "utf8")) as { pid: number | null }).pid;
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(expectedError);
+        expect(result.stderr).not.toContain("Unhandled 'error' event");
+        expect(result.stderr.trim().split("\n").at(-1)).toBe(
+          "[bench-gateway-concurrency] FAILED (exit 1)",
+        );
+        await vi.waitFor(() => expect(mockAlive()).toBe(false));
+        expect(await readdir(runtime)).toEqual([]);
+      } finally {
+        // The failing baseline may leave its own detached mock behind.
+        if (mockAlive()) {
+          process.kill(-mockPid!, "SIGKILL");
+          await vi.waitFor(() => expect(mockAlive()).toBe(false));
+        }
+      }
+    });
   });
 
   it("loads through native Node TypeScript stripping", () => {
