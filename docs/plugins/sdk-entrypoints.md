@@ -82,3 +82,28 @@ The returned client exposes three methods:
 - `stop()` closes admission, retires pending requests, and awaits startup settlement and owned-process cleanup. It rejects through `errors.unavailable` with `proxy cleanup could not be confirmed` if cleanup is uncertain. It never stops a separately started service reached through the proxy's socket.
 
 Malformed frames, incompatible initialization, write failures, and unexpected process exit also retire the whole connection. The first fatal error is retained. Create a new client to reconnect. Timeout classification follows the SDK error code, so a timeout-coded server error also retires the connection.
+
+## ACP harness turns
+
+Import `consumeAcpTurnStream` from `openclaw/plugin-sdk/acp-runtime` when adapting an ACP backend
+to a registered agent harness. It owns prompt readiness, event delivery failure, cancellation,
+stream closure, and terminal result settlement. Supply the runtime, admitted turn input, and a
+caller-owned `eventGate`. Close `eventGate.open` when the caller aborts to suppress later output.
+Use `onBeforePrompt` to recheck current authority before submission and `onPromptStarted` to
+record that the admitted input reached the backend.
+
+Use `buildCurrentInboundPrompt` from `openclaw/plugin-sdk/agent-harness-runtime` to combine
+the current prompt with its inbound context and channel-provided joiner. Frame ordinary chat
+with prose section labels so a leading file path cannot become a native slash command. Keep
+one admitted user turn while assigning each provider attempt its own request and reply identity.
+
+Import `formatHarnessApprovalPresentation` from `openclaw/plugin-sdk/agent-harness-runtime` to
+prepare an approval title and description within the shared display bounds. A host
+`requestApproval` response acknowledges the request with an ID. Call `waitForApproval` with
+that ID to obtain the decision, then recheck the turn's signal and authority before allowing
+the native operation.
+
+Use the plugin approval timeout independently of the agent-run timeout. Keep title and
+description within the approval protocol's display limits. Pass full action evidence in
+`detail`; authenticated Control UI reviewers can inspect it, while channel messages retain
+the bounded description. Oversized detail is rejected by the existing request schema.

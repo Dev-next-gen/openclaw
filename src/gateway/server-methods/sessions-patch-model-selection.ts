@@ -7,7 +7,6 @@ import {
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.js";
 import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
-import { preparePublishedModelRuntimeChoice } from "../../agents/model-runtime-choice.js";
 import {
   getModelRefStatus,
   resolveAllowedModelRef,
@@ -16,6 +15,8 @@ import {
 import { resolveSessionModelRef } from "../../agents/session-model-ref.js";
 import { persistStickyModelSelectionBestEffort } from "../../agents/sticky-model-selection.js";
 import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
+import { applyModelRuntimeDirective } from "../../auto-reply/reply/directive-handling.model-runtime.js";
+import { prepareModelSelectionRuntime } from "../../auto-reply/reply/model-runtime-normalization.js";
 import { refreshQueuedFollowupSession } from "../../auto-reply/reply/queue.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth-profile-override-provenance.js";
@@ -64,7 +65,7 @@ export function refreshSessionPatchQueuedSelection(params: {
   agentId: string;
   catalog?: ModelCatalogEntry[];
 }): void {
-  if (!("agentRuntime" in params.patch)) {
+  if (!("agentRuntime" in params.patch) && typeof params.patch.model !== "string") {
     return;
   }
   const { cfg, entry, sessionKey, agentId } = params;
@@ -152,6 +153,7 @@ export async function prepareSessionPatchRuntimeSelection(params: {
   patch: SessionsPatchParams;
   entry: SessionEntry;
   placement?: { context: SessionWorkerPlacementContext; sessionKey: string };
+  catalog?: readonly ModelCatalogEntry[];
 }): Promise<
   { ok: true; validate?: () => ErrorShape | undefined } | { ok: false; error: ErrorShape }
 > {
@@ -160,23 +162,26 @@ export async function prepareSessionPatchRuntimeSelection(params: {
     error: errorShape(ErrorCodes.INVALID_REQUEST, message),
   });
   let validateRuntime: (() => string | undefined) | undefined;
-  if (typeof params.patch.agentRuntime === "string") {
+  if (typeof params.patch.agentRuntime === "string" || typeof params.patch.model === "string") {
     const model = resolveSessionModelRef(params.cfg, params.entry, params.agentId);
-    const choice = await preparePublishedModelRuntimeChoice({
+    const choice = await prepareModelSelectionRuntime({
       cfg: params.cfg,
       agentId: params.agentId,
       workspaceDir: params.entry.spawnedWorkspaceDir,
       ...model,
-      runtimeId: params.patch.agentRuntime,
+      catalog: params.catalog ?? [],
+      rawRuntime:
+        typeof params.patch.agentRuntime === "string" ? params.patch.agentRuntime : undefined,
       sessionEntry: {
         ...params.entry,
         authProfileOverrideSource: resolveCollapsedSessionAuthPinSource(params.entry),
       },
     });
-    if (choice.kind === "unavailable") {
+    if (choice.status === "rejected") {
       return invalid(choice.message);
     }
-    validateRuntime = choice.validate;
+    applyModelRuntimeDirective(params.entry, choice.runtime);
+    validateRuntime = choice.validateRuntimeSelection;
   }
   const validate = () => {
     const message =
@@ -198,5 +203,10 @@ export async function prepareSessionPatchRuntimeSelection(params: {
   const error = validate();
   return error
     ? { ok: false, error }
-    : { ok: true, ...(params.patch.agentRuntime !== undefined ? { validate } : {}) };
+    : {
+        ok: true,
+        ...(params.patch.agentRuntime !== undefined || typeof params.patch.model === "string"
+          ? { validate }
+          : {}),
+      };
 }

@@ -37,6 +37,46 @@ describe("resolveResetPreservedSelection", () => {
     });
   });
 
+  it.each(["user", undefined] as const)(
+    "preserves the runtime with a user model selection (%s)",
+    (modelOverrideSource) => {
+      expect(
+        resolveResetPreservedSelection({
+          entry: {
+            sessionId: "native-choice",
+            updatedAt: 1,
+            providerOverride: "provider-a",
+            modelOverride: "opaque/model",
+            modelOverrideSource,
+            agentRuntimeOverride: "native-runtime",
+            agentHarnessId: "previous-runtime",
+            cliSessionIds: { "previous-runtime": "old-native-session" },
+          },
+        }),
+      ).toEqual({
+        providerOverride: "provider-a",
+        modelOverride: "opaque/model",
+        modelOverrideSource: "user",
+        agentRuntimeOverride: "native-runtime",
+      });
+    },
+  );
+
+  it("drops a runtime attached to an automatic fallback", () => {
+    expect(
+      resolveResetPreservedSelection({
+        entry: {
+          sessionId: "automatic-choice",
+          updatedAt: 1,
+          providerOverride: "provider-a",
+          modelOverride: "opaque/model",
+          modelOverrideSource: "auto",
+          agentRuntimeOverride: "native-runtime",
+        },
+      }),
+    ).toEqual({});
+  });
+
   it("preserves an explicit configured-default selection", () => {
     expect(
       resolveResetPreservedSelection({

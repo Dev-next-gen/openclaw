@@ -58,6 +58,9 @@ const { realRuntime, realServiceStartMock, realServiceStopMock, createRealServic
       createRealServiceMock: vi.fn((params: { backendLifecycle?: BackendLifecycle } = {}) => ({
         id: "real-acpx-runtime",
         start: (ctx: unknown) => start(ctx, params.backendLifecycle),
+        promote: async (_ctx: unknown, assertCurrent?: () => void) => {
+          assertCurrent?.();
+        },
         stop: (ctx: unknown) => stop(ctx, params.backendLifecycle),
       })),
     };
@@ -104,6 +107,69 @@ function createServiceContext() {
 }
 
 describe("acpx register runtime service", () => {
+  it("keeps Gateway recovery when catalog acquisition initializes a started service", async () => {
+    const ctx = createServiceContext();
+    const service = createAcpxRuntimeService();
+    await service.start(ctx);
+    const runtime = await service.getRuntime(ctx);
+    expect(runtime).toBe(realRuntime);
+    expect(createRealServiceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ startupPurpose: "gateway", probeAtStartup: false }),
+    );
+    expect(runtimeRegistry.get("acpx")?.runtime).toBe(realRuntime);
+    expect(realServiceStartMock).toHaveBeenCalledOnce();
+    await service.stop?.(ctx);
+  });
+
+  it("shares catalog acquisition with startup without probing another agent", async () => {
+    const ctx = createServiceContext();
+    const service = createAcpxRuntimeService();
+    const runtime = await service.getRuntime(ctx);
+    expect(runtime).toBe(realRuntime);
+    expect(createRealServiceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ probeAtStartup: false, startupPurpose: "inspection" }),
+    );
+    expect(runtimeRegistry.has("acpx")).toBe(false);
+    await service.start(ctx);
+    expect(runtimeRegistry.get("acpx")?.runtime).toBe(realRuntime);
+    expect(realServiceStartMock).toHaveBeenCalledOnce();
+    await service.stop?.(ctx);
+  });
+
+  it.each(["stop", "replacement"])("rejects inspection promotion after %s", async (change) => {
+    const ctx = createServiceContext();
+    const service = createAcpxRuntimeService();
+    await service.getRuntime(ctx);
+    const created = createRealServiceMock.mock.results.at(-1);
+    if (created?.type !== "return") {
+      throw new Error("Expected initialized inner service");
+    }
+    const inner = created.value;
+    const entered = createDeferred<void>();
+    const release = createDeferred<void>();
+    vi.spyOn(inner, "promote").mockImplementation((_ctx, assertCurrent) => {
+      entered.resolve();
+      return release.promise.then(() => assertCurrent?.());
+    });
+    const starting = service.start(ctx);
+    const rejected = expect(starting).rejects.toThrow("promotion ownership");
+    await entered.promise;
+    const replacement = { id: "replacement" };
+    const stopping = change === "stop" ? service.stop?.(ctx) : undefined;
+    if (change === "replacement") {
+      runtimeRegistry.set("acpx", { runtime: replacement });
+    }
+    release.resolve();
+    await rejected;
+    await stopping;
+    expect(runtimeRegistry.get("acpx")?.runtime).toBe(
+      change === "replacement" ? replacement : undefined,
+    );
+    if (change === "replacement") {
+      await service.stop?.(ctx);
+    }
+  });
+
   afterEach(() => {
     runtimeRegistry.clear();
     realServiceStartMock.mockClear();

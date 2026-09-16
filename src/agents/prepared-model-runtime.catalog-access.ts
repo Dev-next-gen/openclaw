@@ -494,7 +494,7 @@ export function createFullModelCatalogAccess(params: {
         const rawInventory = inventory?.catalog ?? { entries: [], routeVariants: [] };
         const sourceAuthority = (inventory?.catalog ?? params.catalogFacts.modelCatalog)
           .authoritative;
-        let nativeDiscoveryStarted = false;
+        let nativeDiscoveryCompleted = false;
         const startupProviders = new Set(params.agentFacts.providerIds.map(normalizeProvider));
         let discoveredProviders: string[] = [];
         const nativeFailures: Array<{ error: unknown; providers?: readonly string[] }> = [];
@@ -511,12 +511,12 @@ export function createFullModelCatalogAccess(params: {
             nativeFailures.push({ error, providers: failedProviderIds?.map(normalizeProvider) });
           },
           onDiscoveryStarted: (provider) => {
-            nativeDiscoveryStarted = true;
             nativeCatalogAcquired = false;
             current.authoritative = false;
             attempt.started([normalizeProvider(provider)], "native");
           },
           onDiscoveryCompleted: (rows) => {
+            nativeDiscoveryCompleted = true;
             discoveredProviders = [
               ...new Set(
                 rows
@@ -536,7 +536,7 @@ export function createFullModelCatalogAccess(params: {
         }
         const auth = getPreparedModelFullCatalogAuth(current) ?? currentAuth;
         const nativeAuth =
-          nativeDiscoveryStarted && discoveredProviders.length
+          nativeDiscoveryCompleted && discoveredProviders.length
             ? await worker.loadAuth({ providerIds: discoveredProviders })
             : undefined;
         assertCurrent();
@@ -562,8 +562,8 @@ export function createFullModelCatalogAccess(params: {
               }
             : {}),
         };
-        nativeCatalogAcquired ||= !options.providerIds || nativeDiscoveryStarted;
-        if (nativeDiscoveryStarted) {
+        nativeCatalogAcquired ||= !options.providerIds || nativeDiscoveryCompleted;
+        if (nativeDiscoveryCompleted) {
           setCatalogAuth(rawCatalog, catalogAuth);
           inventory = {
             catalog: mergePreparedNativeCatalog(rawCatalog, rawInventory),
@@ -578,13 +578,13 @@ export function createFullModelCatalogAccess(params: {
           setCatalogAuth(inventory.catalog, catalogAuth);
           params.inventoryOwner.catalogInventory = inventory;
         }
-        const catalog = nativeDiscoveryStarted ? project(rawCatalog) : current;
+        const catalog = nativeDiscoveryCompleted ? project(rawCatalog) : current;
         fullCatalog =
           nativeCatalogAcquired &&
           eligibleProviders.every((provider) => inventory?.providers.has(provider))
             ? markPreparedModelCatalogFull(attempt.withRefreshStatus(catalog))
             : attempt.withRefreshStatus(catalog);
-        if (nativeDiscoveryStarted) {
+        if (nativeDiscoveryCompleted) {
           attempt.published(options.providerIds ? requestedProviders : undefined, "native");
         }
         for (const { error, providers: failedProviderIds } of nativeFailures) {

@@ -12,6 +12,7 @@ import { prepareAgentRuntimeAuth } from "../runtime-plan/prepare-auth.js";
 import { registerAgentHarness } from "./registry.js";
 import { selectAgentHarness, selectAgentHarnessForPreparedModelProviders } from "./selection.js";
 import { projectPreparedModelProvider } from "./support.js";
+import type { AgentHarnessSupportContext } from "./types.js";
 
 let registrySnapshot: ReturnType<typeof captureActivePluginRegistrySnapshot>;
 
@@ -79,6 +80,62 @@ function authStore(subscription: boolean): AuthProfileStore {
 }
 
 describe("registered provider route selection", () => {
+  it.each(["observed", "provider", "model"] as const)(
+    "projects authored endpoint evidence through registered selection (%s)",
+    (source) => {
+      const received: AgentHarnessSupportContext[] = [];
+      registerAgentHarness({
+        id: "endpoint-fixture",
+        label: "Endpoint fixture",
+        supports(context) {
+          received.push(context);
+          return { supported: true };
+        },
+        async runAttempt() {
+          throw new Error("Selection must not run a prompt");
+        },
+      });
+      const model: ModelDefinitionConfig = {
+        id: "model",
+        name: "Model",
+        baseUrl: "https://model.example.invalid",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 64000,
+        maxTokens: 1024,
+      };
+      const endpointConfig: OpenClawConfig =
+        source === "observed"
+          ? {}
+          : {
+              models: {
+                providers: {
+                  fixture: {
+                    baseUrl: source === "provider" ? "https://provider.example.invalid" : "",
+                    models: source === "model" ? [model] : [],
+                  },
+                },
+              },
+            };
+      expect(
+        selectAgentHarness({
+          provider: "fixture",
+          modelId: "model",
+          config: endpointConfig,
+          agentHarnessRuntimeOverride: "endpoint-fixture",
+          modelProvider: {
+            api: "openai-responses",
+            baseUrl: "https://observed.example.invalid",
+            preparedAuth: { source: "harness" },
+          },
+        }).id,
+      ).toBe("endpoint-fixture");
+      expect(received.at(-1)?.modelProvider?.endpointOverrides).toBe(
+        source === "observed" ? "none" : "present",
+      );
+    },
+  );
   it.each([
     {
       label: "exact row after legacy",

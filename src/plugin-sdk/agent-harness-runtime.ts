@@ -526,6 +526,7 @@ export {
   type DeferredPluginToolApproval,
 } from "../agents/agent-tools.before-tool-call.js";
 export { isReplaySafeToolCall } from "../agents/tool-mutation.js";
+export { buildCurrentInboundPrompt } from "../agents/embedded-agent-runner/run/runtime-context-prompt.js";
 export {
   resolveAgentHarnessBeforePromptBuildResult,
   runAgentHarnessAfterCompactionHook,
@@ -671,3 +672,5 @@ function hasVisibleAssistantText(assistantTexts: readonly string[]): boolean {
 }
 
 export const toolPolicy = Object.freeze({ createToolPolicyMatcher, expandToolGroups });
+
+export { formatHarnessApprovalPresentation } from "../agents/harness/native-hook-relay-approval-presentation.js";

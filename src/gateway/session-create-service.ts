@@ -437,6 +437,7 @@ export async function createGatewaySession(params: {
     personalAccountDefaults ||
     params.activeParentFork ||
     params.preparedModelSelection ||
+    typeof params.model === "string" ||
     params.agentRuntime !== undefined
       ? () => {
           params.commitGuard?.();
@@ -1539,9 +1540,14 @@ export async function createGatewaySession(params: {
         const runtimeSelection = await prepareSessionPatchRuntimeSelection({
           cfg: params.cfg,
           agentId: target.agentId,
-          patch: { key: target.canonicalKey, agentRuntime: params.agentRuntime },
+          patch: {
+            key: target.canonicalKey,
+            agentRuntime: params.agentRuntime,
+            model: params.model,
+          },
           entry,
-          ...(params.agentRuntime !== undefined
+          catalog: preparedModelCatalog?.entries,
+          ...(params.agentRuntime !== undefined || params.model !== undefined
             ? {
                 placement: {
                   context: resolveSessionWorkerPlacementContext(),
@@ -1680,11 +1686,11 @@ export async function createGatewaySession(params: {
       isNew: createdNewEntry,
     };
     lifecyclePreparationCommitted = true;
-    if (!createdNewEntry && params.agentRuntime !== undefined) {
+    if (!createdNewEntry && (params.agentRuntime !== undefined || params.model !== undefined)) {
       refreshSessionPatchQueuedSelection({
         cfg: params.cfg,
         entry: created.entry,
-        patch: { key: target.canonicalKey, agentRuntime: params.agentRuntime },
+        patch: { key: target.canonicalKey, agentRuntime: params.agentRuntime, model: params.model },
         sessionKey: target.canonicalKey,
         agentId: target.agentId,
         catalog: preparedModelCatalog?.entries,

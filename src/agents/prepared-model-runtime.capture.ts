@@ -1,5 +1,6 @@
 import type { Model } from "../llm/types.js";
 import { copyPreparedModelRuntimeAuthBindings } from "./prepared-model-runtime-auth.js";
+import { mergePreparedNativeCatalog } from "./prepared-model-runtime.full-catalog.js";
 import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.types.js";
 import { AuthStorage } from "./sessions/auth-storage.js";
 
@@ -11,13 +12,28 @@ const catalogRouteMemos = new WeakMap<
   }
 >();
 
-/** Captures executable discovery for a new lease without changing any open lease. */
+/** Captures published executable and native model facts without changing any open lease. */
 export function capturePreparedModelRuntimeCatalog(
   snapshot: PreparedModelRuntimeSnapshot,
-  models: ReadonlyMap<string, readonly Model[]> | undefined,
+  source: PreparedModelRuntimeSnapshot | undefined,
 ): PreparedModelRuntimeSnapshot {
+  const models = source?.readPublishedModels?.();
+  const catalog = source?.readFullModelCatalog?.();
+  const nativeCatalog =
+    catalog &&
+    (catalog.entries.some((entry) => entry.nativeRuntime) ||
+      catalog.routeVariants.some((entry) => entry.nativeRuntime));
+  const capturedNative = nativeCatalog
+    ? Object.freeze({
+        ...snapshot,
+        modelCatalog: mergePreparedNativeCatalog(catalog, snapshot.modelCatalog),
+      })
+    : snapshot;
   if (!models?.size) {
-    return snapshot;
+    if (capturedNative !== snapshot) {
+      copyPreparedModelRuntimeAuthBindings(snapshot, capturedNative);
+    }
+    return capturedNative;
   }
   let cached = catalogRouteMemos.get(snapshot);
   if (!cached || cached.models !== models) {
@@ -28,7 +44,7 @@ export function capturePreparedModelRuntimeCatalog(
   const credentials = stores.authStorage.getAll();
   const registry = stores.modelRegistry.fork(stores.authStorage, models);
   const captured: PreparedModelRuntimeSnapshot = Object.freeze({
-    ...snapshot,
+    ...capturedNative,
     readPublishedModels: () => models,
     routeModelResolutionMemo: cached.memo,
     createStores: () => {

@@ -76,6 +76,7 @@ vi.mock("../../logging/subsystem.js", async () => {
 
 import { createGatewaySession } from "../session-create-service.js";
 import { sessionMutationHandlers } from "./sessions-mutations.js";
+import { registerModelOnlyRuntimeTests } from "./sessions-mutations.model-only-runtime.test-support.js";
 import { registerSessionRuntimeWindowTests } from "./sessions-mutations.runtime-windows.test-support.js";
 
 const defaultAgents: AgentConfig[] = [
@@ -235,7 +236,11 @@ afterEach(() => {
 
 beforeEach(() => {
   cfg = structuredClone(defaultConfig);
-  runtimeChoice.prepare.mockReset().mockResolvedValue({ kind: "ready", validate: () => undefined });
+  runtimeChoice.prepare.mockReset().mockImplementation(async (input) => ({
+    kind: "ready",
+    runtimeId: input.runtimeId ?? "openclaw",
+    validate: () => undefined,
+  }));
   persistedConfig = undefined;
   effects.info.mockReset();
   effects.warn.mockReset();
@@ -777,6 +782,7 @@ describe("explicit session model runtimes", () => {
     );
     runtimeChoice.prepare.mockResolvedValue({
       kind: "ready",
+      runtimeId: "codex",
       validate: vi
         .fn<() => string | undefined>()
         .mockReturnValueOnce(undefined)
@@ -806,7 +812,7 @@ describe("explicit session model runtimes", () => {
     runtimeChoice.prepare.mockImplementation(async () => {
       entered.resolve();
       await release.promise;
-      return { kind: "ready", validate: () => undefined };
+      return { kind: "ready", runtimeId: "codex", validate: () => undefined };
     });
     const pending = patchSession({
       key: sessionKey,
@@ -935,6 +941,17 @@ describe("explicit session model runtimes", () => {
 registerSessionRuntimeWindowTests({
   getConfig: () => cfg,
   getState: () => openClawTestState,
+  patchSession: (request, scopes, requestContext) =>
+    patchSession(request, scopes, { ...context(), ...requestContext }),
+});
+
+registerModelOnlyRuntimeTests({
+  getConfig: () => cfg,
+  context,
+  catalogSnapshot,
+  prepare: runtimeChoice.prepare,
+  pluginMetadata,
+  queueRuntimeSelection,
   patchSession: (request, scopes, requestContext) =>
     patchSession(request, scopes, { ...context(), ...requestContext }),
 });

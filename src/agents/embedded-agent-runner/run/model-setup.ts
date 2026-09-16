@@ -9,6 +9,7 @@ import { ensureSelectedAgentHarnessPlugin } from "../../harness/runtime-plugin.j
 import { selectAgentHarness } from "../../harness/selection.js";
 import { readSessionRuntimeOwnership } from "../../harness/session-runtime-ownership.js";
 import type { AgentHarness } from "../../harness/types.js";
+import type { ModelCatalogEntry } from "../../model-catalog.types.js";
 import type { ModelRef } from "../../model-selection.js";
 import { resolveSelectedOpenAIRuntimeProvider } from "../../openai-routing.js";
 import type { PreparedModelRuntimeSnapshot } from "../../prepared-model-runtime.js";
@@ -192,7 +193,14 @@ export async function resolveEmbeddedRunModelSetup(params: {
     );
   }
 
-  const nativeModelOwned = nativeSessionRuntime !== undefined;
+  const catalog = params.preparedModelRuntime?.modelCatalog;
+  const ownsSelectedNativeModel = (entry: ModelCatalogEntry) =>
+    entry.provider === provider && entry.id === modelId && entry.nativeRuntime === agentHarness.id;
+  const nativeModelOwned =
+    nativeSessionRuntime !== undefined ||
+    (pluginHarnessOwnsTransport &&
+      (catalog?.entries.some(ownsSelectedNativeModel) === true ||
+        catalog?.routeVariants.some(ownsSelectedNativeModel) === true));
   const modelConfigProvider = provider;
   let resolvedModelProvider = provider;
   let modelResolution;

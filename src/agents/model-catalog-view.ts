@@ -93,6 +93,13 @@ export function createModelCatalogView(params: {
   return {
     logicalEntries: dedupeByKey(params.catalog, keyOf),
     variantsOf,
+    implicitNativeRuntime(entry: Pick<ModelCatalogEntry, "provider" | "id">) {
+      const variants = variantsOf(entry);
+      const runtime = variants?.[0]?.nativeRuntime;
+      return runtime && variants?.every((variant) => variant.nativeRuntime === runtime)
+        ? runtime
+        : undefined;
+    },
     project(
       entry: ModelCatalogEntry,
       evaluation: ModelAuthAvailabilityEvaluation,
@@ -177,6 +184,11 @@ export function prepareModelCatalogView(params: ModelCatalogViewFacts) {
     }
   }
   const isCurrent = () => params.isCurrent?.() ?? params.observationConfig === undefined;
+  const routes = createModelCatalogView({
+    cfg: params.cfg,
+    catalog,
+    routeVariants: params.snapshot.routeVariants,
+  });
   const providerEndpoints = new Map<string, { endpoint?: string; api?: string }>();
   for (const [id, configured] of Object.entries(params.cfg.models?.providers ?? {})) {
     const provider = normalizeProviderId(id);
@@ -199,17 +211,20 @@ export function prepareModelCatalogView(params: ModelCatalogViewFacts) {
       host: ModelAuthAvailabilityEvaluation,
       runtimeId?: string,
     ): ModelAuthAvailabilityEvaluation => {
+      const policy = resolveAgentHarnessPolicy({
+        provider: entry.provider,
+        modelId: entry.id,
+        modelApi: entry.api,
+        modelBaseUrl: entry.baseUrl,
+        config: params.cfg,
+        agentId: params.agentId,
+      });
       const runtime =
         runtimeId ??
         host.requestedRuntimeId ??
-        resolveAgentHarnessPolicy({
-          provider: entry.provider,
-          modelId: entry.id,
-          modelApi: entry.api,
-          modelBaseUrl: entry.baseUrl,
-          config: params.cfg,
-          agentId: params.agentId,
-        }).runtime;
+        (!policy.forcedByEnvironment && policy.runtimeSource === "implicit"
+          ? (routes.implicitNativeRuntime(entry) ?? policy.runtime)
+          : policy.runtime);
       if (runtime === "auto" || runtime === "openclaw") {
         return host;
       }
@@ -273,7 +288,11 @@ export function prepareModelCatalogView(params: ModelCatalogViewFacts) {
             provider,
             modelId: entry.id,
             requestedRuntime: runtime,
-            modelProvider: { preparedAuth: { source: "harness" } },
+            modelProvider: {
+              preparedAuth: { source: "harness" },
+              endpointOverrides: "none",
+              requestTransportOverrides: "none",
+            },
           }).supported &&
           isCurrent() &&
           resolveRegistry() === registry;
@@ -287,7 +306,11 @@ export function prepareModelCatalogView(params: ModelCatalogViewFacts) {
               modelId: entry.id,
             })
           : undefined;
-        ready = ready && observation !== undefined && isCurrent() && resolveRegistry() === registry;
+        ready =
+          ready &&
+          (!harness?.readModelCatalogReadiness || observation !== undefined) &&
+          isCurrent() &&
+          resolveRegistry() === registry;
         authMode = ready ? observation?.authMode : undefined;
       } catch {
         // A failed/disposed owner supplies no account observation; do not infer host readiness.

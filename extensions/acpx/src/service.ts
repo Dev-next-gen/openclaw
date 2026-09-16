@@ -67,6 +67,9 @@ type AcpxBackendLifecycle = {
 };
 
 type CreateAcpxRuntimeServiceParams = {
+  probeAtStartup?: boolean;
+  startupPurpose?: "gateway" | "inspection";
+  assertCurrent?: () => void;
   backendLifecycle: AcpxBackendLifecycle;
   pluginConfig?: unknown;
   openKeyedStore?: <T>(options: OpenKeyedStoreOptions) => PluginStateKeyedStore<T>;
@@ -116,6 +119,7 @@ function createLazyDefaultRuntime(params: AcpxRuntimeFactoryParams): AcpxRuntime
           legacyBareSessionKeys.add(recordId.toLowerCase());
         }
       }
+      const agentRegistry = module.createAgentRegistry({ overrides: params.pluginConfig.agents });
       runtime = new module.AcpxRuntime({
         cwd: params.pluginConfig.cwd,
         openclawLegacyBareSessionKeys: legacyBareSessionKeys,
@@ -125,9 +129,8 @@ function createLazyDefaultRuntime(params: AcpxRuntimeFactoryParams): AcpxRuntime
         sessionStore: module.createFileSessionStore({
           stateDir: params.pluginConfig.stateDir,
         }),
-        agentRegistry: module.createAgentRegistry({
-          overrides: params.pluginConfig.agents,
-        }),
+        agentRegistry,
+        openclawInspectAgent: (agent) => agentRegistry.inspect(agent),
         probeAgent: params.pluginConfig.probeAgent,
         mcpServers: toAcpMcpServers(params.pluginConfig.mcpServers),
         pluginToolsMcpBridgeEnabled: params.pluginConfig.pluginToolsMcpBridge,
@@ -279,7 +282,13 @@ async function reapOpenAcpxProcessLeases(params: {
   gatewayInstanceId: string;
   leaseStore: AcpxProcessLeaseStore;
   deps?: AcpxProcessCleanupDeps;
+  assertCurrent?: () => void;
 }): Promise<{ inspectedPids: number[]; terminatedPids: number[] }> {
+  const assertCurrent = () => {
+    params.assertCurrent?.();
+    params.deps?.assertCurrent?.();
+  };
+  const deps = { ...params.deps, assertCurrent };
   const leases = await params.leaseStore.listOpen(params.gatewayInstanceId);
   const inspectedPids: number[] = [];
   const terminatedPids: number[] = [];
@@ -287,13 +296,15 @@ async function reapOpenAcpxProcessLeases(params: {
   for (const lease of leases) {
     if (lease.rootPid <= 0) {
       legacyWrapperRoots.add(lease.wrapperRoot);
+      assertCurrent();
       await params.leaseStore.markState(lease.leaseId, "closing");
+      assertCurrent();
       const result = await cleanupOpenClawOwnedAcpxPendingLease({
         leaseId: lease.leaseId,
         gatewayInstanceId: lease.gatewayInstanceId,
         wrapperRoot: lease.wrapperRoot,
         wrapperPath: lease.wrapperPath,
-        deps: params.deps,
+        deps,
       });
       inspectedPids.push(...result.inspectedPids);
       terminatedPids.push(...result.terminatedPids);
@@ -306,22 +317,26 @@ async function reapOpenAcpxProcessLeases(params: {
         result.skippedReason === "unverified-root" ||
         (lease.sessionKey === ACPX_PROBE_LEASE_SESSION_KEY &&
           result.skippedReason === "missing-root");
+      assertCurrent();
       await params.leaseStore.markState(
         lease.leaseId,
         retryableEvidenceFailure ? "open" : result.terminatedPids.length > 0 ? "closed" : "lost",
       );
       continue;
     }
+    assertCurrent();
     await params.leaseStore.markState(lease.leaseId, "closing");
+    assertCurrent();
     const result = await cleanupOpenClawOwnedAcpxProcessTree({
       rootPid: lease.rootPid,
       expectedLeaseId: lease.leaseId,
       expectedGatewayInstanceId: lease.gatewayInstanceId,
       wrapperRoot: lease.wrapperRoot,
-      deps: params.deps,
+      deps,
     });
     inspectedPids.push(...result.inspectedPids);
     terminatedPids.push(...result.terminatedPids);
+    assertCurrent();
     await params.leaseStore.markState(
       lease.leaseId,
       result.skippedReason === "process-list-unavailable" ||
@@ -336,9 +351,10 @@ async function reapOpenAcpxProcessLeases(params: {
   // proves this Gateway had an uncertain spawn. Keep aggregate results wholly
   // separate from the state transition of any specific lease.
   for (const wrapperRoot of legacyWrapperRoots) {
+    assertCurrent();
     const legacyResult = await reapStaleOpenClawOwnedAcpxOrphans({
       wrapperRoot,
-      deps: params.deps,
+      deps,
     });
     inspectedPids.push(...legacyResult.inspectedPids);
     terminatedPids.push(...legacyResult.terminatedPids);
@@ -349,12 +365,47 @@ async function reapOpenAcpxProcessLeases(params: {
 /** Create the ACPX plugin service that owns runtime registration and cleanup. */
 export function createAcpxRuntimeService(
   params: CreateAcpxRuntimeServiceParams,
-): OpenClawPluginService {
+): OpenClawPluginService & {
+  promote(ctx: OpenClawPluginServiceContext, assertCurrent?: () => void): Promise<void>;
+} {
   let runtime: AcpxRuntimeLike | null = null;
+  let recoverProcesses:
+    | ((
+        assertCurrent: () => void,
+      ) => Promise<{ inspectedPids: number[]; terminatedPids: number[] }>)
+    | undefined;
+  let recoveryPromise: Promise<void> | undefined;
   let lifecycleRevision = 0;
+
+  const promote = async (ctx: OpenClawPluginServiceContext, assertOwner = params.assertCurrent) => {
+    const recover = recoverProcesses;
+    if (!recover) {
+      throw new Error("ACPX runtime service is not initialized");
+    }
+    const revision = lifecycleRevision;
+    const assertCurrent = () => {
+      if (revision !== lifecycleRevision || recoverProcesses !== recover) {
+        throw new Error("ACPX runtime service stopped during recovery");
+      }
+      assertOwner?.();
+    };
+    assertCurrent();
+    recoveryPromise ??= measureAcpxStartup(ctx, "process-leases.reap", async () => {
+      const result = await recover(assertCurrent);
+      assertCurrent();
+      if (result.terminatedPids.length > 0) {
+        ctx.logger.info(
+          `reaped ${result.terminatedPids.length} stale OpenClaw-owned ACPX processes`,
+        );
+      }
+    });
+    await recoveryPromise;
+    assertCurrent();
+  };
 
   return {
     id: "acpx-runtime",
+    promote,
     async start(ctx: OpenClawPluginServiceContext): Promise<void> {
       if (process.env.OPENCLAW_SKIP_ACPX_RUNTIME === "1") {
         ctx.logger.info("skipping embedded acpx runtime backend (OPENCLAW_SKIP_ACPX_RUNTIME=1)");
@@ -393,17 +444,15 @@ export function createAcpxRuntimeService(
       const processLeaseStore = createAcpxProcessLeaseStore({
         store: openAcpxProcessLeaseStateStore(openKeyedStore),
       });
-      const startupReap = await measureAcpxStartup(ctx, "process-leases.reap", () =>
+      recoverProcesses = (assertCurrent) =>
         reapOpenAcpxProcessLeases({
           gatewayInstanceId,
           leaseStore: processLeaseStore,
           deps: params.processCleanupDeps,
-        }),
-      );
-      if (startupReap.terminatedPids.length > 0) {
-        ctx.logger.info(
-          `reaped ${startupReap.terminatedPids.length} stale OpenClaw-owned ACPX process${startupReap.terminatedPids.length === 1 ? "" : "es"}`,
-        );
+          assertCurrent,
+        });
+      if (params.startupPurpose !== "inspection") {
+        await promote(ctx);
       }
       const startedRuntime = await measureAcpxStartup(ctx, "runtime.create", () =>
         params.runtimeFactory
@@ -424,7 +473,7 @@ export function createAcpxRuntimeService(
       );
       runtime = startedRuntime;
 
-      const shouldProbeRuntime = shouldProbeRuntimeAtStartup();
+      const shouldProbeRuntime = params.probeAtStartup !== false && shouldProbeRuntimeAtStartup();
       detailAcpxStartup(ctx, "probe-policy", [
         ["startupProbeEnabledCount", shouldProbeRuntime ? 1 : 0],
         ["probeAgent", pluginConfig.probeAgent ?? "default"],
@@ -475,9 +524,16 @@ export function createAcpxRuntimeService(
       lifecycleRevision += 1;
       if (runtime) {
         params.backendLifecycle.retract(runtime);
-        await runtime.shutdown();
+        const [shutdown] = await Promise.allSettled([runtime.shutdown(), recoveryPromise]);
+        if (shutdown.status === "rejected") {
+          throw shutdown.reason;
+        }
+      } else {
+        await recoveryPromise?.catch(() => undefined);
       }
       runtime = null;
+      recoverProcesses = undefined;
+      recoveryPromise = undefined;
     },
   };
 }

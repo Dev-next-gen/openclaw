@@ -10,13 +10,15 @@ export async function preparePublishedModelRuntimeChoice(params: {
   workspaceDir?: string;
   provider: string;
   model: string;
-  runtimeId: string;
+  runtimeId?: string;
+  preferredRuntimeId?: string;
   sessionEntry?: Pick<
     SessionEntry,
     "authProfileOverride" | "authProfileOverrideSource" | "providerOverride" | "modelProvider"
   >;
 }): Promise<
-  { kind: "unavailable"; message: string } | { kind: "ready"; validate: () => string | undefined }
+  | { kind: "unavailable"; message: string }
+  | { kind: "ready"; runtimeId: string; validate: () => string | undefined }
 > {
   const { getPublishedPreparedModelCatalogOwnerSnapshot, materializePreparedModelCatalogOwner } =
     await import("./prepared-model-catalog.js");
@@ -27,7 +29,7 @@ export async function preparePublishedModelRuntimeChoice(params: {
     agentId: params.agentId,
     workspaceDir: params.workspaceDir,
   });
-  const unavailable = `Runtime "${params.runtimeId}" is not available for ${params.provider}/${params.model}. Refresh the model catalog and choose again.`;
+  const unavailable = `${params.runtimeId ? `Runtime "${params.runtimeId}"` : "A runtime"} is not available for ${params.provider}/${params.model}. Refresh the model catalog and choose again.`;
   if (!published) {
     return { kind: "unavailable", message: unavailable };
   }
@@ -63,10 +65,19 @@ export async function preparePublishedModelRuntimeChoice(params: {
     // resolver still owns the requested model's provider and physical route.
     const { resolveModelAsync } = await import("./embedded-agent-runner/model.js");
     const { modelCatalogRowToEntry } = await import("./model-catalog-entry.js");
+    const requestedEntry = { provider: params.provider, id: params.model, name: params.model };
+    const materializationRuntime =
+      params.runtimeId ??
+      (params.preferredRuntimeId &&
+      (await decisions.runtimeChoices(requestedEntry, [requestedEntry]))?.includes(
+        params.preferredRuntimeId,
+      )
+        ? params.preferredRuntimeId
+        : undefined);
     const selectedAuth = await decisions.evaluateEntry(
-      { provider: params.provider, id: params.model },
+      requestedEntry,
       undefined,
-      params.runtimeId,
+      materializationRuntime,
     );
     const authProfileMode = resolveProviderModelMaterializationAuthMode(
       selectedAuth.selectedAuthMode,
@@ -83,7 +94,7 @@ export async function preparePublishedModelRuntimeChoice(params: {
         agentId: owner.agentId ?? params.agentId,
         workspaceDir: owner.workspaceDir,
         preparedModelRuntime: owner,
-        agentRuntimeId: params.runtimeId,
+        agentRuntimeId: materializationRuntime,
         allowBundledStaticCatalogFallback: true,
         // Discovery must retain the prepared account instead of rereading live auth stores.
         authProfileMode,
@@ -101,19 +112,23 @@ export async function preparePublishedModelRuntimeChoice(params: {
     (row) => modelKey(row.provider, row.id) === modelKey(entry.provider, entry.id),
   );
   const choices = await decisions.runtimeChoices(entry, variants.length ? variants : [entry]);
-  if (!choices?.includes(params.runtimeId)) {
+  const runtimeId =
+    params.runtimeId ??
+    (params.preferredRuntimeId && choices?.includes(params.preferredRuntimeId)
+      ? params.preferredRuntimeId
+      : choices?.[0]);
+  if (!runtimeId || !choices?.includes(runtimeId)) {
     return { kind: "unavailable", message: unavailable };
   }
   const host = await decisions.evaluateEntry(
     entry,
     variants.length ? variants : [entry],
-    params.runtimeId,
+    runtimeId,
   );
   const validate = () =>
-    decisions.isCurrent() &&
-    decisions.evaluateNative(entry, host, params.runtimeId).availability === true
+    decisions.isCurrent() && decisions.evaluateNative(entry, host, runtimeId).availability === true
       ? undefined
       : unavailable;
 
-  return { kind: "ready", validate };
+  return { kind: "ready", runtimeId, validate };
 }

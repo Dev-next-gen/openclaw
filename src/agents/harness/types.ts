@@ -38,6 +38,8 @@ export type AgentHarnessSupportContext = {
     azureApiVersion?: string;
     /** Secret-free projection of request behavior a native harness must reproduce. */
     requestTransportOverrides?: ProviderRouteOverridePresence;
+    /** Authored endpoints that a native runtime must reproduce. */
+    endpointOverrides?: ProviderRouteOverridePresence;
     /** Provider-owned native-runtime compatibility for the prepared route. */
     runtimePolicy?: ProviderModelRouteRuntimePolicy;
     /** Secret-free auth source the native runtime must reproduce for this attempt. */

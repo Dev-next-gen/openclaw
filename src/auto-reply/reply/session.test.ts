@@ -1909,6 +1909,7 @@ describe("initSessionState RawBody", () => {
         providerOverride: "minimax",
         modelOverride: "m2.7",
         modelOverrideSource: "user",
+        agentRuntimeOverride: "native-runtime",
       },
     });
 
@@ -1934,13 +1935,20 @@ describe("initSessionState RawBody", () => {
     expect(result.sessionEntry.providerOverride).toBe("minimax");
     expect(result.sessionEntry.modelOverride).toBe("m2.7");
     expect(result.sessionEntry.modelOverrideSource).toBe("user");
+    expect(result.sessionEntry.agentRuntimeOverride).toBe("native-runtime");
 
     const store = readSessionStoreFast(storePath) as Record<
       string,
-      { providerOverride?: string; modelOverride?: string; modelOverrideSource?: string }
+      {
+        providerOverride?: string;
+        modelOverride?: string;
+        modelOverrideSource?: string;
+        agentRuntimeOverride?: string;
+      }
     >;
     expect(store[sessionKey]?.modelOverride).toBe("m2.7");
     expect(store[sessionKey]?.modelOverrideSource).toBe("user");
+    expect(store[sessionKey]?.agentRuntimeOverride).toBe("native-runtime");
   });
 
   it.each(["owed", "unresolved", "acknowledged"] as const)(

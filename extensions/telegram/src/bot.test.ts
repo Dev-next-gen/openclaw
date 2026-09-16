@@ -26,7 +26,7 @@ import {
   type SessionBindingRecord,
   unregisterSessionBindingAdapter,
 } from "openclaw/plugin-sdk/thread-bindings-runtime";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { buildTelegramApprovalCallbackData } from "./approval-callback-data.js";
 import type { TelegramBotDeps } from "./bot-deps.js";
 import {
@@ -2861,14 +2861,116 @@ describe("createTelegramBot", () => {
     expect(answerCallbackQuerySpy).toHaveBeenCalledWith("cbq-model-display-names-1");
   });
 
+  it("passes a native picker click as model-only selection to the shared owner", async () => {
+    const storePath = createTelegramTestStorePath("native-model-only");
+    const config = makeModelPickerConfig(storePath, { omitModels: true });
+    vi.mocked(telegramBotDepsForTest.buildModelsProviderData).mockResolvedValueOnce({
+      byProvider: new Map([["opencode", new Set(["big-pickle"])]]),
+      providers: ["opencode"],
+      resolvedDefault: { provider: "anthropic", model: "claude-opus-4-6" },
+      modelNames: new Map(),
+      modelCatalog: [
+        {
+          provider: "opencode",
+          id: "big-pickle",
+          name: "Big Pickle",
+          reasoning: false,
+          nativeRuntime: "opencode",
+        },
+      ],
+    });
+    const { createModelRuntimeChoiceOwnerFixture } =
+      await import("../../../src/agents/model-runtime-choice.test-support.js");
+    const publishedCatalog = await import("../../../src/agents/prepared-model-catalog.js");
+    const { createEmptyPluginRegistry } = await import("openclaw/plugin-sdk/plugin-test-runtime");
+    const registry = createEmptyPluginRegistry();
+    registry.agentHarnesses.push({
+      pluginId: "opencode",
+      source: "test",
+      harness: {
+        id: "opencode",
+        label: "OpenCode",
+        authBootstrap: "harness",
+        supports: () => ({ supported: true }),
+        async runAttempt() {
+          throw new Error("Model selection must not execute inference");
+        },
+      },
+    });
+    const nativeEntry = {
+      provider: "opencode",
+      id: "big-pickle",
+      name: "Big Pickle",
+      nativeRuntime: "opencode",
+    };
+    const owner = createModelRuntimeChoiceOwnerFixture(
+      config,
+      () => true,
+      {
+        pluginRegistry: registry,
+        modelCatalog: { entries: [nativeEntry], routeVariants: [nativeEntry] },
+      },
+      { agentDir: telegramTestState.agentDir(), workspaceDir: telegramTestState.workspaceDir },
+    );
+    const lookup = vi
+      .spyOn(publishedCatalog, "getPublishedPreparedModelCatalogOwnerSnapshot")
+      .mockReturnValue(owner);
+    const modelRuntime = await import("openclaw/plugin-sdk/model-session-runtime");
+    const apply = vi.spyOn(modelRuntime, "applySessionModelSelection");
+    try {
+      loadConfig.mockReturnValue(config);
+      createTelegramBot({ token: "tok", config });
+      await getTelegramCallbackHandlerForTests()(
+        createTelegramCallbackContext({
+          id: "native-model-only",
+          data: "mdl_sel_opencode/big-pickle",
+          message: { message_id: 17 },
+        }),
+      );
+      expect.soft(apply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          request: expect.objectContaining({
+            provider: "opencode",
+            model: "big-pickle",
+            isDefault: false,
+            runtime: { kind: "unchanged" },
+          }),
+        }),
+      );
+      expect.soft(firstEditMessageTextArg(2)).toContain("Runtime set to <b>opencode</b>");
+      expect.soft(firstEditMessageTextArg(2)).not.toContain("from configured policy");
+      expect(readOnlySessionEntry(storePath)).toMatchObject({
+        providerOverride: "opencode",
+        modelOverride: "big-pickle",
+        agentRuntimeOverride: "opencode",
+      });
+    } finally {
+      apply.mockRestore();
+      lookup.mockRestore();
+    }
+  });
+
   it("formats non-default model selection confirmations with Telegram HTML parse mode", async () => {
     const storePath = createTelegramTestStorePath("model-html");
     const config = makeModelPickerConfig(storePath, {
       models: {
         "anthropic/claude-opus-4-6": {},
-        "openai/gpt-5.4": { agentRuntime: { id: "openclaw" } },
+        "fixture/model": { agentRuntime: { id: "openclaw" } },
       },
     });
+    const { createModelRuntimeChoiceOwnerFixture } =
+      await import("../../../src/agents/model-runtime-choice.test-support.js");
+    const publishedCatalog = await import("../../../src/agents/prepared-model-catalog.js");
+    const owner = createModelRuntimeChoiceOwnerFixture(
+      config,
+      () => true,
+      {},
+      { agentDir: telegramTestState.agentDir(), workspaceDir: telegramTestState.workspaceDir },
+    );
+    const lookup = vi
+      .spyOn(publishedCatalog, "getPublishedPreparedModelCatalogOwnerSnapshot")
+      .mockReturnValue(owner);
+    onTestFinished(() => lookup.mockRestore());
     const route = resolveTelegramConversationRoute({
       cfg: config,
       accountId: "default",
@@ -2904,7 +3006,7 @@ describe("createTelegramBot", () => {
     await callbackHandler(
       createTelegramCallbackContext({
         id: "cbq-model-html-1",
-        data: "mdl_sel_openai/gpt-5.4",
+        data: "mdl_sel_fixture/model",
         message: { message_id: 17 },
       }),
     );
@@ -2915,15 +3017,15 @@ describe("createTelegramBot", () => {
     expect(editCall[0]).toBe(1234);
     expect(editCall[1]).toBe(17);
     expect(editCall[2]).toBe(
-      `${CHECK_MARK_EMOJI} Model changed to <b>openai/gpt-5.4</b>\n\nSession-only model selection. Runtime set to <b>openclaw</b> from configured policy. The agent default in openclaw.json is unchanged. This chat keeps the model selection across /new and /reset; use /model default -s to clear the session model selection.`,
+      `${CHECK_MARK_EMOJI} Model changed to <b>fixture/model</b>\n\nSession-only model selection. Runtime set to <b>openclaw</b>. The agent default in openclaw.json is unchanged. This chat keeps the model selection across /new and /reset; use /model default -s to clear the session model selection.`,
     );
     expect(requireRecord(editCall[3], "edit params").parse_mode).toBe("HTML");
 
     const entry = readOnlySessionEntry(storePath);
-    expect(entry?.providerOverride).toBe("openai");
-    expect(entry?.modelOverride).toBe("gpt-5.4");
+    expect(entry?.providerOverride).toBe("fixture");
+    expect(entry?.modelOverride).toBe("model");
     expect(entry?.modelOverrideSource).toBe("user");
-    expect(entry?.agentRuntimeOverride).toBeUndefined();
+    expect(entry?.agentRuntimeOverride).toBe("openclaw");
     expect(answerCallbackQuerySpy).toHaveBeenCalledWith("cbq-model-html-1");
   });
 

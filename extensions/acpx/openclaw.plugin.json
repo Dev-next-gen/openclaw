@@ -25,7 +25,8 @@
     ]
   },
   "activation": {
-    "onStartup": true
+    "onStartup": true,
+    "onAgentHarnesses": ["acp-opencode", "acp-qwen", "acp-pi", "acp-kilocode"]
   },
   "enabledByDefault": true,
   "name": "ACPX Runtime",

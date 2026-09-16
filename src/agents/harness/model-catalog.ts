@@ -143,12 +143,7 @@ export async function augmentModelCatalogWithAgentHarness(params: {
   const runtimeProviders = new Map<string, Set<string>>();
   const addRuntime = (value: string, provider: string) => {
     const runtime = normalizeOptionalAgentRuntimeId(value);
-    if (
-      !runtime ||
-      isDefaultAgentRuntimeId(runtime) ||
-      runtime === "openclaw" ||
-      (params.includesProvider && !params.includesProvider(provider))
-    ) {
+    if (!runtime || isDefaultAgentRuntimeId(runtime) || runtime === "openclaw") {
       return;
     }
     const providers = runtimeProviders.get(runtime) ?? new Set<string>();
@@ -194,13 +189,20 @@ export async function augmentModelCatalogWithAgentHarness(params: {
       }
     }
   }
-  if (runtimeProviders.size === 0) {
-    return params.snapshot;
-  }
   const pluginRegistry = params.observationConfig
     ? params.pluginRegistry
     : (params.pluginRegistry ?? getActivePluginRegistry());
   if (!pluginRegistry || params.isCurrent?.() === false) {
+    return params.snapshot;
+  }
+  if (params.includePickerRuntimes) {
+    for (const { harness } of pluginRegistry.agentHarnesses) {
+      if (harness.loadModelCatalog && !runtimeProviders.has(harness.id)) {
+        runtimeProviders.set(harness.id, new Set());
+      }
+    }
+  }
+  if (runtimeProviders.size === 0) {
     return params.snapshot;
   }
   let configuredModelRefs: ModelRef[];
@@ -227,6 +229,12 @@ export async function augmentModelCatalogWithAgentHarness(params: {
   const completedRows: ModelCatalogEntry[] = [];
   let discovered = false;
   for (const [runtime, providers] of runtimeProviders) {
+    const scopedProviders = [...providers].filter(
+      (provider) => !params.includesProvider || params.includesProvider(provider),
+    );
+    if (providers.size > 0 && scopedProviders.length === 0) {
+      continue;
+    }
     // The scoped lookup retains transient catalog resources for executable CLI cleanup.
     const harness = withPluginRuntimeRegistryScope(
       pluginRegistry,
@@ -238,7 +246,7 @@ export async function augmentModelCatalogWithAgentHarness(params: {
     if (params.isCurrent?.() === false) {
       return params.snapshot;
     }
-    for (const provider of providers) {
+    for (const provider of scopedProviders) {
       params.onDiscoveryStarted?.(provider);
     }
     let listedRows: readonly ModelCatalogEntry[];
@@ -257,7 +265,7 @@ export async function augmentModelCatalogWithAgentHarness(params: {
       ) {
         return params.snapshot;
       }
-      params.onError?.(error, [...providers]);
+      params.onError?.(error, scopedProviders);
       continue;
     }
     if (

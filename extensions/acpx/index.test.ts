@@ -52,6 +52,7 @@ describe("acpx plugin", () => {
       pluginConfig: { stateDir: "/tmp/acpx" },
       runtime: { state: { openKeyedStore } } as never,
       registerService: vi.fn(),
+      registerAgentHarness: vi.fn(),
       on: vi.fn(),
     });
 
@@ -67,6 +68,12 @@ describe("acpx plugin", () => {
     params.openKeyedStore({ namespace: "test", maxEntries: 1 });
     expect(openKeyedStore).toHaveBeenCalledWith({ namespace: "test", maxEntries: 1 });
     expect(api.registerService).toHaveBeenCalledWith(service);
+    expect(vi.mocked(api.registerAgentHarness).mock.calls.map(([harness]) => harness.id)).toEqual([
+      "acp-opencode",
+      "acp-qwen",
+      "acp-pi",
+      "acp-kilocode",
+    ]);
     expect(api.on).toHaveBeenCalledWith("reply_dispatch", expect.any(Function), {
       eligibleDispatchKinds: ["acp"],
     });

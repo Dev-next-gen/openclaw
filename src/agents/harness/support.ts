@@ -124,6 +124,22 @@ export function buildAgentHarnessSupportContext(
         canonicalizeProviderModelId(params.provider, configuredModelId),
       )
     : undefined;
+  const authoredProviderConfig = resolveMergedModelProviderConfig(authoredConfig, params.provider);
+  const authoredModelConfig = modelId
+    ? findConfiguredProviderModel(authoredProviderConfig, params.provider, modelId, (id) =>
+        canonicalizeProviderModelId(params.provider, id),
+      )
+    : undefined;
+  const endpointOverrides: ProviderRouteOverridePresence =
+    params.modelProvider?.endpointOverrides ??
+    ([
+      authoredProviderConfig?.api,
+      authoredProviderConfig?.baseUrl,
+      authoredModelConfig?.api,
+      authoredModelConfig?.baseUrl,
+    ].some((value) => readStringParam(value) !== undefined)
+      ? "present"
+      : "none");
   const agentId = resolveAgentRuntimePolicyAgentId(params);
   const hasConfiguredProviderRequestParams = hasAuthoredProviderRequestParams({
     config: params.config,
@@ -153,24 +169,22 @@ export function buildAgentHarnessSupportContext(
     hasConfiguredProviderRequestParams
       ? "present"
       : "none";
-  const modelProviderFacts =
-    params.modelProvider || configuredModelProvider || hasConfiguredProviderRequestParams
-      ? {
-          api: params.modelProvider?.api ?? configuredModelProvider?.api,
-          baseUrl: params.modelProvider?.baseUrl ?? configuredModelProvider?.baseUrl,
-          azureApiVersion:
-            params.modelProvider?.azureApiVersion ?? configuredModelProvider?.azureApiVersion,
-          request: params.modelProvider?.request ?? configuredModelProvider?.request,
-          preparedAuth: params.modelProvider?.preparedAuth,
-          requestTransportOverrides,
-        }
-      : undefined;
+  const modelProviderFacts = {
+    api: params.modelProvider?.api ?? configuredModelProvider?.api,
+    baseUrl: params.modelProvider?.baseUrl ?? configuredModelProvider?.baseUrl,
+    azureApiVersion:
+      params.modelProvider?.azureApiVersion ?? configuredModelProvider?.azureApiVersion,
+    request: params.modelProvider?.request ?? configuredModelProvider?.request,
+    preparedAuth: params.modelProvider?.preparedAuth,
+    requestTransportOverrides,
+    endpointOverrides,
+  };
   // Finalized routes carry the owner decision. Earlier selection resolves the same provider
   // artifact once so an indeterminate route cannot regain provider-id-only native support.
-  const routeRuntimeContract = params.modelProvider?.runtimePolicy
-    ? { owned: true, policy: params.modelProvider.runtimePolicy }
+  const runtimePolicy = params.modelProvider?.runtimePolicy
+    ? params.modelProvider.runtimePolicy
     : params.preparedModelProvider
-      ? { owned: true }
+      ? undefined
       : resolveHarnessRouteRuntimePolicy({
           provider: params.provider,
           modelId: params.modelId,
@@ -191,13 +205,10 @@ export function buildAgentHarnessSupportContext(
               : undefined,
           }),
         });
-  const modelProvider =
-    modelProviderFacts || routeRuntimeContract.owned
-      ? {
-          ...modelProviderFacts,
-          runtimePolicy: params.modelProvider?.runtimePolicy ?? routeRuntimeContract.policy,
-        }
-      : undefined;
+  const modelProvider = {
+    ...modelProviderFacts,
+    runtimePolicy,
+  };
   return {
     provider: params.provider,
     modelId: params.modelId,
@@ -219,7 +230,7 @@ function resolveHarnessRouteRuntimePolicy(params: {
   modelProvider?: AgentHarnessSupportContext["modelProvider"];
   config?: OpenClawConfig;
   routeIntent?: ProviderResolveModelRoutesContext["routeIntent"];
-}): { owned: boolean; policy?: ProviderModelRouteRuntimePolicy } {
+}): ProviderModelRouteRuntimePolicy | undefined {
   const resolution = resolveProviderModelRoutes({
     provider: params.provider,
     modelId: params.modelId,
@@ -230,25 +241,21 @@ function resolveHarnessRouteRuntimePolicy(params: {
     requestTransportOverrides: params.modelProvider?.requestTransportOverrides,
   });
   if (!resolution) {
-    return { owned: false };
+    return undefined;
   }
   if (resolution.kind !== "routes") {
-    return { owned: true };
+    return undefined;
   }
   const policies = resolution.routes.map((route) => route.runtimePolicy);
   const first = policies[0];
   if (!first || policies.some((policy) => !policy)) {
-    return { owned: true };
+    return undefined;
   }
   return {
-    owned: true,
-    policy: {
-      compatibleIds: first.compatibleIds.filter(
-        (id, index, ids) =>
-          ids.indexOf(id) === index &&
-          policies.every((policy) => policy?.compatibleIds.includes(id)),
-      ),
-    },
+    compatibleIds: first.compatibleIds.filter(
+      (id, index, ids) =>
+        ids.indexOf(id) === index && policies.every((policy) => policy?.compatibleIds.includes(id)),
+    ),
   };
 }
 

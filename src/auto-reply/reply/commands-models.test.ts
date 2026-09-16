@@ -28,7 +28,9 @@ const modelCatalogMocks = vi.hoisted(() => ({
   loadModelCatalog:
     vi.fn<
       (
-        params: Parameters<typeof preparedCatalog.getPublishedPreparedModelCatalogOwnerSnapshot>[0],
+        params: Parameters<
+          typeof preparedCatalog.loadPublishedPreparedModelCatalogOwnerSnapshot
+        >[0],
       ) => ModelCatalogEntry[]
     >(),
 }));
@@ -57,8 +59,8 @@ vi.mock("../../plugins/current-plugin-metadata-snapshot.js", async (importOrigin
 }));
 
 beforeEach(() => {
-  vi.spyOn(preparedCatalog, "getPublishedPreparedModelCatalogOwnerSnapshot").mockImplementation(
-    (params) => {
+  vi.spyOn(preparedCatalog, "loadPublishedPreparedModelCatalogOwnerSnapshot").mockImplementation(
+    async (params) => {
       if (!params?.config) {
         throw new Error("The browse fixture requires its captured config");
       }
@@ -190,7 +192,7 @@ describe("handleModelsCommand", () => {
     expect(authCheckerParams?.workspaceDir).toBe("/tmp");
   });
 
-  it("reads published facts and uses static auth checks for default browse", async () => {
+  it("acquires catalog inventory and uses static auth checks for default browse", async () => {
     await handleModelsCommand(buildParams("/models"), true);
 
     expect(modelCatalogMocks.loadModelCatalog.mock.calls[0]?.[0]).not.toHaveProperty(
@@ -202,9 +204,9 @@ describe("handleModelsCommand", () => {
     expect(authCheckerParams?.allowPreparedRuntimeAuth).toBe(true);
   });
 
-  it("reports an unpublished catalog without starting discovery", async () => {
-    vi.mocked(preparedCatalog.getPublishedPreparedModelCatalogOwnerSnapshot).mockReturnValue(
-      undefined,
+  it("reports failed catalog acquisition without displaying partial inventory", async () => {
+    vi.mocked(preparedCatalog.loadPublishedPreparedModelCatalogOwnerSnapshot).mockRejectedValue(
+      new Error("Model catalog is not ready"),
     );
     await expect(buildPreparedModelsProviderData({}, undefined)).rejects.toThrow(
       "Model catalog is not ready",

@@ -18,8 +18,11 @@ import {
 
 // Runtime eligibility belongs to the published-owner tests; these cases exercise its consumers.
 vi.mock("../agents/model-runtime-choice.js", () => ({
-  preparePublishedModelRuntimeChoice: vi.fn(async () => ({
+  preparePublishedModelRuntimeChoice: vi.fn<
+    typeof import("../agents/model-runtime-choice.js").preparePublishedModelRuntimeChoice
+  >(async ({ runtimeId, preferredRuntimeId }) => ({
     kind: "ready",
+    runtimeId: runtimeId ?? preferredRuntimeId ?? "openclaw",
     validate: () => undefined,
   })),
 }));
@@ -440,43 +443,59 @@ describe("applySessionModelSelection", () => {
     );
   });
 
-  it("resets to a cross-provider default and clears incompatible auth plus runtime", async () => {
-    const sessionEntry = createEntry({
-      providerOverride: "openai",
-      modelOverride: "gpt-4o",
-      modelOverrideSource: "user",
-      modelOverrideRouteResolution: "resolved",
-      authProfileOverride: "openai:work",
-      authProfileOverrideSource: "user",
-      authProfileOverrideCompactionCount: 3,
-      agentHarnessId: "codex",
-      agentRuntimeOverride: "codex",
-    });
-    const result = await applySessionModelSelection(
-      createParams({
-        sessionEntry,
-        currentProvider: "openai",
-        currentModel: "gpt-4o",
-        request: {
-          provider: "anthropic",
-          model: "claude-opus-4-6",
-          isDefault: true,
-          runtime: { kind: "unchanged" },
-        },
-      }),
-    );
+  it.each([
+    {
+      action: "explicit reset",
+      runtime: { kind: "clear" } as const,
+      runtimeChange: { kind: "clear" },
+      expectedRuntime: undefined,
+    },
+    {
+      action: "automatic selection",
+      runtime: { kind: "unchanged" } as const,
+      runtimeChange: { kind: "set", runtime: "openclaw" },
+      expectedRuntime: "openclaw",
+    },
+  ])(
+    "selects a cross-provider default with $action and clears incompatible auth",
+    async ({ runtime, runtimeChange, expectedRuntime }) => {
+      const sessionEntry = createEntry({
+        providerOverride: "openai",
+        modelOverride: "gpt-4o",
+        modelOverrideSource: "user",
+        modelOverrideRouteResolution: "resolved",
+        authProfileOverride: "openai:work",
+        authProfileOverrideSource: "user",
+        authProfileOverrideCompactionCount: 3,
+        agentHarnessId: "codex",
+        agentRuntimeOverride: "codex",
+      });
+      const result = await applySessionModelSelection(
+        createParams({
+          sessionEntry,
+          currentProvider: "openai",
+          currentModel: "gpt-4o",
+          request: {
+            provider: "anthropic",
+            model: "claude-opus-4-6",
+            isDefault: true,
+            runtime,
+          },
+        }),
+      );
 
-    expect(result).toMatchObject({ status: "applied", runtimeChange: { kind: "clear" } });
-    expect(sessionEntry.providerOverride).toBeUndefined();
-    expect(sessionEntry.modelOverride).toBeUndefined();
-    expect(sessionEntry.modelOverrideSource).toBe("default");
-    expect(sessionEntry.authProfileOverride).toBeUndefined();
-    expect(sessionEntry.authProfileOverrideSource).toBeUndefined();
-    expect(sessionEntry.authProfileOverrideCompactionCount).toBeUndefined();
-    expect(sessionEntry.agentRuntimeOverride).toBeUndefined();
-    expect(sessionEntry.agentHarnessId).toBe("codex");
-    expect(effects.mutateConfigFileWithRetry).not.toHaveBeenCalled();
-  });
+      expect(result).toMatchObject({ status: "applied", runtimeChange });
+      expect(sessionEntry.providerOverride).toBeUndefined();
+      expect(sessionEntry.modelOverride).toBeUndefined();
+      expect(sessionEntry.modelOverrideSource).toBe("default");
+      expect(sessionEntry.authProfileOverride).toBeUndefined();
+      expect(sessionEntry.authProfileOverrideSource).toBeUndefined();
+      expect(sessionEntry.authProfileOverrideCompactionCount).toBeUndefined();
+      expect(sessionEntry.agentRuntimeOverride).toBe(expectedRuntime);
+      expect(sessionEntry.agentHarnessId).toBe("codex");
+      expect(effects.mutateConfigFileWithRetry).not.toHaveBeenCalled();
+    },
+  );
 
   it("resets to a same-provider default without clearing compatible auth or writing config", async () => {
     const sessionEntry = createEntry({
@@ -712,7 +731,7 @@ describe("applySessionModelSelection", () => {
       initial: "openclaw",
       runtime: { kind: "unchanged" } as const,
       expected: "openclaw",
-      runtimeChange: undefined,
+      runtimeChange: { kind: "set", runtime: "openclaw" },
       agentRuntime: "openclaw",
     },
   ])(
@@ -992,6 +1011,7 @@ describe("applySessionModelSelection", () => {
       modelOverride: "gpt-4o",
       modelOverrideSource: "user",
       modelOverrideRouteResolution: "resolved",
+      agentRuntimeOverride: "openclaw",
     });
     const result = await applySessionModelSelection(
       createParams({ sessionEntry, currentProvider: "openai", currentModel: "gpt-4o" }),

@@ -17,6 +17,7 @@ import {
   encodeAcpxRuntimeHandleState,
   isRequestedModelUnsupportedError,
   type AcpAgentRegistry,
+  type AcpInspectableAgentRegistry,
   type AcpRuntimeDoctorReport,
   type AcpRuntimeEvent,
   type AcpRuntimeOptions,
@@ -66,6 +67,7 @@ type AcpSessionRecord = Parameters<AcpSessionStore["save"]>[0];
 type AcpLoadedSessionRecord = Awaited<ReturnType<AcpSessionStore["load"]>>;
 type BaseAcpxRuntimeTestOptions = ConstructorParameters<typeof BaseAcpxRuntime>[1];
 type OpenClawAcpxRuntimeOptions = AcpRuntimeOptions & {
+  openclawInspectAgent?: AcpInspectableAgentRegistry["inspect"];
   openclawLegacyBareSessionKeys?: ReadonlySet<string>;
   openclawWrapperRoot?: string;
   openclawGatewayInstanceId?: string;
@@ -76,8 +78,16 @@ type OpenClawAcpxRuntimeOptions = AcpRuntimeOptions & {
 type AcpxRuntimeTestOptions = Record<string, unknown> & {
   openclawProcessCleanup?: AcpxProcessCleanupDeps;
 };
-type OpenClawRuntimeEnsureInput = Parameters<AcpRuntime["ensureSession"]>[0];
-type OpenClawRuntimeHandle = Awaited<ReturnType<AcpRuntime["ensureSession"]>>;
+type OpenClawRuntimeTurnInput = Parameters<NonNullable<AcpRuntime["startTurn"]>>[0] &
+  Pick<Parameters<BaseAcpxRuntime["startTurn"]>[0], "onPermissionRequest">;
+type BridgeSession = { sessionKey: string; agentId?: string; native?: boolean };
+type OpenClawRuntimeEnsureInput = Parameters<AcpRuntime["ensureSession"]>[0] & {
+  agentCommand?: string[];
+  bridgeSession?: BridgeSession | null;
+};
+type OpenClawRuntimeHandle = Awaited<ReturnType<AcpRuntime["ensureSession"]>> & {
+  bridgeSession?: BridgeSession | null;
+};
 type AcpxDelegateEnsureInput = Parameters<BaseAcpxRuntime["ensureSession"]>[0];
 type AcpxMcpServers = Extract<NonNullable<AcpRuntimeOptions["mcpServers"]>, unknown[]>;
 type AcpxMcpServer = AcpxMcpServers[number];
@@ -719,12 +729,17 @@ function withManagedToolsMcpSessionEnv(params: {
   return changed ? nextServers : params.mcpServers;
 }
 
+function resolveBridgeSession(handle: OpenClawRuntimeHandle): BridgeSession | null {
+  return handle.bridgeSession === undefined ? handle : handle.bridgeSession;
+}
+
 /** OpenClaw-managed ACP runtime implementation backed by the upstream acpx runtime. */
 export class AcpxRuntime implements CompleteAcpRuntime {
   readonly ownerAwareSessions = 1 as const;
   private readonly legacyBareSessionKeys: Set<string>;
   private readonly sessionStore: ResetAwareSessionStore;
   private readonly agentRegistry: AcpAgentRegistry;
+  private readonly inspectConfiguredAgent?: AcpInspectableAgentRegistry["inspect"];
   private readonly scopedAgentRegistry: AcpAgentRegistry;
   private readonly launchCommandScope = new AsyncLocalStorage<{
     agent: string;
@@ -736,7 +751,7 @@ export class AcpxRuntime implements CompleteAcpRuntime {
   private readonly pluginToolsMcpBridgeEnabled: boolean;
   private readonly openclawToolsMcpBridgeEnabled: boolean;
   private readonly managedToolsMcpBridgeEnabled: boolean;
-  private readonly sessionScope = new AsyncLocalStorage<{ sessionKey: string; agentId?: string }>();
+  private readonly sessionScope = new AsyncLocalStorage<BridgeSession | null>();
   private readonly processCleanupDeps: AcpxProcessCleanupDeps | undefined;
   private readonly wrapperRoot: string | undefined;
   private readonly gatewayInstanceId: string | undefined;
@@ -765,6 +780,7 @@ export class AcpxRuntime implements CompleteAcpRuntime {
       wrapperRoot: this.wrapperRoot,
     });
     this.agentRegistry = options.agentRegistry;
+    this.inspectConfiguredAgent = options.openclawInspectAgent;
     this.scopedAgentRegistry = {
       resolve: (agentName) => {
         const launch = this.launchCommandScope.getStore();
@@ -779,6 +795,13 @@ export class AcpxRuntime implements CompleteAcpRuntime {
         ...options,
         sessionStore: this.sessionStore,
         agentRegistry: this.scopedAgentRegistry,
+        onPermissionRequest: async (request, context) => {
+          const session = this.sessionScope.getStore();
+          if (session === null || session?.native) {
+            return { outcome: "cancel" };
+          }
+          return await options.onPermissionRequest?.(request, context);
+        },
         mcpServers: (context) => {
           const servers =
             typeof options.mcpServers === "function"
@@ -788,6 +811,9 @@ export class AcpxRuntime implements CompleteAcpRuntime {
             return [];
           }
           const target = this.sessionScope.getStore();
+          if (target === null) {
+            return [];
+          }
           if (!this.managedToolsMcpBridgeEnabled) {
             return servers;
           }
@@ -1143,6 +1169,16 @@ export class AcpxRuntime implements CompleteAcpRuntime {
     });
   }
 
+  async findSession(input: {
+    sessionKey: string;
+    agent: string;
+    agentId?: string;
+  }): Promise<OpenClawRuntimeHandle | undefined> {
+    const resource = assertAcpxSessionOwnerLocator(input, this.legacyBareSessionKeys);
+    const handle = await this.delegate.findSession({ sessionKey: resource, agent: input.agent });
+    return handle ? { ...handle, sessionKey: input.sessionKey, agentId: input.agentId } : undefined;
+  }
+
   async shutdown(): Promise<void> {
     await this.delegate.shutdown();
   }
@@ -1178,7 +1214,9 @@ export class AcpxRuntime implements CompleteAcpRuntime {
   async ensureSession(input: OpenClawRuntimeEnsureInput): Promise<OpenClawRuntimeHandle> {
     const resource = assertAcpxSessionOwnerLocator(input, this.legacyBareSessionKeys);
     return await this.sessionEnsureQueue.enqueue(resource.trim() || resource, () =>
-      this.sessionScope.run(input, () => this.ensureSessionUnlocked(input)),
+      this.sessionScope.run(input.bridgeSession === undefined ? input : input.bridgeSession, () =>
+        this.ensureSessionUnlocked(input),
+      ),
     );
   }
 
@@ -1186,14 +1224,17 @@ export class AcpxRuntime implements CompleteAcpRuntime {
     logicalInput: OpenClawRuntimeEnsureInput,
   ): Promise<OpenClawRuntimeHandle> {
     assertSupportedRuntimeSessionMode(logicalInput.mode);
-    const command = resolveAgentCommand({
-      agentName: logicalInput.agent,
-      agentRegistry: this.agentRegistry,
-    });
+    const command =
+      logicalInput.agentCommand ??
+      resolveAgentCommand({
+        agentName: logicalInput.agent,
+        agentRegistry: this.agentRegistry,
+      });
     const delegate = this.delegate;
     const logicalTarget = {
       sessionKey: logicalInput.sessionKey,
       agentId: logicalInput.agentId,
+      bridgeSession: logicalInput.bridgeSession,
     };
     const input = { ...logicalInput, sessionKey: resolveAcpxSessionResource(logicalInput) };
     const isCodexAcp =
@@ -1290,7 +1331,7 @@ export class AcpxRuntime implements CompleteAcpRuntime {
     }
   }
 
-  startTurn(input: Parameters<NonNullable<AcpRuntime["startTurn"]>>[0]): CompleteAcpRuntimeTurn {
+  startTurn(input: OpenClawRuntimeTurnInput): CompleteAcpRuntimeTurn {
     const withTurnDiagnostics = <T>(command: AcpxAgentCommand | undefined, run: () => Promise<T>) =>
       this.withCodexWrapperDiagnostics({
         command,
@@ -1300,7 +1341,7 @@ export class AcpxRuntime implements CompleteAcpRuntime {
       });
     const snapshotPromise = this.loadOperationSnapshotForHandle(input.handle);
     const turnPromise = snapshotPromise.then(({ command }) =>
-      this.sessionScope.run(input.handle, () =>
+      this.sessionScope.run(resolveBridgeSession(input.handle), () =>
         withTurnDiagnostics(command, async () => ({
           command,
           turn: this.delegate.startTurn({
@@ -1371,7 +1412,7 @@ export class AcpxRuntime implements CompleteAcpRuntime {
     );
     return {
       ...capabilities,
-      // Core exposes model control through config options.
+      // Core exposes model control through config options; native harnesses call setModel directly.
       controls: capabilities.controls.filter((control) => control !== "session/set_model"),
     };
   }
@@ -1380,14 +1421,28 @@ export class AcpxRuntime implements CompleteAcpRuntime {
     input: Parameters<NonNullable<AcpRuntime["getStatus"]>>[0],
   ): Promise<AcpRuntimeStatus> {
     await this.loadOperationSnapshotForHandle(input.handle);
-    return this.sessionScope.run(input.handle, () =>
+    return this.sessionScope.run(resolveBridgeSession(input.handle), () =>
       this.delegate.getStatus(toAcpxResourceInput(input)),
+    );
+  }
+
+  async inspectAgent(agent: string): Promise<ReturnType<AcpInspectableAgentRegistry["inspect"]>> {
+    if (!this.inspectConfiguredAgent) {
+      throw new Error("Native ACP harnesses require installed command inspection");
+    }
+    return this.inspectConfiguredAgent(agent);
+  }
+
+  async setModel(input: Parameters<BaseAcpxRuntime["setModel"]>[0]): Promise<void> {
+    await this.loadOperationSnapshotForHandle(input.handle);
+    await this.sessionScope.run(resolveBridgeSession(input.handle), () =>
+      this.delegate.setModel(toAcpxResourceInput(input)),
     );
   }
 
   async setMode(input: Parameters<NonNullable<AcpRuntime["setMode"]>>[0]): Promise<void> {
     await this.loadOperationSnapshotForHandle(input.handle);
-    await this.sessionScope.run(input.handle, () =>
+    await this.sessionScope.run(resolveBridgeSession(input.handle), () =>
       this.delegate.setMode(toAcpxResourceInput(input)),
     );
   }
@@ -1396,7 +1451,7 @@ export class AcpxRuntime implements CompleteAcpRuntime {
     input: Parameters<NonNullable<AcpRuntime["setConfigOption"]>>[0],
   ): ReturnType<NonNullable<AcpRuntime["setConfigOption"]>> {
     const snapshot = await this.loadOperationSnapshotForHandle(input.handle);
-    return await this.sessionScope.run(input.handle, () =>
+    return await this.sessionScope.run(resolveBridgeSession(input.handle), () =>
       this.setConfigOptionUnlocked(input, snapshot),
     );
   }
@@ -1461,14 +1516,25 @@ export class AcpxRuntime implements CompleteAcpRuntime {
 
   async cancel(input: Parameters<AcpRuntime["cancel"]>[0]): Promise<void> {
     await this.loadOperationSnapshotForHandle(input.handle);
-    await this.sessionScope.run(input.handle, () =>
+    await this.sessionScope.run(resolveBridgeSession(input.handle), () =>
       this.delegate.cancel(toAcpxResourceInput(input)),
     );
   }
 
   async prepareFreshSession(
-    input: Parameters<NonNullable<AcpRuntime["prepareFreshSession"]>>[0],
+    input: Parameters<CompleteAcpRuntime["prepareFreshSession"]>[0],
   ): Promise<void> {
+    if ("handle" in input) {
+      const snapshot = await this.loadOperationSnapshotForHandle(input.handle);
+      try {
+        await this.sessionScope.run(resolveBridgeSession(input.handle), () =>
+          this.delegate.prepareFreshSession(toAcpxResourceInput(input)),
+        );
+      } finally {
+        await this.cleanupProcessTreeForRecord(input.handle, snapshot.record);
+      }
+      return;
+    }
     const resource = assertAcpxSessionOwnerLocator(input, this.legacyBareSessionKeys);
     this.sessionStore.markFresh(resource);
     // The validated reset retires this startup record before metadata is cleared.
@@ -1478,7 +1544,7 @@ export class AcpxRuntime implements CompleteAcpRuntime {
   async close(input: Parameters<AcpRuntime["close"]>[0]): Promise<void> {
     const snapshot = await this.loadOperationSnapshotForHandle(input.handle);
     try {
-      await this.sessionScope.run(input.handle, () =>
+      await this.sessionScope.run(resolveBridgeSession(input.handle), () =>
         this.delegate.close(toAcpxResourceInput(input)),
       );
     } finally {

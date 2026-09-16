@@ -571,6 +571,7 @@ export function createAgentHarnessHostCapabilities(params: {
                   {
                     title: request.title,
                     description: request.description,
+                    ...(request.detail !== undefined ? { detail: request.detail } : {}),
                     severity: request.severity,
                     toolName: request.toolName,
                     toolCallId: request.toolCallId,

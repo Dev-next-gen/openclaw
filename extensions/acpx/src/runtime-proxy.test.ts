@@ -23,6 +23,8 @@ function createCompleteRuntime(promptStarted: Promise<void> = Promise.resolve())
   }));
   const prepareFreshSession = vi.fn(async () => {});
   const runtime: CompleteAcpRuntime = {
+    inspectAgent: vi.fn(async () => undefined),
+    findSession: vi.fn(async () => undefined),
     shutdown: vi.fn(async () => {}),
     ensureSession: vi.fn(async () => handle),
     startTurn,
@@ -30,6 +32,7 @@ function createCompleteRuntime(promptStarted: Promise<void> = Promise.resolve())
     getCapabilities: vi.fn(async () => ({ controls: ["session/status" as const] })),
     getStatus: vi.fn(async () => ({ summary: "live" })),
     setMode: vi.fn(async () => {}),
+    setModel: vi.fn(async () => {}),
     setConfigOption: vi.fn(async () => {}),
     doctor: vi.fn(async () => ({ ok: false, code: "MISSING_CLI", message: "acpx not installed" })),
     prepareFreshSession,
@@ -46,6 +49,20 @@ describe("createLazyAcpRuntimeProxy", () => {
       promptStarted.promise,
     );
     const proxy = createLazyAcpRuntimeProxy(async () => runtime);
+    const inspection = {
+      id: "qwen",
+      name: "Qwen Code",
+      launch: { kind: "installed" as const, argv: ["/test/qwen", "--acp"] },
+    };
+    const inspectAgent = vi.fn(async () => inspection);
+    runtime.inspectAgent = inspectAgent;
+    await expect(proxy.inspectAgent("qwen")).resolves.toBe(inspection);
+    expect(inspectAgent).toHaveBeenCalledExactlyOnceWith("qwen");
+    await proxy.setModel({ handle, model: "$runtime|openai|fixture-model(openai)" });
+    expect(runtime.setModel).toHaveBeenCalledExactlyOnceWith({
+      handle,
+      model: "$runtime|openai|fixture-model(openai)",
+    });
     const accepted = { configOptions: [{ id: "effort", currentValue: "medium" }] };
     runtime.setConfigOption = vi.fn(async () => accepted);
     await expect(proxy.setConfigOption({ handle, key: "effort", value: "high" })).resolves.toBe(
@@ -63,6 +80,8 @@ describe("createLazyAcpRuntimeProxy", () => {
     });
     await proxy.prepareFreshSession({ sessionKey: handle.sessionKey });
     expect(prepareFreshSession).toHaveBeenCalledWith({ sessionKey: handle.sessionKey });
+    await proxy.prepareFreshSession({ handle });
+    expect(prepareFreshSession).toHaveBeenLastCalledWith({ handle });
     const turn = proxy.startTurn({
       handle,
       text: "hello",
@@ -85,6 +104,8 @@ describe("createLazyAcpRuntimeProxy", () => {
   it("fails loudly instead of fabricating success when a resolved runtime is missing hooks", async () => {
     // Contract-violating runtime only reachable by bypassing the type system.
     const incomplete = {
+      findSession: vi.fn(async () => undefined),
+      shutdown: vi.fn(async () => {}),
       ensureSession: vi.fn(async () => handle),
       async *runTurn() {},
       cancel: vi.fn(async () => {}),
@@ -98,6 +119,8 @@ describe("createLazyAcpRuntimeProxy", () => {
     await expect(proxy.getCapabilities({ handle })).rejects.toThrow();
     await expect(proxy.prepareFreshSession({ sessionKey: handle.sessionKey })).rejects.toThrow();
     await expect(proxy.setMode({ handle, mode: "auto" })).rejects.toThrow();
+    await expect(proxy.inspectAgent("qwen")).rejects.toThrow();
+    await expect(proxy.setModel({ handle, model: "opaque-model" })).rejects.toThrow();
     await expect(
       proxy.setConfigOption({ handle, key: "model", value: "sonnet-4.6" }),
     ).rejects.toThrow();

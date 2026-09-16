@@ -334,6 +334,38 @@ test("sessions.reset reuses the watcher while prior MCP retirement is still disp
   });
 });
 
+test("sessions.reset preserves the selected runtime and retires native conversation bindings", async () => {
+  const { dir, storePath } = await createSessionStoreDir();
+  await writeSingleLineSession(dir, "sess-main", "old conversation");
+  await writeSessionStore({
+    entries: {
+      main: {
+        ...sessionStoreEntry("sess-main"),
+        lifecycleRevision: "old-lifecycle",
+        providerOverride: "provider-a",
+        modelOverride: "opaque/model",
+        modelOverrideSource: "user",
+        agentRuntimeOverride: "native-runtime",
+        agentHarnessId: "previous-runtime",
+        cliSessionIds: { "previous-runtime": "old-native-session" },
+      },
+    },
+  });
+  const response = await resetMainSession();
+  expect(response.ok).toBe(true);
+  const entry = loadSessionEntry({ agentId: "main", sessionKey: "agent:main:main", storePath });
+  expect(entry).toMatchObject({
+    sessionId: "sess-main",
+    providerOverride: "provider-a",
+    modelOverride: "opaque/model",
+    modelOverrideSource: "user",
+    agentRuntimeOverride: "native-runtime",
+  });
+  expect(entry?.lifecycleRevision).not.toBe("old-lifecycle");
+  expect(entry?.agentHarnessId).toBeUndefined();
+  expect(entry?.cliSessionIds).toBeUndefined();
+});
+
 test("sessions.reset forwards the retired generation to registered agent harnesses", async () => {
   const registeredHarnesses = listRegisteredAgentHarnesses();
   const reset = vi.fn(async () => undefined);

@@ -124,6 +124,76 @@ describe("models.list configured runtime choices", () => {
     },
   );
 
+  it.each(["default", "configured", "all"] as const)(
+    "lists an unconfigured native-only model in the %s Gateway view without host auth",
+    async (view) => {
+      await withOpenClawTestState(
+        {
+          layout: "state-only",
+          prefix: "native-picker-discovery-",
+          agentEnv: "main",
+          env: WITHOUT_OPENAI_ENV_AUTH,
+        },
+        async (state) => {
+          const cfg: OpenClawConfig = { agents: { defaults: { workspace: state.workspaceDir } } };
+          const entry: ModelCatalogEntry = {
+            provider: "native-provider",
+            id: "model",
+            name: "Native model",
+            nativeRuntime: "native",
+          };
+          const snapshot: ModelCatalogSnapshot = { entries: [entry], routeVariants: [entry] };
+          const pluginRegistry = createEmptyPluginRegistry();
+          pluginRegistry.agentHarnesses.push({
+            pluginId: "native",
+            source: "fixture",
+            harness: {
+              id: "native",
+              label: "Native",
+              autoSelection: { providerIds: [] },
+              authBootstrap: "harness",
+              supports: ({ requestedRuntime }) => ({ supported: requestedRuntime === "native" }),
+              async runAttempt() {
+                throw new Error("models.list must not run a prompt");
+              },
+            },
+          });
+          const projector = createGatewayAgentModelCatalogProjector({
+            cfg,
+            agentId: "main",
+            snapshot,
+            metadataSnapshot: createPluginMetadataSnapshotFixture({ plugins: [] }),
+            preparedAuthStore: { version: 1, profiles: {} },
+            pluginRegistry,
+          });
+          const prepared = await prepareModelsListResult({
+            source: {
+              kind: "gateway",
+              context: {
+                getRuntimeConfig: () => cfg,
+                loadGatewayModelCatalogSnapshot: vi.fn(),
+                logGateway: { debug: vi.fn() },
+              },
+            },
+            agentId: "main",
+            params: { view, includeDetails: true },
+            preloadedCatalog: { agentId: "main", config: cfg, snapshot },
+            preloadedOnly: true,
+            catalogProjector: projector,
+          });
+          expect(prepared.read().models).toEqual([
+            expect.objectContaining({
+              provider: entry.provider,
+              id: entry.id,
+              available: true,
+              agentRuntime: expect.objectContaining({ id: "native", source: "implicit" }),
+            }),
+          ]);
+        },
+      );
+    },
+  );
+
   it.each([true, false])(
     "isolates an OpenClaw alternative from native-first metadata (host donor: %s)",
     async (hostDonor) => {
