@@ -5,6 +5,7 @@ import {
   extractErrorCode,
 } from "@openclaw/normalization-core/error-coercion";
 import { slugifyWorktreeTitle } from "../agents/worktrees/name.js";
+import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { sha256HexPrefixCore } from "../infra/crypto-digest.js";
@@ -185,7 +186,7 @@ export async function refreshProjectClone(
     originUrl: project.originUrl,
   };
   const { signal, timeoutMs, token } = options;
-  const env = { ...(options.env ?? process.env) };
+  const env = cloneEnvWithPlatformSemantics(options.env ?? process.env);
   const context = captureOpenClawStateWorkerContext({ path: options.path, env });
   await withProjectCheckoutLifecycle(
     selectedProject.repoRoot,
