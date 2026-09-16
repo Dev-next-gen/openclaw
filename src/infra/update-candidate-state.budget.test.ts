@@ -280,7 +280,12 @@ it.each(
 function useRehearsalWorkerFixture(runner: string): void {
   const run = commands.runUtf8CommandWithTimeout;
   vi.spyOn(commands, "runUtf8CommandWithTimeout").mockImplementation((argv, options) =>
-    run(argv.includes("--eval") ? argv : [process.execPath, runner, ...argv.slice(1)], options),
+    run(
+      argv.some((arg) => /[/\\]update-candidate-state\.worker\.[cm]?[jt]s$/.test(arg))
+        ? [process.execPath, runner, ...argv.slice(1)]
+        : argv,
+      options,
+    ),
   );
 }
 
