@@ -70,6 +70,7 @@ function createBenchmarkRun(overrides: Partial<BenchmarkRun> = {}): BenchmarkRun
       verified: 0,
       beforeOrdinal: 0,
       afterOrdinal: 0,
+      turnEvidence: { toolTurns: 0, observerModelDigestTurns: 0 },
     },
     probeWarmup: { durationMs: 2, samples: [] },
     pluginMetadataScans: { count: 0, durationMs: null, totalDurationMs: 0 },
@@ -229,6 +230,70 @@ describe("gateway concurrency benchmark script", () => {
     },
   );
 
+  it("separates warmed lifecycle totals while retaining late warmup validation", async () => {
+    const evidence = testing.createTurnEvidence(true);
+    const runs: string[] = [];
+    const sessionKey = "agent:main:phase-test";
+    const toolResult = (runId: string) => ({
+      event: "session.tool",
+      payload: {
+        runId,
+        sessionKey,
+        data: {
+          phase: "result",
+          name: "exec",
+          toolCallId: runId,
+          isError: false,
+          result: {
+            details: { status: "completed", exitCode: 0, aggregated: "openclaw-draft-proof" },
+          },
+        },
+      },
+    });
+    const rpc = async <T>(method: string, params: unknown): Promise<T> => {
+      if (method === "agent") {
+        const runId = (params as { idempotencyKey: string }).idempotencyKey;
+        runs.push(runId);
+        evidence.onEvent({
+          event: "session.tool",
+          payload: {
+            runId,
+            sessionKey,
+            data: { phase: "start", name: "exec", toolCallId: runId },
+          },
+        });
+        evidence.onEvent(toolResult(runId));
+        evidence.onEvent({
+          event: "session.observer",
+          payload: {
+            runId,
+            sessionKey,
+            assessment: "Synthetic benchmark observation is valid.",
+          },
+        });
+        return { runId, status: "ok" } as T;
+      }
+      const runId = (params as { runId: string }).runId;
+      return {
+        ...successfulTerminal(true),
+        runId,
+        terminalReceipt: { ...successfulTerminal(true).terminalReceipt, runId },
+      } as T;
+    };
+    for (const warmup of [true, false]) {
+      await testing.runTurn(rpc, 0, performance.now() + 10_000, true, {
+        sessionKey,
+        evidence,
+        warmup,
+      });
+    }
+    expect(evidence.finish()).toEqual({ toolTurns: 1, observerModelDigestTurns: 1 });
+    expect(evidence.finish("warmup")).toEqual({ toolTurns: 1, observerModelDigestTurns: 1 });
+    evidence.onEvent(toolResult(runs[0]!));
+    expect(() => evidence.finish()).toThrow("duplicated");
+    expect(() => evidence.finish("warmup")).toThrow("duplicated");
+  });
+
   it.each([undefined, "another-run"])(
     "rejects a missing or mismatched agent.wait identity: %s",
     async (waitRunId) => {
@@ -304,7 +369,7 @@ describe("gateway concurrency benchmark script", () => {
       const evidence = testing.createTurnEvidence(true);
       evidence.register("run", "session");
       expect(() => evidence.complete("run", reply)).toThrow("visible final");
-      expect(evidence.finish).toThrow();
+      expect(() => evidence.finish()).toThrow();
     },
   );
 
@@ -1093,9 +1158,10 @@ describe("gateway concurrency benchmark script", () => {
 
   it.each([
     { initialStatus: "accepted", toolEvents: false },
+    { initialStatus: "ok", toolEvents: false },
     { initialStatus: "ok", toolEvents: true },
   ])(
-    "verifies terminal evidence after initial $initialStatus",
+    "verifies terminal evidence after initial $initialStatus (tools: $toolEvents)",
     async ({ initialStatus, toolEvents }) => {
       const methods: string[] = [];
       const accounting = { launched: 0, terminalOk: 0, verified: 0 };

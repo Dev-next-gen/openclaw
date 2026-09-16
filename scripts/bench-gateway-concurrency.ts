@@ -21,7 +21,7 @@ import type { ModelsListResult } from "../packages/gateway-protocol/src/schema/a
 import { asFiniteNumber } from "../packages/normalization-core/src/number-coercion.ts";
 import { isRecord } from "../packages/normalization-core/src/record-coerce.ts";
 import { sliceUtf16Safe } from "../packages/normalization-core/src/utf16-slice.ts";
-import type { waitForAgentJob } from "../src/gateway/agent-turn/agent-job.js";
+import type { createAgentTurnService } from "../src/gateway/agent-turn/agent-turn-service.js";
 import type { SessionsListResult } from "../src/gateway/session-utils.types.js";
 import { applyMockOpenAiModelConfig } from "./e2e/lib/fixtures/mock-openai-config.mjs";
 import {
@@ -185,6 +185,7 @@ type BenchmarkRun = {
     verified: number;
     beforeOrdinal: number;
     afterOrdinal: number;
+    turnEvidence: ReturnType<ReturnType<typeof createTurnEvidence>["finish"]>;
   };
   probeWarmup: {
     durationMs: number;
@@ -925,6 +926,7 @@ function createTurnEvidence(toolEvents: boolean) {
     string,
     {
       sessionKey: string;
+      phase: "warmup" | "load";
       toolCallId?: string;
       toolCompleted: boolean;
       final: boolean;
@@ -933,11 +935,11 @@ function createTurnEvidence(toolEvents: boolean) {
   >();
   let invalid = false;
   return {
-    register(runId: string, sessionKey: string) {
+    register(runId: string, sessionKey: string, phase: "warmup" | "load" = "load") {
       if (turns.has(runId)) {
         throw new Error("duplicate benchmark run identity");
       }
-      turns.set(runId, { sessionKey, toolCompleted: false, final: false, observer: false });
+      turns.set(runId, { sessionKey, phase, toolCompleted: false, final: false, observer: false });
     },
     onEvent(this: void, event: { event: string; payload?: unknown }) {
       const payload = event.payload;
@@ -999,21 +1001,22 @@ function createTurnEvidence(toolEvents: boolean) {
       }
       turn.final = true;
     },
-    finish() {
+    finish(phase: "warmup" | "load" = "load") {
+      const allTurns = [...turns.values()];
       if (
         invalid ||
         (toolEvents &&
-          [...turns.values()].some(
-            (turn) => !turn.toolCallId || !turn.toolCompleted || !turn.final,
-          ))
+          allTurns.some((turn) => !turn.toolCallId || !turn.toolCompleted || !turn.final))
       ) {
         throw new Error(
           "benchmark tool lifecycle evidence is missing, duplicated, or unsuccessful",
         );
       }
+      // Validate late events from both phases, but keep warmup out of measured totals.
+      const phaseTurns = allTurns.filter((turn) => turn.phase === phase);
       return {
-        toolTurns: toolEvents ? turns.size : 0,
-        observerModelDigestTurns: [...turns.values()].filter((turn) => turn.observer).length,
+        toolTurns: toolEvents ? phaseTurns.length : 0,
+        observerModelDigestTurns: phaseTurns.filter((turn) => turn.observer).length,
       };
     },
   };
@@ -1363,7 +1366,7 @@ async function runTurn(
   const requestedRunId = randomUUID();
   const sessionKey = options?.sessionKey ?? `agent:main:gateway-concurrency-${index + 1}`;
   const evidence = options?.evidence ?? createTurnEvidence(toolEvents);
-  evidence.register(requestedRunId, sessionKey);
+  evidence.register(requestedRunId, sessionKey, options?.warmup ? "warmup" : "load");
   if (options?.accounting) {
     options.accounting.launched += 1;
   }
@@ -1388,7 +1391,9 @@ async function runTurn(
   const waitTimeoutMs = Math.max(0, Math.floor(remaining - AGENT_WAIT_RPC_GRACE_MS));
   const rpcTimeoutMs = Math.max(1, Math.ceil(remaining));
   const runId = started.runId ?? requestedRunId;
-  const completed = await rpc<NonNullable<Awaited<ReturnType<typeof waitForAgentJob>>>>(
+  const completed = await rpc<
+    Awaited<ReturnType<ReturnType<typeof createAgentTurnService>["waitForTurn"]>>
+  >(
     "agent.wait",
     {
       runId,
@@ -1685,7 +1690,10 @@ async function runGatewaySample(options: {
   const probeJobs: Promise<unknown>[] = [];
   let gatewayOutput = { readOutput: () => "", readStderrTail: () => "" };
   let mockOutput = { readOutput: () => "", readStderrTail: () => "" };
-  let result: Omit<BenchmarkRun, "mockRequests" | "turnEvidence" | "providerRequests">;
+  let result: Omit<
+    BenchmarkRun,
+    "mockRequests" | "turnEvidence" | "providerRequests" | "agentWarmup"
+  >;
   const mockCheckpoints: MockRequestSnapshot[] = [];
   const turnEvidence = createTurnEvidence(options.toolEvents);
   let gatewayExit: Awaited<ReturnType<typeof stopChild>> | undefined;
@@ -2424,7 +2432,6 @@ async function runGatewaySample(options: {
         messageSubscriptions,
         messageSubscriptionsDuringLoad,
         turnAccounting,
-        agentWarmup,
         probeWarmup,
         pluginMetadataScans: summarizePluginMetadataScans([]),
         readyz,
@@ -2516,6 +2523,7 @@ async function runGatewaySample(options: {
       ),
       mockRequests: summarizeMockRequests(mockCheckpoints),
       turnEvidence: turnEvidence.finish(),
+      agentWarmup: { ...agentWarmup, turnEvidence: turnEvidence.finish("warmup") },
       gatewayProcess: readGatewayProcess(),
       ...(gatewayExit ? { gatewayExit } : {}),
     };
