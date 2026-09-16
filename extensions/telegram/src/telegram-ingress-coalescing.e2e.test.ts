@@ -89,6 +89,8 @@ const { resetTelegramAccountThrottlersForTest } = await import("./runtime.test-s
 const { openTelegramIngressQueue, telegramQueueEventId } =
   await import("./telegram-ingress-spool.js");
 const { writeTelegramSpooledUpdate } = await import("./telegram-ingress-spool.test-support.js");
+const messageDispatchDedupe = await import("./message-dispatch-dedupe.js");
+const processingOutcome = await import("./bot-processing-outcome.js");
 
 const cfg = {
   channels: { telegram: { dmPolicy: "open", allowFrom: ["*"] } },
@@ -360,6 +362,142 @@ describe("Telegram durable ingress coalescing", () => {
 
     await monitor.stop();
     await telegramTransport.close();
+  });
+
+  it.each(["commit", "rollback"] as const)(
+    "joins a buffered adoption %s before monitor stop returns",
+    async (phase) => {
+      const operationStarted = createDeferred<void>();
+      const releaseOperation = createDeferred<void>();
+      const createGuard = messageDispatchDedupe.createTelegramMessageDispatchReplayGuard;
+      const commitReplay = messageDispatchDedupe.commitTelegramMessageDispatchReplay;
+      const settlements: Promise<void>[] = [];
+      const commitSpy = vi
+        .spyOn(messageDispatchDedupe, "commitTelegramMessageDispatchReplay")
+        .mockImplementation((params) => {
+          const settlement = commitReplay(params);
+          settlements.push(settlement);
+          return settlement;
+        });
+      let commitCount = 0;
+      const guardSpy = vi
+        .spyOn(messageDispatchDedupe, "createTelegramMessageDispatchReplayGuard")
+        .mockImplementation((options) => {
+          const guard = createGuard(options);
+          return {
+            ...guard,
+            claim: async (...args) => {
+              const claim = await guard.claim(...args);
+              if (claim.kind !== "claimed") {
+                return claim;
+              }
+              return {
+                ...claim,
+                handle: {
+                  ...claim.handle,
+                  commit: async (commitOptions) => {
+                    commitCount += 1;
+                    if (phase === "commit" && commitCount === 1) {
+                      operationStarted.resolve();
+                      await releaseOperation.promise;
+                      return await claim.handle.commit(commitOptions);
+                    }
+                    if (phase === "rollback" && commitCount === 2) {
+                      await claim.handle.commit(commitOptions);
+                      throw new Error("synthetic second-key commit failure");
+                    }
+                    return await claim.handle.commit(commitOptions);
+                  },
+                },
+              };
+            },
+            forget: async (...args) => {
+              if (phase === "rollback") {
+                operationStarted.resolve();
+                await releaseOperation.promise;
+              }
+              return await guard.forget(...args);
+            },
+          };
+        });
+      let stopping: Promise<void> | undefined;
+      try {
+        await writeTelegramSpooledUpdate({
+          spoolDir,
+          update: forwardedTextUpdate({ updateId: 901, messageId: 1, text: "First note" }),
+        });
+        await writeTelegramSpooledUpdate({
+          spoolDir,
+          update: forwardedTextUpdate({ updateId: 902, messageId: 2, text: "Second note" }),
+        });
+        const { monitor } = await createMonitor({ onRuntimeError: vi.fn() });
+        monitor.start();
+        await operationStarted.promise;
+        let stopped = false;
+        stopping = monitor.stop().then(() => {
+          stopped = true;
+        });
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 50);
+        });
+        expect(stopped).toBe(false);
+      } finally {
+        releaseOperation.resolve();
+        await Promise.allSettled(settlements);
+        await stopping;
+        commitSpy.mockRestore();
+        guardSpy.mockRestore();
+      }
+      const queue = openTelegramIngressQueue(spoolDir);
+      expect(await queue.listClaims()).toEqual([]);
+      if (phase === "commit") {
+        await assertSpoolTombstoned({ spoolDir, updateIds: [901, 902] });
+      } else {
+        expect(await queue.listPending({ limit: "all" })).toMatchObject([
+          { id: telegramQueueEventId(901), attempts: 0 },
+          { id: telegramQueueEventId(902), attempts: 0 },
+        ]);
+      }
+      const replayGuard = createGuard();
+      for (const messageId of [1, 2]) {
+        expect(
+          await replayGuard.hasRecent({
+            accountId: "default",
+            botUserId: telegramBotInfoForTest.id,
+            msg: forwardedTextUpdate({ updateId: 900 + messageId, messageId, text: "note" })
+              .message,
+          }),
+        ).toBe(phase === "commit");
+      }
+    },
+  );
+
+  it("settles a never-adopted buffered participant when monitor stop aborts its owner", async () => {
+    const buffered = createDeferred<void>();
+    const createParticipant = processingOutcome.createTelegramSpooledReplayParticipant;
+    const participantSpy = vi
+      .spyOn(processingOutcome, "createTelegramSpooledReplayParticipant")
+      .mockImplementation((key) => {
+        const participant = createParticipant(key);
+        buffered.resolve();
+        return participant;
+      });
+    try {
+      const { monitor } = await createMonitor({ onRuntimeError: vi.fn() });
+      monitor.start();
+      await monitor.admit(textUpdate({ updateId: 903, messageId: 3, text: "long ".repeat(810) }));
+      await buffered.promise;
+      await monitor.stop();
+      expect(downstreamTurns).not.toHaveBeenCalled();
+      const queue = openTelegramIngressQueue(spoolDir);
+      expect(await queue.listClaims()).toEqual([]);
+      expect(await queue.listFailed?.({ limit: "all" })).toEqual([]);
+      expect(await queue.listPending({ limit: "all" })).toMatchObject([
+        { id: telegramQueueEventId(903), attempts: 0 },
+      ]);
+    } finally {
+      participantSpy.mockRestore();
+    }
   });
 
   it("coalesces a forwarded burst admitted a few milliseconds apart", async () => {

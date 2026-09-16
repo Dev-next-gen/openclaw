@@ -306,15 +306,30 @@ describe.each(["automatic", "saved-clear", "automatic-during-catalog"] as const)
           let beforeRecoveryReply: ReturnType<typeof stats>;
           if (catalogHold) {
             const heldCatalog = catalogHold;
-            provider.observeNextSuccess(() => {
-              beforeRecoveryReply = stats();
-              observations.push({
-                action: "catalog-release-at-recovery",
-                state: beforeRecoveryReply,
-              });
-              // Publish after recovery without spending the catalog deadline on terminal delivery.
-              heldCatalog.release();
+            provider.observeNextSuccess(
+              () => {
+                beforeRecoveryReply = stats();
+                observations.push({
+                  action: "catalog-release-at-recovery",
+                  state: beforeRecoveryReply,
+                });
+                // Publish after recovery without spending the catalog deadline on terminal delivery.
+                heldCatalog.release();
+              },
+              { model: "gpt-5.5", path: "/v1/responses" },
+            );
+            const auxiliary = await fetch(`${provider.baseUrl}/v1/responses`, {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                authorization: `Bearer ${fixture.access}`,
+                "chatgpt-account-id": ACCOUNT_ID,
+              },
+              body: JSON.stringify({ model: "gpt-5.6-luna", input: [] }),
             });
+            expect(auxiliary.status, evidence()).toBe(200);
+            await auxiliary.text();
+            expect(beforeRecoveryReply, evidence()).toBeUndefined();
           }
           const nextTurn = await turn();
           const inference = provider.requests
