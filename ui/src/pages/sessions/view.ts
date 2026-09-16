@@ -1438,7 +1438,6 @@ function renderRows(row: GatewaySessionRow, props: SessionsProps) {
         basePath: props.basePath,
         row,
         mainKey: props.mainKey,
-        shortIdLength: 32,
       }).href
     : null;
   const displayKind = resolveSessionDisplayKind(row);

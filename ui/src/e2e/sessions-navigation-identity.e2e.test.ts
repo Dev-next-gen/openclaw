@@ -43,6 +43,7 @@ const scenarios: Scenario[] = [
   { name: "same-title prefix collision", sameTitle: true },
   { name: "ordinary table row", sameTitle: true, source: "table" },
   { name: "copied table link", sameTitle: true, source: "href" },
+  { name: "cached same-title copied table link", cached: true, sameTitle: true, source: "href" },
   { name: "saved dashboard face", sameTitle: true, face: "dashboard" },
 ];
 

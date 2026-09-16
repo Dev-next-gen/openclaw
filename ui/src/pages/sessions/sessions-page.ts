@@ -1824,7 +1824,6 @@ class SessionsPage extends OpenClawLightDomElement {
               face,
               sessionKey,
               agentId: this.sessionPathAgentId(sessionKey, context),
-              shortIdLength: 32,
               preferenceDerivedFace: true,
             });
             context.navigate(face, target.options);
