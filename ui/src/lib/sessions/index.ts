@@ -285,8 +285,7 @@ export function createSessionCapability(
     readState: () => state,
     publish,
     copyRow: roster.copyRow,
-    refreshReplacement: roster.refreshReplacement,
-    refreshReplacementResult: roster.refreshReplacementResult,
+    reconcileMutation: roster.reconcileMutation,
     publishedRow: (key) => roster.publishedRow((row) => row.key === key),
     archiveFields: roster,
     readRevision: () => roster.requestRevision,
@@ -307,15 +306,14 @@ export function createSessionCapability(
     publishedRow: (matches) => roster.publishedRow(matches),
     redecorateLists: () => roster.redecorateLists(),
     invalidateLists: () => roster.scheduleEvent(),
-    refreshReplacement: roster.refreshReplacement,
+    reconcileMutation: roster.reconcileMutation,
     reconcilePreviousConnection: mutations.reconcileConfirmedPreviousConnection,
     retire: mutations.retireDeletedSession,
   });
 
   const operations = createSessionScopedOperations({
     connection,
-    agentId: () => state.agentId,
-    refreshReplacement: roster.refreshReplacement,
+    reconcileMutation: roster.reconcileMutation,
     notifyCreated,
     reportError: (error) => publish({ ...state, error: formatUiError(error) }, "operation"),
   });

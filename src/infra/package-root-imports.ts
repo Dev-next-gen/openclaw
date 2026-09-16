@@ -100,6 +100,7 @@ function union(...values: Origin[][]): Origin[] {
 
 /** Read dependency ownership without resolving or executing the inspected package. */
 export function collectPackageRootImports(source: string): string[] {
+  // SAFETY: The pinned TypeScript runtime implements the compiler API in its declarations.
   const ts = require("typescript") as typeof import("typescript");
   const file = ts.createSourceFile(
     "dist.js",

@@ -856,6 +856,107 @@ describe("mock OpenAI response markers", () => {
     }
   });
 
+  it("resumes the MCP Code Mode fixture until the latest result completes", async () => {
+    await withMockServer(mockOpenAiPath, {}, async (baseUrl) => {
+      const input: Record<string, unknown>[] = [
+        { content: "mcp code mode api file qa check", role: "user" },
+      ];
+      const request = async () => {
+        const response = await fetch(`${baseUrl}/v1/responses`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input,
+            stream: false,
+            tools: ["exec", "wait"].map((name) => ({
+              name,
+              parameters: { type: "object" },
+              type: "function",
+            })),
+          }),
+        });
+        expect(response.status).toBe(200);
+        return await response.json();
+      };
+      const first = await request();
+      expect(first.output?.[0]).toMatchObject({ name: "exec", type: "function_call" });
+      expect(JSON.parse(first.output[0].arguments)).toMatchObject({
+        language: "javascript",
+        code: expect.stringContaining('MCP.fixture.lookupNote({ id: "alpha" })'),
+      });
+
+      for (const reason of ["pending_tools", "yield"]) {
+        input.push({
+          output: JSON.stringify({ status: "waiting", runId: "cm_fixture", reason, output: [] }),
+          type: "function_call_output",
+        });
+        const pending = await request();
+        expect(pending.output?.[0]).toMatchObject({
+          arguments: JSON.stringify({ runId: "cm_fixture" }),
+          name: "wait",
+          type: "function_call",
+        });
+      }
+
+      input.push({
+        output: JSON.stringify({
+          status: "completed",
+          value: {
+            marker: "MCP_CODE_MODE_FILE_TOOL_RESULT",
+            resultText: "fixture-note-alpha",
+          },
+        }),
+        type: "function_call_output",
+      });
+      const completed = await request();
+      expect(completed.output?.[0]?.content?.[0]?.text).toContain(
+        "MCP_CODE_MODE_FILE_OK note=fixture-note-alpha",
+      );
+
+      input.push({ output: "fixture call failed", type: "function_call_output" });
+      const failed = await request();
+      expect(failed.output?.[0]?.content?.[0]?.text).toBe(
+        "MCP_CODE_MODE_FILE_FAIL unclear=code-mode-exec-did-not-return-fixture-note",
+      );
+    });
+  });
+
+  it.each([
+    { output: { status: "waiting", runId: "cm_fixture" }, tools: ["exec"] },
+    { output: { status: "waiting", runId: "" }, tools: ["exec", "wait"] },
+    { output: { status: "waiting", runId: 42 }, tools: ["exec", "wait"] },
+    {
+      output: { value: { status: "waiting", runId: "nested-operation" } },
+      tools: ["exec", "wait"],
+    },
+    { output: "not JSON", tools: ["exec", "wait"] },
+    { output: "", tools: ["exec", "wait"] },
+    { output: undefined, tools: ["exec", "wait"] },
+  ])("rejects an unusable MCP Code Mode continuation: $output", async ({ output, tools }) => {
+    await withMockServer(mockOpenAiPath, {}, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/v1/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          input: [
+            { content: "mcp code mode api file qa check", role: "user" },
+            {
+              output: typeof output === "string" ? output : JSON.stringify(output),
+              type: "function_call_output",
+            },
+          ],
+          stream: false,
+          tools: tools.map((name) => ({ name, parameters: { type: "object" }, type: "function" })),
+        }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.output?.[0]?.content?.[0]?.text).toBe(
+        "MCP_CODE_MODE_FILE_FAIL unclear=code-mode-exec-did-not-return-fixture-note",
+      );
+    });
+  });
+
   it("drives the MCP App fixture tool before returning the visible marker", async () => {
     await withMockServer(mockOpenAiPath, {}, async (baseUrl) => {
       const first = await fetch(`${baseUrl}/v1/responses`, {
