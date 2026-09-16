@@ -14,6 +14,11 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { runWithDiagnosticTraceContext } from "../infra/diagnostic-trace-context.js";
 import { registerDiagnosticTracePropagationBridge } from "../infra/diagnostic-trace-propagation.js";
 import {
+  getDiagnosticStabilitySnapshot,
+  resetDiagnosticStabilityRecorderForTest,
+  startDiagnosticStabilityRecorder,
+} from "../logging/diagnostic-stability.js";
+import {
   emitDiagnosticEvent,
   onDiagnosticEvent,
   onInternalDiagnosticEvent,
@@ -161,6 +166,7 @@ describe("native model selection runtime diagnostics", () => {
     await waitForDiagnosticEventsDrained();
     unsubscribe();
     resetDiagnosticEventsForTest();
+    resetDiagnosticStabilityRecorderForTest();
     await resetPreparedModelRuntimeSnapshotsForTest();
     vi.restoreAllMocks();
     await state.cleanup();
@@ -396,14 +402,17 @@ describe("native model selection runtime diagnostics", () => {
     ).toEqual(projected);
   });
 
-  it("does not promote untrusted diagnostic input to an owning decision", async () => {
+  it("keeps guard facts out of stability snapshots and ignores untrusted decision input", async () => {
+    startDiagnosticStabilityRecorder();
     await publish();
     await select();
     await waitForDiagnosticEventsDrained();
     const accepted = events[0]!;
+    expect(getDiagnosticStabilitySnapshot({ type: "model.runtime_choice" }).count).toBe(0);
     events.length = 0;
     emitDiagnosticEvent(accepted);
     await waitForDiagnosticEventsDrained();
     expect(events).toEqual([]);
+    expect(getDiagnosticStabilitySnapshot({ type: "model.runtime_choice" }).count).toBe(0);
   });
 });
