@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import type { Duplex, Readable, Writable } from "node:stream";
-import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
 import { extractErrorCode, toErrorObject } from "../../infra/errors.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
@@ -18,6 +17,7 @@ import { createManagedChildStdin } from "./adapters/child-stdin.js";
 import { toStringEnv } from "./adapters/env.js";
 import { createProcessAdapterEvents } from "./adapters/process-events.js";
 import { GRACEFUL_CANCEL_TIMEOUT_MS } from "./cancellation-policy.js";
+import { readServiceChildControl } from "./service-child-control-reader.js";
 import { createOutputRelay } from "./service-child-output-relay.js";
 import {
   encodeServiceChildMessage,
@@ -39,8 +39,6 @@ type ServiceChildRelayAdapter = SpawnProcessAdapter<NodeJS.Signals | null> & {
 } & Required<Pick<SpawnProcessAdapter<NodeJS.Signals | null>, "onExit" | "onError">>;
 type AuthorityState = "starting" | "active" | "closing" | "closed" | "identity-lost";
 type StdioEntry = "ignore" | "inherit" | "ipc" | "pipe" | number;
-
-const CONTROL_PENDING_LINE_LIMIT_BYTES = 256 * 1024;
 
 function readChildMessage(raw: unknown): ServiceChildRelayMessage | ServiceChildAnchorMessage {
   // SAFETY: the spawned relay or Job anchor is the sole writer on each private protocol channel.
@@ -447,13 +445,14 @@ export async function createServiceChildRelayAdapter(
         }
       }
       const remainingMs = cleanupDeadline! - performance.now();
-      if (remainingMs <= 0) {
+      if (remainingMs <= 0 && childExited) {
         expireCleanup();
         return;
       }
       try {
+        // After the budget expires, the deadline owner's I/O poll can still deliver queued exit.
         await Promise.race([
-          delay(Math.min(100, remainingMs)),
+          ...(remainingMs > 0 ? [delay(Math.min(100, remainingMs))] : []),
           ...(!childExited ? [relayExit.promise] : []),
           extinctionCompletion.promise,
         ]);
@@ -538,55 +537,24 @@ export async function createServiceChildRelayAdapter(
   };
 
   if (control) {
-    let pending = "";
-    let pendingBytes = 0;
-    let decoder = new StringDecoder("utf8");
-    const rejectControlLine = () => {
-      loseIdentity("control pipe pending line exceeded cap");
-      child.kill("SIGKILL");
-      pending = "";
-      pendingBytes = 0;
-      decoder = new StringDecoder("utf8");
-    };
-    const parseControlLine = (fragment: Buffer): boolean => {
-      const line = pending + decoder.end(fragment);
-      pending = "";
-      pendingBytes = 0;
-      decoder = new StringDecoder("utf8");
-      try {
-        const message = readChildMessage(JSON.parse(line));
-        if (!("sequence" in message) || message.type === "retirement") {
-          throw new Error("invalid anchor message");
-        }
-        handleAnchorMessage(message);
-      } catch {
-        loseIdentity("invalid anchor message");
-      }
-      return true;
-    };
-    // Keep raw bytes until the line cap accepts each fragment.
-    // String mode decodes a complete oversized frame before this parser can reject it.
-    control.on("data", (chunk: Buffer) => {
-      let offset = 0;
-      for (;;) {
-        const searchLength = CONTROL_PENDING_LINE_LIMIT_BYTES - pendingBytes + 1;
-        const boundedChunk = chunk.subarray(offset, offset + searchLength);
-        const newline = boundedChunk.indexOf(0x0a);
-        if (newline < 0) {
-          if (boundedChunk.length === searchLength) {
-            rejectControlLine();
-          } else {
-            pending += decoder.write(boundedChunk);
-            pendingBytes += boundedChunk.length;
+    readServiceChildControl(
+      control,
+      (line) => {
+        try {
+          const message = readChildMessage(JSON.parse(line));
+          if (!("sequence" in message) || message.type === "retirement") {
+            throw new Error("invalid anchor message");
           }
-          return;
+          handleAnchorMessage(message);
+        } catch {
+          loseIdentity("invalid anchor message");
         }
-        if (!parseControlLine(boundedChunk.subarray(0, newline))) {
-          return;
-        }
-        offset += newline + 1;
-      }
-    });
+      },
+      () => {
+        loseIdentity("control pipe pending line exceeded cap");
+        child.kill("SIGKILL");
+      },
+    );
     const finishControl = () => {
       void finishPosixAuthority(
         childError?.message ??
