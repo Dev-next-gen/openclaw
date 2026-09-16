@@ -66,6 +66,7 @@ export function* sortAndLimitByWork<T extends object>(
 ): SynchronousWork<T[]> {
   if (limit !== undefined && limit <= TOP_N_LIMIT) {
     const selected: T[] = [];
+    // oxlint-disable-next-line typescript/prefer-for-of -- Indexing avoids per-row iterator allocations in this generator.
     for (let index = 0; index < entries.length; index++) {
       const entry = entries[index]!;
       if (shouldYield?.()) {
