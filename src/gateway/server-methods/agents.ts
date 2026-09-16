@@ -108,9 +108,12 @@ import { resolveUserPath } from "../../utils.js";
 import { listAgentsForGateway } from "../session-utils.js";
 import {
   AgentConfigPreconditionError,
+  AgentModelSelectionError,
   deleteAgentConfigEntry,
   isConfiguredAgent,
+  isImplicitAgentModelUpdate,
   updateAgentConfigEntry,
+  validateAgentModelSelectionUpdate,
 } from "./agents-config-mutations.js";
 import { readPreparedServerMethodModelCatalog } from "./optional-model-catalog.js";
 import type { GatewayRequestHandlers, RespondFn } from "./types.js";
@@ -914,11 +917,6 @@ export const agentsHandlers: GatewayRequestHandlers = {
       return;
     }
     const agentId = normalized.value;
-    if (!isConfiguredAgent(cfg, agentId)) {
-      respondAgentNotFound(respond, agentId);
-      return;
-    }
-
     const workspaceDir =
       typeof params.workspace === "string" && params.workspace.trim()
         ? resolveUserPath(params.workspace.trim())
@@ -943,9 +941,20 @@ export const agentsHandlers: GatewayRequestHandlers = {
       ...(safeName ? { name: safeName } : {}),
       ...(workspaceDir ? { workspace: workspaceDir } : {}),
       ...(model !== undefined ? { model } : {}),
+      ...(params.agentRuntime ? { agentRuntime: params.agentRuntime } : {}),
       ...(identity ? { identity } : {}),
     };
-    const nextConfig = applyAgentConfig(cfg, agentConfigUpdate);
+    const selectionError = validateAgentModelSelectionUpdate(params);
+    if (selectionError) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, selectionError));
+      return;
+    }
+    const configured = isConfiguredAgent(cfg, agentId);
+    if (!configured && !isImplicitAgentModelUpdate(cfg, agentConfigUpdate)) {
+      respondAgentNotFound(respond, agentId);
+      return;
+    }
+    const nextConfig = configured ? applyAgentConfig(cfg, agentConfigUpdate) : cfg;
 
     let ensuredWorkspace: Awaited<ReturnType<typeof ensureAgentWorkspace>> | undefined;
     if (workspaceDir) {
@@ -993,6 +1002,10 @@ export const agentsHandlers: GatewayRequestHandlers = {
     } catch (error) {
       if (error instanceof AgentConfigPreconditionError) {
         respondAgentNotFound(respond, agentId);
+        return;
+      }
+      if (error instanceof AgentModelSelectionError) {
+        respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, error.message));
         return;
       }
       throw error;

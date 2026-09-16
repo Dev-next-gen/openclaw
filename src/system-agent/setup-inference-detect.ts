@@ -277,27 +277,6 @@ async function discoverSetupInference(
   const detected = await detect({ config: cfg, agentId: targetAgentId });
   signal.throwIfAborted();
   const unavailableCandidates: SetupInferenceUnavailableCandidate[] = [];
-  const probe = deps.probeLocalCommand ?? (await import("./probes.js")).probeLocalCommand;
-  const [pi, opencode] = await Promise.all([probe("pi"), probe("opencode")]);
-  signal.throwIfAborted();
-  if (pi.found && !pi.timedOut) {
-    unavailableCandidates.push({
-      id: "pi-cli",
-      label: "Pi CLI",
-      detail: "installed",
-      reason:
-        "Pi CLI is installed, but its whole-agent sessions require separate setup and are not a reusable guided-setup inference route.",
-    });
-  }
-  if (opencode.found && !opencode.timedOut) {
-    unavailableCandidates.push({
-      id: "opencode-cli",
-      label: "OpenCode CLI",
-      detail: "installed",
-      reason:
-        "OpenCode CLI is installed, but its ACP harness requires separate setup and is not a reusable guided-setup inference route.",
-    });
-  }
   const configuredModel = detected.find(
     (candidate) => candidate.kind === "existing-model",
   )?.modelRef;

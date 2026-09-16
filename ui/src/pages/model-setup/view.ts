@@ -1,7 +1,9 @@
 import { html, nothing, type TemplateResult } from "lit";
-import type { SystemAgentSetupDetectResult } from "../../api/types.ts";
+import type { ModelCatalogEntry, SystemAgentSetupDetectResult } from "../../api/types.ts";
 import { subtitleForRoute, titleForRoute } from "../../app-navigation.ts";
 import { icons } from "../../components/icons.ts";
+import { renderModelPicker } from "../../components/model-picker.ts";
+import { providerDisplayLabel } from "../../components/provider-icon.ts";
 import { renderLearnMoreLink } from "../../components/settings-ui.ts";
 import { renderSettingsWorkspace } from "../../components/settings-workspace.ts";
 import { t } from "../../i18n/index.ts";
@@ -51,6 +53,14 @@ type ModelSetupViewProps = {
   firstRun: boolean;
   nativeSessionCatalogsEnabled?: boolean;
   onNativeSessionCatalogsChange?: (enabled: boolean) => void;
+  nativeModels?: readonly ModelCatalogEntry[];
+  nativeModel?: string;
+  nativeModelError?: string | null;
+  nativeModelSaving?: boolean;
+  nativeModelsStatus?: "idle" | "loading" | "ready";
+  onNativeModelChange?: (model: string) => void;
+  onUseNativeModel?: () => void;
+  onNativeModelsOpen?: () => void;
   iconUrls: Readonly<Record<string, string>>;
   onDetect: () => void;
   onVerify: () => void;
@@ -153,6 +163,9 @@ function renderCandidateRows(props: ModelSetupViewProps, result: SystemAgentSetu
 }
 
 function renderEmptyState(props: ModelSetupViewProps, result: SystemAgentSetupDetectResult) {
+  if (props.nativeModels?.length) {
+    return nothing;
+  }
   const installs = result.recommendedInstalls ?? [];
   if (
     result.candidates.length > 0 ||
@@ -501,8 +514,47 @@ function renderReady(props: ModelSetupViewProps, result: SystemAgentSetupDetectR
   }
   return html`
     ${current} ${renderNativeSessionDiscovery(props, result)} ${renderEmptyState(props, result)}
-    ${renderCandidateRows(props, result)} ${renderUnavailable(props, result)}
-    ${renderPrepare(props, result)} ${renderSignIn(props, result)} ${renderManual(props, result)}
+    ${renderNativeModels(props)} ${renderCandidateRows(props, result)}
+    ${renderUnavailable(props, result)} ${renderPrepare(props, result)}
+    ${renderSignIn(props, result)} ${renderManual(props, result)}
+  `;
+}
+
+function renderNativeModels(props: ModelSetupViewProps) {
+  const models = props.nativeModels ?? [];
+  const selected = models.find((model) => `${model.provider}/${model.id}` === props.nativeModel);
+  return html`
+    <section class="settings-section" data-native-model-setup>
+      <div class="settings-section__header"><h2>${t("modelSetup.nativeModels.title")}</h2></div>
+      <p class="muted">${t("modelSetup.nativeModels.body")}</p>
+      ${props.nativeModelsStatus === "loading" ? html`<p role="status">${t("modelSetup.nativeModels.loading")}</p>` : nothing}
+      ${props.nativeModelsStatus === "ready" && models.length === 0 ? html`<p role="status">${t("modelSetup.nativeModels.empty")}</p>` : nothing}
+      ${renderModelPicker({
+        label: t("modelSetup.nativeModels.choose"),
+        value: props.nativeModel ?? "",
+        options: models.map((model) => ({
+          value: `${model.provider}/${model.id}`,
+          label: model.name,
+          provider: model.provider,
+          detail:
+            model.available === true
+              ? providerDisplayLabel(model.provider)
+              : t("modelSetup.nativeModels.signIn"),
+          disabled: model.available !== true,
+        })),
+        disabled: props.actionsDisabled || props.activationUnresolved,
+        onChange: (value) => props.onNativeModelChange?.(value),
+        onOpen: props.onNativeModelsOpen,
+      })}
+      <button
+        class="btn primary"
+        ?disabled=${props.actionsDisabled || props.activationUnresolved || selected?.available !== true}
+        @click=${props.onUseNativeModel}
+      >
+        ${t(props.nativeModelSaving ? "modelSetup.nativeModels.saving" : "modelSetup.nativeModels.use")}
+      </button>
+      ${props.nativeModelError ? html`<div class="callout danger" role="alert">${props.nativeModelError}</div>` : nothing}
+    </section>
   `;
 }
 

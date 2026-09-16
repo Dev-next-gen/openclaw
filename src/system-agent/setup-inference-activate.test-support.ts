@@ -318,7 +318,6 @@ export async function fixture(
         resolveManifestProviderAuthChoices: () => [choice],
         resolvePluginProviders: () => [provider],
         detectInferenceBackends: async () => [],
-        probeLocalCommand: async (command) => ({ command, found: false }),
       }),
     );
   const diagnostics = async (result: unknown) => {

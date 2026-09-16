@@ -210,6 +210,8 @@ export const AgentsUpdateParamsSchema = closedObject({
   name: Type.Optional(NonEmptyString),
   workspace: Type.Optional(NonEmptyString),
   model: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
+  /** Exact catalog runtime for a model-only selection; native authentication stays with it. */
+  agentRuntime: Type.Optional(NonEmptyString),
   emoji: Type.Optional(Type.String()),
   avatar: Type.Optional(Type.String()),
 });
