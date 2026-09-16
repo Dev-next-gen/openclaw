@@ -209,20 +209,6 @@ export async function resolveModelAsync(
       }
       return staticCatalogModel;
     };
-    if (normalizedRef.manifestAlias.ambiguous) {
-      return {
-        error: buildUnknownModelError({
-          provider: normalizedRef.provider,
-          modelId: normalizedRef.model,
-          cfg,
-          agentDir: resolvedAgentDir,
-          workspaceDir,
-          runtimeHooks,
-        }),
-        authStorage,
-        modelRegistry,
-      };
-    }
     const explicitModel = resolveExplicitModelWithRegistry({
       provider: normalizedRef.provider,
       modelId: normalizedRef.model,
@@ -239,22 +225,25 @@ export async function resolveModelAsync(
           : undefined,
       getStaticCatalogModel: getManifestStaticCatalogModel,
     });
-    if (explicitModel?.kind === "suppressed") {
-      const suppressedRuntimeModel = resolveRuntimePreferredSuppressedModel({
-        provider: normalizedRef.provider,
-        modelId: normalizedRef.model,
-        modelRegistry,
-        cfg,
-        agentDir: resolvedAgentDir,
-        ...(options?.agentRuntimeId ? { agentRuntimeId: options.agentRuntimeId } : {}),
-        manifestAlias: normalizedRef.manifestAlias,
-        workspaceDir,
-        authProfileId: options?.authProfileId,
-        authProfileMode: options?.authProfileMode,
-        preferredProfile: options?.preferredProfile,
-        runtimeHooks,
-        getStaticCatalogModel: getManifestStaticCatalogModel,
-      });
+    if (explicitModel && explicitModel.kind !== "resolved") {
+      const suppressedRuntimeModel =
+        explicitModel.kind === "suppressed"
+          ? resolveRuntimePreferredSuppressedModel({
+              provider: normalizedRef.provider,
+              modelId: normalizedRef.model,
+              modelRegistry,
+              cfg,
+              agentDir: resolvedAgentDir,
+              ...(options?.agentRuntimeId ? { agentRuntimeId: options.agentRuntimeId } : {}),
+              manifestAlias: normalizedRef.manifestAlias,
+              workspaceDir,
+              authProfileId: options?.authProfileId,
+              authProfileMode: options?.authProfileMode,
+              preferredProfile: options?.preferredProfile,
+              runtimeHooks,
+              getStaticCatalogModel: getManifestStaticCatalogModel,
+            })
+          : undefined;
       if (suppressedRuntimeModel) {
         return { model: suppressedRuntimeModel, logicalRef, authStorage, modelRegistry };
       }

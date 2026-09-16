@@ -39,7 +39,7 @@ import {
 type ExplicitModelResolution =
   | { kind: "resolved"; model: Model; source: "configured" }
   | { kind: "resolved"; dropOnRuntimeMiss: boolean; model: Model; source: "registry" }
-  | { kind: "suppressed"; error?: string };
+  | { kind: "suppressed" | "unavailable"; error?: string };
 
 function getRegistryProviderMetadataOwners(
   modelRegistry: CoreModelRegistry,
@@ -65,6 +65,10 @@ export function resolveExplicitModelWithRegistry(params: {
   getStaticCatalogModel?: () => StaticCatalogFallbackModel | undefined;
 }): ExplicitModelResolution | undefined {
   const { provider, modelId, modelRegistry, cfg, agentDir, workspaceDir, runtimeHooks } = params;
+  // Competing activated owners cannot lend either model or transport authority.
+  if (params.manifestAlias.ambiguous) {
+    return { kind: "unavailable" };
+  }
   if (shouldUnconditionallySuppress({ provider, id: modelId, config: cfg, workspaceDir })) {
     return { kind: "suppressed" };
   }
@@ -387,13 +391,11 @@ type ResolveModelWithPreparedRegistryParams = ResolveModelWithRegistryParams & {
 export function resolveModelWithPreparedRegistry(
   params: ResolveModelWithPreparedRegistryParams,
 ): Model | undefined {
-  // Competing activated owners leave credentials and transport authority unresolved.
-  // Refuse the route before configured fallbacks can accidentally select either owner.
-  if (params.manifestAlias.ambiguous) {
-    return undefined;
-  }
   const runtimeHooks = params.runtimeHooks ?? DEFAULT_PROVIDER_RUNTIME_HOOKS;
   const explicitModel = resolveExplicitModelWithRegistry(params);
+  if (explicitModel?.kind === "unavailable") {
+    return undefined;
+  }
   if (explicitModel?.kind === "suppressed") {
     return resolveRuntimePreferredSuppressedModel(params);
   }

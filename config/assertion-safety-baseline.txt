@@ -1684,7 +1684,7 @@ src/agents/embedded-agent-runner/model.compat.ts	1
 src/agents/embedded-agent-runner/model.configured-fallback.ts	1
 src/agents/embedded-agent-runner/model.configured-overrides.ts	2
 src/agents/embedded-agent-runner/model.provider-hooks.ts	10
-src/agents/embedded-agent-runner/model.registry-resolution.ts	6
+src/agents/embedded-agent-runner/model.registry-resolution.ts	3
 src/agents/embedded-agent-runner/model.ts	5
 src/agents/embedded-agent-runner/openrouter-model-capabilities.ts	2
 src/agents/embedded-agent-runner/prepared-compaction-runtime.ts	1

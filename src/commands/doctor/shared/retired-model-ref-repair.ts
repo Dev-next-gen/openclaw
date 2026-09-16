@@ -195,13 +195,10 @@ export function createRetiredModelRefRepairResolver(params: {
     input: Parameters<ModelRefRepairResolver>[0],
     agentId: string,
   ): ModelRefRepair => {
-    const owner = owners.get(agentId);
-    if (!owner) {
-      return { kind: "unchanged" };
-    }
     const parsed = splitTrailingAuthProfile(input.modelRef);
-    const model = owner.model(parsed.model);
-    if (!model) {
+    const owner = owners.get(agentId);
+    const model = owner?.model(parsed.model);
+    if (!owner || !model) {
       return { kind: "unchanged" };
     }
     const provider = model.provider;
@@ -362,12 +359,14 @@ export function createRetiredModelRefRepairResolver(params: {
     if (!("retirementScope" in first)) {
       return first;
     }
-    const scopes = decisions.flatMap((decision) =>
-      "retirementScope" in decision ? [decision.retirementScope] : [],
+    const scopes = new Set(
+      decisions.flatMap((decision) =>
+        "retirementScope" in decision ? [decision.retirementScope] : [],
+      ),
     );
-    const retirementScope = scopes.includes("route")
+    const retirementScope = scopes.has("route")
       ? "route"
-      : scopes.includes("owner")
+      : scopes.has("owner")
         ? "owner"
         : "provider";
     return { ...first, retirementScope };

@@ -310,6 +310,69 @@ describe("prepared model support admission", () => {
     ).toMatchObject({ kind: "unavailable" });
   });
 
+  it("does not advertise an inline model whose catalog alias has competing owners", async () => {
+    const provider = "azure-openai-responses";
+    const model = makeProviderModelFixture<"azure-openai-responses">({
+      provider,
+      id: "deployment",
+      api: "azure-openai-responses",
+      baseUrl: "https://example.openai.azure.com/openai/v1",
+    });
+    const config: OpenClawConfig = {
+      plugins: { entries: { "workspace-override": { enabled: true } } },
+      models: {
+        providers: {
+          [provider]: { api: "azure-openai-responses", baseUrl: model.baseUrl, models: [model] },
+        },
+      },
+      agents: { defaults: { models: { [`${provider}/deployment`]: { alias: "Azure" } } } },
+    };
+    const owner = publish(() => true, config, {
+      configuredRuntimeModels: [{ provider, modelId: model.id, model }],
+      metadataSnapshot: createPluginMetadataSnapshotFixture({
+        plugins: [
+          {
+            id: "openai",
+            origin: "bundled",
+            enabledByDefault: true,
+            providers: ["openai"],
+            modelCatalog: {
+              aliases: { [provider]: { provider: "openai", api: "azure-openai-responses" } },
+            },
+          },
+          {
+            id: "workspace-override",
+            origin: "workspace",
+            providers: ["github-copilot"],
+            modelCatalog: { aliases: { [provider]: { provider: "github-copilot" } } },
+          },
+        ],
+      }),
+    });
+    const { withPluginRuntimeGenerationScope } =
+      await import("../plugins/runtime/generation-scope.js");
+    const { resolveManifestModelCatalogProviderAliasMetadata } =
+      await import("./embedded-agent-runner/model.manifest-alias.js");
+    expect(
+      withPluginRuntimeGenerationScope(owner, () =>
+        resolveManifestModelCatalogProviderAliasMetadata({
+          provider,
+          modelId: model.id,
+          cfg: config,
+        }),
+      ),
+    ).toMatchObject({ ambiguous: true });
+    expect(
+      await prepareModelChoice({
+        ...selection,
+        cfg: config,
+        raw: `${provider}/deployment`,
+        source: "automatic",
+      }),
+    ).toMatchObject({ kind: "unavailable" });
+    expect(renderPublishedAliases(owner)).not.toContain(`- Azure: ${provider}/deployment`);
+  });
+
   it("defers unobserved dynamic models but keeps known suppressions final", async () => {
     const config: OpenClawConfig = {};
     const dynamicModel = makeProviderModelFixture({
@@ -375,7 +438,16 @@ describe("prepared model support admission", () => {
         providers: {
           fixture: {
             baseUrl: "https://dynamic.invalid/v1",
-            models: [{ id: "retired", name: "Retired fixture" }],
+            models: [
+              {
+                id: "retired",
+                name: "Retired fixture",
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                maxTokens: 1024,
+              },
+            ],
           },
         },
       },
@@ -399,7 +471,7 @@ describe("prepared model support admission", () => {
   });
 
   function retiredXaiOwner(modelBaseUrl = "https://api.x.ai/v1") {
-    const model = makeProviderModelFixture({
+    const model = makeProviderModelFixture<"openai-responses">({
       provider: "xai",
       id: "auto",
       api: "openai-responses",
