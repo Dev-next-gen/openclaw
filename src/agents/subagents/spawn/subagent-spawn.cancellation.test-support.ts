@@ -25,8 +25,8 @@ import {
   setDetachedTaskLifecycleRuntime,
   resetDetachedTaskLifecycleRuntimeForTests,
 } from "../../../tasks/detached-task-runtime.test-support.js";
+import { findTaskByRunId, getTaskById } from "../../../tasks/runtime-internal.js";
 import { onTaskRegistryChange } from "../../../tasks/task-registry-state.js";
-import { findTaskByRunId, getTaskById } from "../../../tasks/task-registry.js";
 import { createAgentRunDirectAbortError } from "../../run-termination.js";
 import { createSubagentsTool } from "../../tools/subagents-tool.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";

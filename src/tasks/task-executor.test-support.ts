@@ -5,6 +5,7 @@ import { resetSystemEventsForTest } from "../infra/system-events.js";
 import { withStateDirEnv } from "../test-helpers/state-dir-env.js";
 import { captureEnv } from "../test-utils/env.js";
 import { getDetachedTaskLifecycleRuntime } from "./detached-task-runtime.js";
+import { getTaskById } from "./runtime-internal.js";
 import { createSubagentTaskBackingDetail } from "./task-backing-authority.js";
 import { createAcpTaskBackingDetailForTest } from "./task-backing-authority.test-support.js";
 import {
@@ -13,9 +14,8 @@ import {
   runTaskInFlowForOwner,
 } from "./task-executor.js";
 import { hoisted } from "./task-executor.mocks.test-support.js";
-import { createManagedTaskFlow as createManagedTaskFlowOrNull } from "./task-flow-registry.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
-import { getTaskById } from "./task-registry.js";
+import { createManagedTaskFlow as createManagedTaskFlowOrNull } from "./task-flow-runtime-internal.js";
 import type { TaskRecord } from "./task-registry.types.js";
 import {
   resetDetachedTaskLifecycleRuntimeForTests,
