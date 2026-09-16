@@ -66,7 +66,8 @@ export function* sortAndLimitByWork<T extends object>(
 ): SynchronousWork<T[]> {
   if (limit !== undefined && limit <= TOP_N_LIMIT) {
     const selected: T[] = [];
-    for (const entry of entries) {
+    for (let index = 0; index < entries.length; index++) {
+      const entry = entries[index]!;
       if (shouldYield?.()) {
         yield;
       }
