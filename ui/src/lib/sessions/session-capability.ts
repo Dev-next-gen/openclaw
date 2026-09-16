@@ -36,6 +36,7 @@ import type {
 import type { SessionArchivedFilter } from "./navigation.ts";
 import type { SessionPatchRoute } from "./patch.ts";
 import type { SessionChangedResult, SessionReconcileOptions } from "./reconcile.ts";
+import type { SessionRefreshOutcome } from "./session-list-query.ts";
 import type { SessionRunTerminal } from "./session-run-terminal.ts";
 
 export type SessionState = {
@@ -237,9 +238,12 @@ export type SessionCapability = {
   refresh: (options?: SessionRefreshOptions) => Promise<void>;
   /** Schedules background list refreshes without replacing queued foreground queries. */
   invalidate: () => void;
-  /** Refreshes the remembered query without superseding queued foreground intent.
-   * An explicit agent forces replacement; null means the attempt retired or failed. */
-  refreshReplacement: (agentId?: string | null) => Promise<SessionsListResult | null>;
+  /** Refreshes the remembered query without superseding queued foreground intent. */
+  refreshReplacement: () => Promise<SessionsListResult | null>;
+  /** Reconciles an operation's agent without claiming the foreground query. */
+  reconcileMutation: (agentId?: string | null) => Promise<SessionRefreshOutcome>;
+  /** Captures freshness of this conversation's permission facts. */
+  capturePermissionObservation: (key: string, agentId?: string | null) => () => boolean;
   createResult: (
     params?: SessionCreateParams,
     options?: { reconciliation?: SessionCreateReconciliation },

@@ -661,6 +661,8 @@ export function createSessionCapability(
     refresh: roster.refresh,
     invalidate: roster.scheduleEvent,
     refreshReplacement: roster.refreshReplacement,
+    reconcileMutation: roster.reconcileMutation,
+    capturePermissionObservation: permissions.capture,
     createResult: mutations.createResult,
     create: mutations.create,
     recover: operations.recover,

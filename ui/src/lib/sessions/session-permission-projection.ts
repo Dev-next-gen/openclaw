@@ -202,8 +202,19 @@ export function createSessionPermissionProjection(
 
   return {
     claim: claimPermissionProjection,
+    capture: (key: string, agentId?: string | null) => {
+      const identity = permissionIdentity(key, agentId);
+      const projection = permissionProjections.get(identity);
+      const fact = projection?.fact;
+      return () =>
+        projection !== undefined &&
+        permissionProjections.get(identity) === projection &&
+        projection.fact === fact;
+    },
     reconcileList: (result: SessionsListResult | null, revision: number, agentId?: string) =>
       projectPermissionList(result, () => revision, agentId, true),
+    reconcileRow: (row: GatewaySessionRow, revision: number, agentId?: string | null) =>
+      projectPermissionRow(row, () => revision, agentId, true),
     apply: (
       result: SessionsListResult | null,
       readRevision: (row: GatewaySessionRow) => number,

@@ -515,8 +515,15 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     );
   }
 
-  refreshSidebarSessions(agentId = this.host.expandedAgentId()): Promise<void> {
+  refreshSidebarSessions(affectedAgentId?: string): Promise<void> {
+    const agentId = this.host.expandedAgentId();
     this.bindFilteredSessions();
+    if (
+      affectedAgentId !== undefined &&
+      normalizeAgentId(affectedAgentId) !== normalizeAgentId(agentId)
+    ) {
+      return Promise.resolve();
+    }
     return refreshSidebarSessionList(this, agentId);
   }
 
