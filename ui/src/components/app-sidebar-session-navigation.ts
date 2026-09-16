@@ -267,7 +267,11 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
     const context = this.context;
     const client = context?.gateway.snapshot.client;
     const scope = this.sessionData.childSessionScope;
-    if (context && client && revalidating.size > 0) {
+    if (
+      context &&
+      client &&
+      [...revalidating].some((key) => this.sessionData.needsChildSessionLoad(key))
+    ) {
       const isCurrent = () =>
         this.context === context &&
         this.sessionData.childSessionScope === scope &&
