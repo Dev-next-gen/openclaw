@@ -182,72 +182,48 @@ describe("buildConfiguredAgentSystemPrompt", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("applies per-agent alias overrides and manual model policy", () => {
-    const config: OpenClawConfig = {
-      plugins: { enabled: false },
-      agents: {
-        defaults: {
-          model: "fixture/current",
-          models: {
-            "fixture/current": { alias: "Shared" },
-            "fixture/other": { alias: "Other" },
-          },
-        },
-        entries: {
-          writer: {
-            models: { "fixture/current": { alias: "Writer" } },
-            modelPolicy: { allow: ["fixture/current"] },
-          },
-        },
-      },
-    };
-    const prompt = buildConfiguredAgentSystemPrompt({
-      config,
-      agentId: "writer",
-      workspaceDir: "/tmp/openclaw",
-      preparedModelRuntime: preparedOwner(config, ["current", "other"], "writer"),
-    });
-    expect(prompt).toContain("- Writer: fixture/current");
-    expect(prompt).not.toContain("- Shared:");
-    expect(prompt).not.toContain("- Other:");
-  });
-
-  it("keeps inherited policy aliases in their owner scope when an agent reuses the alias", () => {
-    const config: OpenClawConfig = {
-      plugins: { enabled: false },
-      agents: {
-        defaults: {
-          model: "fixture/current",
-          modelPolicy: { allow: ["Shared"] },
-          models: {
-            "fixture/current": { alias: "Shared" },
-            "fixture/other": { alias: "Other" },
-          },
-        },
-        entries: {
-          writer: {
+  it.each(["agent-owned", "inherited"] as const)(
+    "applies per-agent aliases with %s manual model policy",
+    (policyOwner) => {
+      const config: OpenClawConfig = {
+        plugins: { enabled: false },
+        agents: {
+          defaults: {
+            model: "fixture/current",
+            modelPolicy: policyOwner === "inherited" ? { allow: ["Shared"] } : undefined,
             models: {
-              "fixture/current": { alias: "Writer" },
-              "fixture/other": { alias: "Shared" },
+              "fixture/current": { alias: "Shared" },
+              "fixture/other": { alias: "Other" },
+            },
+          },
+          entries: {
+            writer: {
+              modelPolicy:
+                policyOwner === "agent-owned" ? { allow: ["fixture/current"] } : undefined,
+              models: {
+                "fixture/current": { alias: "Writer" },
+                ...(policyOwner === "inherited" ? { "fixture/other": { alias: "Shared" } } : {}),
+              },
             },
           },
         },
-      },
-    };
-    const owner = preparedOwner(config, ["current", "other"], "writer");
-    const prompt = buildConfiguredAgentSystemPrompt({
-      config,
-      agentId: "writer",
-      workspaceDir: "/tmp/openclaw",
-      preparedModelRuntime: owner,
-    });
-    expect(prompt).toContain("- Writer: fixture/current");
-    expect(prompt).not.toContain("- Shared:");
-    expect(owner.configuredRuntimeModels.map(({ modelId }) => modelId)).toEqual([
-      "current",
-      "other",
-    ]);
-  });
+      };
+      const owner = preparedOwner(config, ["current", "other"], "writer");
+      const prompt = buildConfiguredAgentSystemPrompt({
+        config,
+        agentId: "writer",
+        workspaceDir: "/tmp/openclaw",
+        preparedModelRuntime: owner,
+      });
+      expect(prompt).toContain("- Writer: fixture/current");
+      expect(prompt).not.toContain("- Shared:");
+      expect(prompt).not.toContain("- Other:");
+      expect(owner.configuredRuntimeModels.map(({ modelId }) => modelId)).toEqual([
+        "current",
+        "other",
+      ]);
+    },
+  );
 
   it("stops advertising aliases after the prepared owner becomes stale", () => {
     const config: OpenClawConfig = {
