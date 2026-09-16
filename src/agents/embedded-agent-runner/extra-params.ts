@@ -439,19 +439,21 @@ function createStreamFnWithExtraParams(
   const readCacheCompat = (m?: ProviderRuntimeModel) =>
     m?.api === "openai-completions" ? resolveOpenAICompletionsCompat(m) : m?.compat;
 
-  const initialCacheRetention = resolveCacheRetention(
-    extraParams,
-    provider,
-    typeof model?.api === "string" ? model.api : undefined,
-    typeof model?.id === "string" ? model.id : undefined,
-    readCacheCompat(model),
-    model?.baseUrl,
-  );
-  if (Object.keys(streamParams).length > 0 || initialCacheRetention) {
-    const debugParams = initialCacheRetention
-      ? { ...streamParams, cacheRetention: initialCacheRetention }
-      : streamParams;
-    log.debug(`creating streamFn wrapper with params: ${JSON.stringify(debugParams)}`);
+  if (log.isEnabled("debug")) {
+    const initialCacheRetention = resolveCacheRetention(
+      extraParams,
+      provider,
+      typeof model?.api === "string" ? model.api : undefined,
+      typeof model?.id === "string" ? model.id : undefined,
+      readCacheCompat(model),
+      model?.baseUrl,
+    );
+    if (Object.keys(streamParams).length > 0 || initialCacheRetention) {
+      const debugParams = initialCacheRetention
+        ? { ...streamParams, cacheRetention: initialCacheRetention }
+        : streamParams;
+      log.debug(`creating streamFn wrapper with params: ${JSON.stringify(debugParams)}`);
+    }
   }
 
   const underlying = requireBaseStreamFn(baseStreamFn);
