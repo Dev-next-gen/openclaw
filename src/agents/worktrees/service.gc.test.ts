@@ -616,6 +616,30 @@ describe("ManagedWorktreeService garbage collection", () => {
     );
   });
 
+  it("checks owner retirement only for live worktrees while retaining fresh snapshots", async () => {
+    const removed = await materializeRunOwnedFixture(
+      "removed-owner",
+      "session",
+      "agent:main:removed",
+    );
+    const snapshot = await service.remove({ id: removed.id, reason: "test-retention" });
+    const snapshotCommit = await git(repo, "rev-parse", snapshot.snapshotRef!);
+    const live = await materializeRunOwnedFixture("live-owner", "session", "agent:main:live");
+    const shouldRemoveOwner = vi.fn(() => false);
+
+    const result = await service.gc({ shouldRemoveOwner });
+
+    expect(shouldRemoveOwner.mock.calls).toEqual([["session", live.ownerId]]);
+    expect(result.removed).toEqual([]);
+    expect(result.snapshotsPruned).toBe(0);
+    expect(getRegistryWorktree(env, removed.id)).toMatchObject({
+      removedAt: now,
+      snapshotRef: snapshot.snapshotRef,
+    });
+    expect(await git(repo, "rev-parse", snapshot.snapshotRef!)).toBe(snapshotCommit);
+    expect(getRegistryWorktree(env, live.id)?.removedAt).toBeUndefined();
+  });
+
   it("prunes expired snapshot refs and registry rows", async () => {
     const created = await materializeDownstreamFixture("expired");
     const removed = await service.remove({ id: created.id, reason: "retention" });

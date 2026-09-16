@@ -1426,14 +1426,13 @@ export class ManagedWorktreeService {
         }
         // Manual worktrees remain until explicit removal; only run-owned worktrees expire.
         const expiresWhenIdle = record.ownerKind === "workboard" || record.ownerKind === "session";
+        if (record.removedAt !== undefined || !expiresWhenIdle) {
+          continue;
+        }
         const retiredOwner =
           record.ownerId !== undefined &&
           params.shouldRemoveOwner?.(record.ownerKind, record.ownerId) === true;
-        if (
-          record.removedAt === undefined &&
-          expiresWhenIdle &&
-          (retiredOwner || now - record.lastActiveAt > IDLE_GC_MS)
-        ) {
+        if (retiredOwner || now - record.lastActiveAt > IDLE_GC_MS) {
           if (await this.isProtectedFromAutoRemoval(record, isLocked, params.shouldProtectOwner)) {
             continue;
           }
