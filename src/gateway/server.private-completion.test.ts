@@ -17,6 +17,7 @@ import {
   resolveSqliteScope,
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
+import { getActiveGatewayRootWorkHolders } from "../process/gateway-work-admission.js";
 import { runExclusiveSessionLifecycleMutation } from "../sessions/session-lifecycle-admission.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -504,27 +505,71 @@ describe("private subagent completion processing receipts", () => {
     await consumed.promise;
     const descendantRunId = `private-descendant-${sequence}`;
     const childSessionKey = `agent:main:subagent:${descendantRunId}`;
+    const childSessionId = `${descendantRunId}-session`;
+    const childStarted = createDeferred();
+    const releaseChild = createDeferred();
+    let childAbortSignal: AbortSignal | undefined;
+    signal.addEventListener("abort", () => releaseChild.resolve(), { once: true });
     await writeSubagentSessionEntry({
       stateDir: process.env.OPENCLAW_STATE_DIR!,
       agentId: "main",
       sessionKey: childSessionKey,
-      defaultSessionId: `${descendantRunId}-session`,
+      defaultSessionId: childSessionId,
     });
-    registerSubagentRun({
-      runId: descendantRunId,
-      childSessionKey,
-      requesterSessionKey: sessionKey,
-      requesterAgentId: "main",
-      requesterTurnRunId: runId,
-      requesterDisplayKey: sessionKey,
-      task: "synthetic continuation child",
-      cleanup: "keep",
-      expectsCompletionMessage: false,
-      taskRowOwnership: "required",
+    agentCommandMock.mockImplementationOnce(async (input) => {
+      const command = input as AgentCommandOpts;
+      expect(command.runId).toBe(descendantRunId);
+      expect(command.sessionId).toBe(childSessionId);
+      childAbortSignal = command.abortSignal;
+      command.onExecutionStarted?.();
+      await command.userTurnTranscriptRecorder?.persistApproved();
+      childStarted.resolve();
+      command.abortSignal!.addEventListener("abort", () => releaseChild.resolve(), { once: true });
+      await releaseChild.promise;
+      command.abortSignal!.throwIfAborted();
+      throw new Error("operator stop must interrupt the continuation child");
     });
+    const child = dispatchGatewayMethodInProcess<Record<string, unknown>>(
+      "agent",
+      {
+        sessionKey: childSessionKey,
+        expectedExistingSessionId: childSessionId,
+        idempotencyKey: descendantRunId,
+        message: "Synthetic continuation child",
+        deliver: false,
+      },
+      {
+        expectFinal: true,
+        forceSyntheticClient: true,
+        operatorRoleActor: { kind: "system" },
+        resolveGatewayContext: () => kernel.gatewayRequestContext,
+      },
+    );
+    const observedChild = child.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
     try {
-      // The parent and child are intentionally live. Wait only for this child's
-      // persisted launch, not for all Gateway roots to finish before Stop.
+      await Promise.race([
+        childStarted.promise,
+        observedChild.then(() => {
+          throw new Error("continuation child finished before execution started");
+        }),
+      ]);
+      registerSubagentRun({
+        runId: descendantRunId,
+        childSessionKey,
+        requesterSessionKey: sessionKey,
+        requesterAgentId: "main",
+        requesterTurnRunId: runId,
+        requesterDisplayKey: sessionKey,
+        task: "synthetic continuation child",
+        cleanup: "keep",
+        expectsCompletionMessage: false,
+        taskRowOwnership: "required",
+      });
+      // Keep both producers live until the child's registration and wait request
+      // are admitted; a slow socket handshake must not hide the outstanding wait.
       await expect
         .poll(() =>
           loadSubagentRunsForControllerFromSqlite(sessionKey).some(
@@ -532,12 +577,14 @@ describe("private subagent completion processing receipts", () => {
           ),
         )
         .toBe(true);
+      await expect.poll(() => getActiveGatewayRootWorkHolders()).toContain("ws:agent.wait");
       expect(
         await kernel.gatewayInstanceRuntime.recovery.dispatchSessionMethod("chat.abort", {
           sessionKey,
           runId,
         }),
       ).toMatchObject({ aborted: true });
+      expect(childAbortSignal?.aborted).toBe(true);
     } finally {
       if (kernel.gatewayRequestContext.chatAbortControllers.has(runId)) {
         await kernel.gatewayInstanceRuntime.recovery.dispatchSessionMethod("chat.abort", {
@@ -545,10 +592,18 @@ describe("private subagent completion processing receipts", () => {
           runId,
         });
       }
+      if (kernel.gatewayRequestContext.chatAbortControllers.has(descendantRunId)) {
+        await kernel.gatewayInstanceRuntime.recovery.dispatchSessionMethod("chat.abort", {
+          sessionKey: childSessionKey,
+          runId: descendantRunId,
+        });
+      }
       release.resolve();
-      await observed;
+      releaseChild.resolve();
+      await Promise.all([observed, observedChild]);
     }
     await settleSubagentRegistryPersistenceWork();
+    expect(await observedChild).toMatchObject({ value: { status: "timeout", stopReason: "rpc" } });
     expect(
       loadSubagentRunsForControllerFromSqlite(sessionKey).find(
         (run) => run.runId === descendantRunId,
@@ -567,7 +622,15 @@ describe("private subagent completion processing receipts", () => {
     expect(await dispatch()).toMatchObject({ status: "error", stopReason: "rpc" });
     await restart();
     expect(await dispatch()).toMatchObject({ status: "error", stopReason: "rpc" });
-    expect(agentCommandMock).toHaveBeenCalledOnce();
+    expect(
+      agentCommandMock.mock.calls.map(([input]) => {
+        const command = input as AgentCommandOpts;
+        return { runId: command.runId, sessionId: command.sessionId };
+      }),
+    ).toEqual([
+      { runId, sessionId },
+      { runId: descendantRunId, sessionId: childSessionId },
+    ]);
   });
   it.each(["resolved", "rejected", "abandoned"] as const)(
     "preserves executing private timeout facts (%s)",
