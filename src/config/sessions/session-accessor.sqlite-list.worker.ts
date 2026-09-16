@@ -9,8 +9,10 @@ import {
   openOpenClawAgentDatabaseReadOnly,
   type OpenClawAgentReadOnlyDatabaseHandle,
 } from "../../state/openclaw-agent-db-readonly-open.js";
-import { loadSessionEntrySnapshot } from "./session-accessor.sqlite-entry-cache.js";
-import { readExactSessionEntryCandidatesInDatabase } from "./session-accessor.sqlite-exact-read.js";
+import {
+  loadSessionEntrySnapshot,
+  readExactSessionEntryCandidatesInDatabase,
+} from "./session-accessor.sqlite-entry-cache.js";
 import {
   encodeSessionListWorkerError,
   type SessionListWorkerError,
@@ -20,7 +22,7 @@ import {
   assertCanonicalSqliteSessionKeysCurrent,
   readCanonicalSessionMainKey,
 } from "./session-canonical-key.js";
-import { listSessionMembershipKeysInDatabase } from "./session-sharing-store.js";
+import { listSessionMembershipKeysInDatabase } from "./session-sharing-store.kernel.js";
 
 // The worker loader requires this export name for existing-database admission.
 export { openSessionListSqliteWorkerBackend as openExistingSqliteWorkerBackend };

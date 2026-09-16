@@ -7,9 +7,8 @@ import {
   type OpenClawAgentDatabaseOptions,
 } from "../../state/openclaw-agent-db.js";
 import type { ExactSessionEntry, SessionAccessScope } from "./session-accessor.sqlite-contract.js";
-import { readCachedExactSessionEntries } from "./session-accessor.sqlite-entry-cache.js";
+import { readExactSessionEntryCandidatesInDatabase } from "./session-accessor.sqlite-entry-cache.js";
 import {
-  prepareExactSessionEntryRowReads,
   readExactSessionEntryRowValidated,
   readSessionEntryRow,
 } from "./session-accessor.sqlite-entry-read.js";
@@ -199,51 +198,4 @@ export function loadExactSessionEntryCandidatesReadOnlyBatch(
     }
   }
   return results;
-}
-
-/** Decode one admitted physical store without changing exact per-request error isolation. */
-export function readExactSessionEntryCandidatesInDatabase(
-  database: Pick<OpenClawAgentDatabase, "agentId" | "db" | "path">,
-  requests: readonly (readonly string[])[],
-  projection: SessionEntryReadScope["projection"],
-): Array<Result<ExactSessionEntry[], unknown>> {
-  const entries = new Map<string, Result<ExactSessionEntry | undefined, unknown>>();
-  const keys = [...new Set(requests.flat())];
-  const cachedEntries =
-    projection === "list" ? readCachedExactSessionEntries(database, keys) : undefined;
-  let readPrepared: (sessionKey: string) => SessionEntry | undefined;
-  if (cachedEntries) {
-    readPrepared = (sessionKey) => cachedEntries.get(sessionKey);
-  } else {
-    const readRows = prepareExactSessionEntryRowReads(database, keys, projection);
-    readPrepared = (sessionKey) => readRows(sessionKey)?.entry;
-  }
-  const readEntry = (sessionKey: string): Result<ExactSessionEntry | undefined, unknown> => {
-    const cached = entries.get(sessionKey);
-    if (cached) {
-      return cached;
-    }
-    let result: Result<ExactSessionEntry | undefined, unknown>;
-    try {
-      const entry = readPrepared(sessionKey);
-      result = ok(entry ? { sessionKey, entry } : undefined);
-    } catch (error) {
-      result = err(error);
-    }
-    entries.set(sessionKey, result);
-    return result;
-  };
-  return requests.map((sessionKeys) => {
-    const matches: ExactSessionEntry[] = [];
-    for (const sessionKey of sessionKeys) {
-      const entry = readEntry(sessionKey);
-      if (!entry.ok) {
-        return err(entry.error);
-      }
-      if (entry.value) {
-        matches.push(entry.value);
-      }
-    }
-    return ok(matches);
-  });
 }

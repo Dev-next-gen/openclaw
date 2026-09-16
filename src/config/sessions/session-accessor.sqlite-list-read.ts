@@ -7,6 +7,7 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import {
   readCachedExactSessionEntries,
+  readExactSessionEntryCandidatesInDatabase,
   readSessionEntryCacheAsync,
 } from "./session-accessor.sqlite-entry-cache.js";
 import {
@@ -15,7 +16,6 @@ import {
 } from "./session-accessor.sqlite-entry.js";
 import {
   groupExactSessionEntryReadRequests,
-  readExactSessionEntryCandidatesInDatabase,
   type ExactSessionEntryBatchScope,
 } from "./session-accessor.sqlite-exact-read.js";
 import {
@@ -34,7 +34,7 @@ import {
   readCanonicalSessionMainKey,
 } from "./session-canonical-key.js";
 import { withCanonicalSessionValidationDeferral } from "./session-canonical-validation-deferral.js";
-import { listSessionMembershipKeysInDatabase } from "./session-sharing-store.js";
+import { listSessionMembershipKeysInDatabase } from "./session-sharing-store.kernel.js";
 
 export async function listSessionEntriesReadOnlyAsync(
   scope: SessionEntryListScope = {},
