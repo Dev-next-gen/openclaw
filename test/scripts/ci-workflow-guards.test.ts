@@ -6642,7 +6642,7 @@ setImmediate(() => {
       ["checks-ui", undefined, "ubuntu-24.04"],
       ["checks-ui-e2e", "browser-extension", "ubuntu-24.04"],
       ["checks-ui-e2e", "control-ui", "blacksmith-16vcpu-ubuntu-2404"],
-      ["checks-ui-e2e-real-gateway", undefined, "blacksmith-16vcpu-ubuntu-2404"],
+      ["checks-ui-e2e-real-gateway", undefined, "blacksmith-32vcpu-ubuntu-2404"],
     ] as const) {
       expect(
         evaluateWorkflowExpression(workflow.jobs[jobName]["runs-on"], {
@@ -7004,7 +7004,7 @@ setImmediate(() => {
       "build-artifacts": "blacksmith-16vcpu-ubuntu-2404",
       "checks-node-core-test-nondist-shard": "blacksmith-32vcpu-ubuntu-2404",
       "checks-ui-e2e": "blacksmith-8vcpu-ubuntu-2404",
-      "checks-ui-e2e-real-gateway": "blacksmith-16vcpu-ubuntu-2404",
+      "checks-ui-e2e-real-gateway": "blacksmith-32vcpu-ubuntu-2404",
       "docker-seed-e2e": "blacksmith-16vcpu-ubuntu-2404",
       "qa-smoke-ci-profile": "blacksmith-16vcpu-ubuntu-2404",
       "check-test-types-hosted-core-shard": "blacksmith-16vcpu-ubuntu-2404",
@@ -7086,60 +7086,52 @@ setImmediate(() => {
     }
 
     const widenedHybridMatrixRows = [
-      {
+      ...["lint", "test-types", "dependencies"].map((task) => ({
         jobName: "check-shard",
-        matrix: { runner: "blacksmith-32vcpu-ubuntu-2404", task: "lint" },
+        matrix: { runner: "blacksmith-32vcpu-ubuntu-2404", task },
         runner: "blacksmith-32vcpu-ubuntu-2404",
-      },
-      {
-        jobName: "check-shard",
-        matrix: { runner: "blacksmith-32vcpu-ubuntu-2404", task: "test-types" },
+      })),
+      ...["extension-package-boundary", "runtime-topology-architecture"].map((group) => ({
+        jobName: "check-additional-shard",
+        matrix: { group, runner: "blacksmith-32vcpu-ubuntu-2404" },
         runner: "blacksmith-32vcpu-ubuntu-2404",
-      },
-      {
-        jobName: "check-shard",
-        matrix: { runner: "blacksmith-32vcpu-ubuntu-2404", task: "dependencies" },
-        runner: "blacksmith-32vcpu-ubuntu-2404",
-      },
+      })),
       {
         jobName: "check-additional-shard",
+        matrix: { group: "plugin-sdk-api-diff", runner: "blacksmith-4vcpu-ubuntu-2404" },
+        runner: "blacksmith-4vcpu-ubuntu-2404",
+      },
+      ...[4, 8].map((size) => ({
+        jobName: "checks-node-core-test-nondist-shard",
+        matrix: { runner: `blacksmith-${size}vcpu-ubuntu-2404` },
+        runner: `blacksmith-${size}vcpu-ubuntu-2404`,
+      })),
+      // Preserve planner capacity for parallel, tooling and explicit large owners.
+      ...["small-3", "small-4", "small-7", "small-10", "large-10", "large32-1"].map((bin) => ({
+        jobName: "checks-node-core-test-nondist-shard",
         matrix: {
-          group: "extension-package-boundary",
+          check_name: `checks-node-compact-${bin}`,
           runner: "blacksmith-32vcpu-ubuntu-2404",
         },
         runner: "blacksmith-32vcpu-ubuntu-2404",
-      },
-      {
-        jobName: "check-additional-shard",
-        matrix: {
-          group: "runtime-topology-architecture",
-          runner: "blacksmith-32vcpu-ubuntu-2404",
-        },
-        runner: "blacksmith-32vcpu-ubuntu-2404",
-      },
-      {
-        jobName: "check-additional-shard",
-        matrix: {
-          group: "plugin-sdk-api-diff",
-          runner: "blacksmith-4vcpu-ubuntu-2404",
-        },
-        runner: "blacksmith-4vcpu-ubuntu-2404",
-      },
-      {
+      })),
+      ...[
+        "changed-extensions-bundle-16",
+        "changed-extensions-bundle-25",
+        "compact-large-5",
+        "compact-large-9",
+      ].map((bin) => ({
         jobName: "checks-node-core-test-nondist-shard",
-        matrix: { runner: "blacksmith-4vcpu-ubuntu-2404" },
-        runner: "blacksmith-4vcpu-ubuntu-2404",
-      },
-      {
-        jobName: "checks-node-core-test-nondist-shard",
-        matrix: { runner: "blacksmith-8vcpu-ubuntu-2404" },
-        runner: "blacksmith-8vcpu-ubuntu-2404",
-      },
+        matrix: { check_name: `checks-node-${bin}`, runner: "blacksmith-8vcpu-ubuntu-2404" },
+        runner: "blacksmith-16vcpu-ubuntu-2404",
+      })),
     ] as const;
     for (const { jobName, matrix, runner } of widenedHybridMatrixRows) {
       const expression = jobs[jobName]?.["runs-on"];
       for (const [label, overrides, expectedRunner] of [
         ["hybrid attempt 1", { runnerBackend: "hybrid" }, runner],
+        ["hybrid main", { eventName: "push", runnerBackend: "hybrid" }, runner],
+        ["Blacksmith main", { eventName: "push", runnerBackend: "blacksmith" }, runner],
         ["hybrid retry", { runnerBackend: "hybrid", runAttempt: 2 }, "ubuntu-24.04"],
         ["github backend", { runnerBackend: "github" }, "ubuntu-24.04"],
         [
@@ -15227,7 +15219,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         name: "checks-ui-e2e-real-gateway",
         setup: realGatewaySetup,
         matrix: {},
-        blacksmithRunner: "blacksmith-16vcpu-ubuntu-2404",
+        blacksmithRunner: "blacksmith-32vcpu-ubuntu-2404",
       },
     ] as const;
     const routingScenarios = [

@@ -74,6 +74,7 @@ export const gatewayServerIsolatedTestFiles = [
   "src/gateway/server-plugin-subagent-runtime.overrides.test.ts",
   // Loads the real plugin runtime that neighboring server tests replace with mocks.
   "src/gateway/server.chat-cli-auth.test.ts",
+  "src/gateway/server.codex-failure-recovery.test.ts",
   "src/gateway/server.incomplete-stream.test.ts",
   "src/gateway/server.placement-abandonment.lifecycle.test.ts",
   "src/gateway/server.placement-abandonment.test.ts",

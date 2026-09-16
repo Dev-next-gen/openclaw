@@ -229,7 +229,18 @@ export async function createServiceChildRelayAdapter(
   };
 
   const expireCleanup = () => {
-    const message = "service child cleanup did not complete before its hard deadline";
+    const pending = {
+      closingReceipt: !closingReceipt,
+      controlClose: !control?.closed,
+      relayExit: !childExited,
+      lineageEof: !lineage?.readableEnded,
+      extinctionUnconfirmed: state !== "closed",
+      stdoutEnd: !stdoutRelay.ended,
+      stderrEnd: !stderrRelay.ended,
+    };
+    const message =
+      "service child cleanup did not complete before its hard deadline; pending: " +
+      JSON.stringify(pending);
     const error = new Error(message);
     // Extinction may already be confirmed while an output pipe remains open.
     // Reject pending results before destroy can turn that missing tail into success.

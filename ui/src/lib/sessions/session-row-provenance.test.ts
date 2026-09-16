@@ -38,6 +38,8 @@ describe("session row provenance", () => {
       label: "initial",
     };
     const readFields = provenance.observeReadRow(row, 1, "work");
+    provenance.mergeRow(row, row, "work");
+    provenance.mergeRow(row, row, "work");
     row.label = "updated";
     const eventFields = provenance.observeFields(
       row,
@@ -63,9 +65,64 @@ describe("session row provenance", () => {
     expect(provenance.hasObservation(row)).toBe(false);
   });
 
-  it.each(["merged", "self-projected"])(
-    "keeps %s writer ancestry without changing the source of a newer read",
-    (admission) => {
+  it("admits a writer after an invalid self-merge gains a valid identity", () => {
+    const provenance = createSessionRowProvenance();
+    const row: GatewaySessionRow = {
+      key: "global",
+      agentId: "work",
+      sessionId: "",
+      kind: "global",
+      label: "writer",
+    };
+    provenance.observeReadRow(row, 1, "work");
+    provenance.observeFields(row, ["label"], createSessionWriteObservation(2, 2));
+    provenance.mergeRow(row, row);
+    provenance.mergeRow(row, row);
+    expect(provenance.fieldObservation(row, "label").writer).toBeUndefined();
+    row.sessionId = "repaired";
+    expect(provenance.mergeRow(row, row)).toBe(row);
+    expect(provenance.fieldObservation(row, "label").writer?.revision).toBe(2);
+    expect(row.label).toBe("writer");
+  });
+
+  it.each([
+    { name: "key", patch: { key: "agent:other:session" }, owner: "other" },
+    { name: "agent", patch: { agentId: "other" }, owner: "other" },
+    { name: "incarnation", patch: { sessionId: "replacement" }, owner: "work" },
+    { name: "invalid identity", patch: { sessionId: "" }, owner: "work" },
+  ])(
+    "keeps same-object values and source selection correct after a $name change",
+    ({ patch, owner }) => {
+      const provenance = createSessionRowProvenance();
+      const row: GatewaySessionRow = {
+        key: "global",
+        agentId: "work",
+        sessionId: "original",
+        kind: "global",
+        label: "writer",
+        updatedAt: 2,
+      };
+      provenance.observeReadRow(row, 1, "work");
+      const select = provenance.observeFields(row, ["label"], createSessionWriteObservation(2, 2));
+      provenance.mergeRow(row, row);
+      provenance.mergeRow(row, row);
+      expect(select(row, ["label"])).toEqual(["label"]);
+      Object.assign(row, patch, { label: "local value" });
+      expect(provenance.mergeRow(row, row, "unrelated")).toBe(row);
+      expect(row.label).toBe("local value");
+      expect(provenance.owner(row)).toBe(owner);
+      expect(select(row, ["label"])).toEqual([]);
+      expect(provenance.fieldObservation(row, "label").writer?.revision).toBe(2);
+    },
+  );
+
+  it.each([
+    { admission: "merged", sameReadRow: false },
+    { admission: "self-projected", sameReadRow: false },
+    { admission: "self-projected", sameReadRow: true },
+  ])(
+    "keeps $admission writer ancestry across a newer read (same row: $sameReadRow)",
+    ({ admission, sameReadRow }) => {
       const provenance = createSessionRowProvenance();
       const initial: GatewaySessionRow = {
         key: "agent:main:provenance",
@@ -77,10 +134,17 @@ describe("session row provenance", () => {
       provenance.observeReadRow(initial, 1);
       const event = { ...initial, updatedAt: 20, label: "writer" };
       provenance.inheritRow(event, initial);
+      provenance.mergeRow(event, event);
       provenance.observeFields(event, ["label"], createSessionWriteObservation(3, 20));
       const accepted = provenance.mergeRow(admission === "self-projected" ? event : initial, event);
-      const read = { ...initial, updatedAt: 20, label: "read" };
-      const selectRead = provenance.observeReadRow(read, 4, "main", [accepted]);
+      provenance.mergeRow(accepted, accepted);
+      const predecessor = provenance.inheritRow({ ...accepted }, accepted);
+      const read = sameReadRow
+        ? Object.assign(accepted, { updatedAt: 20, label: "read" })
+        : { ...initial, updatedAt: 20, label: "read" };
+      const selectRead = provenance.observeReadRow(read, 4, "main", [predecessor]);
+      provenance.mergeRow(read, read);
+      provenance.mergeRow(read, read);
       const projected = provenance.mergeRow(accepted, read);
       expect(projected.label).toBe("read");
       expect(selectRead(projected, ["label"])).toEqual(["label"]);
