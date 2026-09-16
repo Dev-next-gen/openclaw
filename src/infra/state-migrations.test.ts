@@ -3489,19 +3489,19 @@ describe("state migrations", () => {
     expect(rows).toEqual([
       {
         queue_name: "outbound",
-        id: "outbound-1",
-        status: "pending",
-        channel: "telegram",
-        target: "123",
-        retry_count: 2,
-      },
-      {
-        queue_name: "outbound",
         id: "outbound-failed",
         status: "failed",
         channel: null,
         target: null,
         retry_count: 3,
+      },
+      {
+        queue_name: "outbound-prepared-v1",
+        id: "outbound-1",
+        status: "pending",
+        channel: "telegram",
+        target: "123",
+        retry_count: 2,
       },
       {
         queue_name: "session",
