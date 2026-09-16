@@ -120,8 +120,12 @@ describe("agent-runner-utils", () => {
 
     it("mints host-only dashboard authority for the original admitted identity", () => {
       const turn = makeTurn();
+      const now = Date.now();
       const token = mintReplyMessageActionTurnCapability(turn, source.runId);
       const lookup = { ...source, token };
+      const clock = vi
+        .spyOn(Date, "now")
+        .mockReturnValue(now + turn.followupRun.run.timeoutMs + 60_001);
       try {
         const authority = resolveMessageActionTurnAuthorization(lookup);
         expect(authority?.assertDashboardReadCurrent).toBeTypeOf("function");
@@ -131,6 +135,7 @@ describe("agent-runner-utils", () => {
           "assertDashboardReadCurrent",
         );
       } finally {
+        clock.mockRestore();
         revokeMessageActionTurnCapability(token);
       }
     });

@@ -379,7 +379,7 @@ export function mintReplyMessageActionTurnCapability(
       sessionKey,
       sessionId: context.sessionId,
       assertDashboardReadCurrent: dashboardAdmission.assertCurrent,
-      ...resolveMessageActionTurnCapabilityLifetime(turn.followupRun.run.timeoutMs),
+      expiresWithRun: true,
     });
   }
   if (!context.messageProvider || !context.currentChannelId) {

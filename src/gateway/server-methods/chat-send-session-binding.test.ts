@@ -21,14 +21,29 @@ import { registerChatAbortController } from "../chat-abort.js";
 import { createChatRunState } from "../server-chat-state.js";
 import { resolveSessionMutationAuthorization } from "../session-sharing.js";
 import * as chatDispatch from "./chat-send-agent-dispatch.js";
+import { handleDirectExternalChatSend } from "./chat-send-external-entry.js";
 import { handleChatSend } from "./chat-send-handler.js";
 import type { GatewayClient, GatewayRequestContext } from "./types.js";
 
 type DispatchOptions = Parameters<typeof dispatch.dispatchInboundMessageWithProjectedDispatcher>[0];
 
-it.each(["removed", "replaced", "aborted", "released", "terminal", "rotated", "queued"] as const)(
+const admissionScenarios = [
+  "removed",
+  "replaced",
+  "aborted",
+  "released",
+  "terminal",
+  "rotated",
+  "queued",
+  "dashboard",
+  "dashboard-internal",
+] as const;
+
+it.each(admissionScenarios)(
   "keeps prepared-session binding with its exact admission: %s",
-  async (closure) => {
+  async (scenario) => {
+    const dashboard = scenario === "dashboard" || scenario === "dashboard-internal";
+    const closure = dashboard ? "released" : scenario;
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const runId = "retained-preparation";
       const sessionKey = "agent:main:binding";
@@ -49,6 +64,7 @@ it.each(["removed", "replaced", "aborted", "released", "terminal", "rotated", "q
       const profile = ensureProfileForEmail("authoring-binding@example.test");
       const client: GatewayClient = {
         connId: "authoring-binding",
+        ...(dashboard ? { internal: { controlUiAdmin: true as const } } : {}),
         authenticatedUserProfile: {
           profileId: profile.id,
           displayName: null,
@@ -60,7 +76,9 @@ it.each(["removed", "replaced", "aborted", "released", "terminal", "rotated", "q
           maxProtocol: 1,
           role: "operator",
           scopes: ["operator.read", "operator.write", "operator.admin"],
-          client: { id: "cli", version: "test", platform: "test", mode: "cli" },
+          client: dashboard
+            ? { id: "openclaw-control-ui", version: "test", platform: "web", mode: "webchat" }
+            : { id: "cli", version: "test", platform: "test", mode: "cli" },
         },
       };
       const namespaceRun = prepareSystemAgentRunAdmission({}, runId, "main", "test");
@@ -107,7 +125,8 @@ it.each(["removed", "replaced", "aborted", "released", "terminal", "rotated", "q
           requestParams: params,
         });
         expect(authorization.error).toBeNull();
-        await handleChatSend({
+        const sendChat = scenario === "dashboard" ? handleDirectExternalChatSend : handleChatSend;
+        await sendChat({
           params,
           req: { type: "req", id: runId, method: "chat.send" },
           respond,
@@ -118,11 +137,15 @@ it.each(["removed", "replaced", "aborted", "released", "terminal", "rotated", "q
         });
         expect(respond).toHaveBeenCalledWith(
           true,
-          { runId, status: "started" },
+          dashboard
+            ? expect.objectContaining({ runId, status: "started" })
+            : { runId, status: "started" },
           undefined,
           expect.anything(),
         );
         options = await entered.promise;
+        const dashboardRead = options.replyOptions?.dashboardReadAdmission;
+        expect(Boolean(dashboardRead)).toBe(scenario === "dashboard");
         owned = observeDispatch.mock.calls.at(-1)?.[0];
         const prepared = options.replyOptions?.onSessionPrepared;
         const runStarted = options.replyOptions?.onAgentRunStart;
@@ -161,6 +184,11 @@ it.each(["removed", "replaced", "aborted", "released", "terminal", "rotated", "q
         prepared(binding);
         prepared(binding);
         prepared({ ...binding, sessionKey: "agent:main:unrelated", sessionId: "foreign" });
+        if (dashboardRead) {
+          expect(admission.admittedSessionId).toBe(runId);
+          expect(dashboardRead.sessionId).toBe(binding.sessionId);
+          dashboardRead.assertCurrent();
+        }
         clone.mockClear();
         runStarted(runId);
         expect.soft(unrelatedCloneCount()).toBe(0);
@@ -206,6 +234,9 @@ it.each(["removed", "replaced", "aborted", "released", "terminal", "rotated", "q
         }
         // No await after closure: release must fence even before its promise settles.
         expect(() => prepared({ ...binding, sessionId: "late-session" })).toThrow();
+        if (dashboardRead) {
+          expect(dashboardRead.assertCurrent).toThrow();
+        }
         expect(original?.sessionId).toBe(binding.sessionId);
         expect(successor?.entry?.sessionId).toBe(
           closure === "replaced" ? "successor-session" : undefined,

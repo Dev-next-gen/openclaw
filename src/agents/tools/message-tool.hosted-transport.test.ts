@@ -79,6 +79,14 @@ it("dispatches a hosted message action without connecting to either Gateway endp
     runId: operationalRunInstance.runId,
     sessionKey,
   });
+  const assertDashboardReadCurrent = vi.fn();
+  const dashboardCapability = mintMessageActionTurnCapability({
+    agentId: "ops",
+    runId: operationalRunInstance.runId,
+    sessionKey,
+    assertDashboardReadCurrent,
+    expiresWithRun: true,
+  });
   try {
     const openListener = async (listener: "hosted-local" | "remote-primary") => {
       const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
@@ -169,22 +177,24 @@ it("dispatches a hosted message action without connecting to either Gateway endp
       getGatewayMethodRegistry: () => methods,
       trackExecution: <T>(run: () => Promise<T>) => run(),
     } as GatewayRequestContext;
-    const tool = createMessageTool({
-      getRuntimeConfig: () => config,
-      runMessageAction,
-      agentId: "ops",
-      agentSessionKey: sessionKey,
-      runId: operationalRunInstance.runId,
-      messageActionTurnCapability: capability,
-      getScopedChannelsCommandSecretTargets: () => ({ targetIds: new Set<string>() }),
-      resolveCommandSecretRefsViaGateway: async ({ config: resolvedConfig }) => ({
-        resolvedConfig,
-        diagnostics: [],
-        targetStatesByPath: {},
-        hadUnresolvedTargets: false,
-      }),
-    });
-    const execute = () =>
+    const makeTool = (turnCapability: string) =>
+      createMessageTool({
+        getRuntimeConfig: () => config,
+        runMessageAction,
+        agentId: "ops",
+        agentSessionKey: sessionKey,
+        runId: operationalRunInstance.runId,
+        messageActionTurnCapability: turnCapability,
+        getScopedChannelsCommandSecretTargets: () => ({ targetIds: new Set<string>() }),
+        resolveCommandSecretRefsViaGateway: async ({ config: resolvedConfig }) => ({
+          resolvedConfig,
+          diagnostics: [],
+          targetStatesByPath: {},
+          hadUnresolvedTargets: false,
+        }),
+      });
+    const tool = makeTool(capability);
+    const execute = (selectedTool = tool, accountId?: string) =>
       withGatewayToolCallerIdentity(
         {
           agentId: "ops",
@@ -195,12 +205,13 @@ it("dispatches a hosted message action without connecting to either Gateway endp
             getActiveAgentRunDelegatedAuthority(operationalRunInstance) === authority,
         },
         () =>
-          tool.execute("hosted-reaction", {
+          selectedTool.execute("hosted-reaction", {
             action: "react",
             channel: "gatewaychat",
             target: "alice",
             messageId: "message-1",
             emoji: "✅",
+            ...(accountId ? { accountId } : {}),
           }),
       );
     const result = await execute();
@@ -216,15 +227,23 @@ it("dispatches a hosted message action without connecting to either Gateway endp
     });
     expect(local.connections).not.toHaveBeenCalled();
     expect(remote.connections).not.toHaveBeenCalled();
+    await expect(execute(makeTool(dashboardCapability), "default")).resolves.toMatchObject({
+      details: { ok: true, listener: "hosted-local" },
+    });
+    expect(
+      dispatched.mock.calls[1]?.[0].client?.internal?.agentRuntimeIdentity?.messageActionContext,
+    ).toBeUndefined();
+    expect(assertDashboardReadCurrent).not.toHaveBeenCalled();
     releaseAgentRunDelegatedAuthority(authority);
     await expect(execute()).rejects.toThrow(
       /agent (?:runtime identity requires active delegated run|tool caller) authority/,
     );
-    expect(dispatched).toHaveBeenCalledOnce();
+    expect(dispatched).toHaveBeenCalledTimes(2);
     expect(local.connections).not.toHaveBeenCalled();
     expect(remote.connections).not.toHaveBeenCalled();
   } finally {
     revokeMessageActionTurnCapability(capability);
+    revokeMessageActionTurnCapability(dashboardCapability);
     releaseAgentRunDelegatedAuthority(authority);
     restoreActivePluginRegistrySnapshot(registry);
     try {

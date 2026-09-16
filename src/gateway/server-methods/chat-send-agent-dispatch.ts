@@ -138,6 +138,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     messageInjectionTarget,
     retainGatewayWorkAdmission,
     restartSafeAdmission,
+    sessionBinding,
   } = admission;
   const {
     activeRunScopeKey,
@@ -289,7 +290,10 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
         agentId,
         runId: clientRunId,
         sessionKey,
-        sessionId: admittedSessionId,
+        // Fresh-session initialization updates this original registration's SID.
+        get sessionId() {
+          return sessionBinding.sessionId;
+        },
         assertCurrent: assertDashboardReadCurrent,
       }
     : undefined;
