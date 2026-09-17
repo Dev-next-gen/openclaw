@@ -8,15 +8,69 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
+import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
 import { detectWorktreeFilesystemBackend } from "../../src/agents/worktrees/filesystem-backend.js";
 import { listTemplates } from "../../src/agents/worktrees/template-registry.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { createMainRefreshFixture } from "./pr-main-refresh.test-support.js";
+import { copyPrWrapperSources } from "./pr-wrapper.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const describePosix = process.platform === "win32" ? describe.skip : describe;
+
+it("extracts the complete eager runtime import closure of every wrapper component", () => {
+  const extracted = tempDirs.make("openclaw-pr-import-closure-");
+  copyPrWrapperSources(extracted);
+  const { config } = ts.readConfigFile("tsconfig.json", (file) => ts.sys.readFile(file));
+  const { options } = ts.convertCompilerOptionsFromJson(config.compilerOptions, process.cwd());
+  const runtimeHost = {
+    ...ts.sys,
+    fileExists: (file: string) => !/\.d\.[cm]?ts$/.test(file) && ts.sys.fileExists(file),
+  };
+  const missing = new Set<string>();
+  for (const entry of readdirSync(extracted, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile() || !/\.[cm]?[jt]s$/.test(entry.name)) {
+      continue;
+    }
+    const file = relative(extracted, join(entry.parentPath, entry.name));
+    // Emit erases type-only imports; only top-level imports/re-exports must load
+    // with the wrapper. Lazy application commands retain their own source tree.
+    const { outputText } = ts.transpileModule(readFileSync(join(extracted, file), "utf8"), {
+      fileName: file,
+      compilerOptions: { ...options, module: ts.ModuleKind.ESNext },
+    });
+    const source = ts.createSourceFile(file, outputText, ts.ScriptTarget.Latest, true);
+    for (const statement of source.statements) {
+      if (
+        (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) ||
+        !statement.moduleSpecifier ||
+        !ts.isStringLiteral(statement.moduleSpecifier)
+      ) {
+        continue;
+      }
+      const specifier = statement.moduleSpecifier.text;
+      const dependency = ts.resolveModuleName(
+        specifier,
+        resolve(file),
+        options,
+        runtimeHost,
+      ).resolvedModule;
+      if (!dependency) {
+        if (specifier.startsWith(".")) {
+          missing.add(`${file}: unresolved ${specifier}`);
+        }
+        continue;
+      }
+      const dependencyPath = relative(process.cwd(), dependency.resolvedFileName);
+      if (!dependency.isExternalLibraryImport && !existsSync(join(extracted, dependencyPath))) {
+        missing.add(`${file}: ${dependencyPath}`);
+      }
+    }
+  }
+  expect([...missing].toSorted()).toEqual([]);
+});
 
 function coldFixture(perWorktreeConfig = true) {
   const f = createMainRefreshFixture(tempDirs.make("openclaw-pr-provision-"), {
