@@ -17,7 +17,7 @@ const suite = createChatFlowE2eSuite();
 
 suite.define(() => {
   it.each([
-    { label: "desktop hover", mobile: false, viewport: { height: 900, width: 1280 } },
+    { label: "desktop hover", mobile: false, viewport: { height: 900, width: 1440 } },
     { label: "mobile tap", mobile: true, viewport: { height: 844, width: 390 } },
   ])("shows turn metadata only after completion on $label", async ({ mobile, viewport }) => {
     const artifactDirParent = process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR?.trim();
@@ -47,7 +47,12 @@ suite.define(() => {
           const style = getComputedStyle(element);
           return { opacity: style.opacity, pointerEvents: style.pointerEvents };
         });
+      const actionOpacities = (group: typeof earlierAssistant) =>
+        group
+          .locator(".chat-group-footer-actions button")
+          .evaluateAll((buttons) => buttons.map((button) => getComputedStyle(button).opacity));
       await page.mouse.move(0, 0);
+      await expect.poll(() => actionOpacities(earlierAssistant)).toEqual(["0", "0"]);
       await expect
         .poll(() => footerPresentation(earlierAssistant))
         .toEqual(
@@ -58,7 +63,7 @@ suite.define(() => {
       if (artifactDir && !mobile) {
         await page.screenshot({
           fullPage: true,
-          path: path.join(artifactDir, "before-user-follow-up-actions-visible.png"),
+          path: path.join(artifactDir, "before-user-follow-up-metadata-visible.png"),
         });
       }
       await page.locator(".agent-chat__composer-combobox textarea").fill("show turn metadata");
@@ -71,7 +76,7 @@ suite.define(() => {
       if (artifactDir && !mobile) {
         await page.screenshot({
           fullPage: true,
-          path: path.join(artifactDir, "after-user-follow-up-actions-hidden.png"),
+          path: path.join(artifactDir, "after-user-follow-up-metadata-hidden.png"),
         });
       }
       const runId = requireString(
@@ -169,12 +174,46 @@ suite.define(() => {
             ? { opacity: "0", pointerEvents: "none" }
             : { opacity: "1", pointerEvents: "auto" },
         );
+      await expect.poll(() => actionOpacities(activeGroup)).toEqual(["0", "0"]);
       await reveal();
+      await expect
+        .poll(async () =>
+          (await actionOpacities(activeGroup)).map((opacity) => Number(opacity) > 0),
+        )
+        .toEqual([true, true]);
       await expect
         .poll(() => footer.evaluate((element) => getComputedStyle(element).opacity))
         .toBe("1");
       expect(await footer.locator(".chat-sender-name").textContent()).toBe("OpenClaw");
       expect(await footer.locator(".chat-group-timestamp").count()).toBe(1);
+      for (const group of [earlierAssistant, activeGroup]) {
+        if (mobile) {
+          await group.locator(".chat-bubble").last().tap();
+        } else {
+          await group.locator(".chat-bubble").last().hover();
+        }
+        await expect
+          .poll(async () => (await actionOpacities(group)).map((opacity) => Number(opacity) > 0))
+          .toEqual([true, true]);
+        await page.mouse.move(0, 0);
+        const actions = group.locator(".chat-group-footer-actions button");
+        await actions.first().focus();
+        await page.keyboard.press("Tab");
+        await expect
+          .poll(() => actions.nth(1).evaluate((button) => button.matches(":focus-visible")))
+          .toBe(true);
+        await expect
+          .poll(() => actions.nth(1).evaluate((button) => getComputedStyle(button).opacity))
+          .toBe(mobile ? "1" : "0.6");
+        await page.keyboard.press("Shift+Tab");
+        await expect
+          .poll(() => actions.first().evaluate((button) => button.matches(":focus-visible")))
+          .toBe(true);
+        await expect
+          .poll(() => actions.first().evaluate((button) => getComputedStyle(button).opacity))
+          .toBe(mobile ? "1" : "0.6");
+        await page.locator(".agent-chat__composer-combobox textarea").focus();
+      }
     } finally {
       await suite.closeBrowserContext(context);
     }

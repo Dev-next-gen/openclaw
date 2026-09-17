@@ -363,9 +363,14 @@
 
 @media (hover: hover) {
   .chat-group--latest-assistant {
-    --chat-footer-action-opacity: 0.6;
+    --chat-footer-action-opacity: 0;
     --chat-footer-disclosure-opacity: 1;
     --chat-footer-disclosure-pointer-events: auto;
+  }
+
+  .chat-group-footer-actions button:focus-visible {
+    opacity: 0.6;
+    pointer-events: auto;
   }
 }
 
