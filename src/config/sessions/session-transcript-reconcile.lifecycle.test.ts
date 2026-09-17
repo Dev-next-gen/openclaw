@@ -22,6 +22,7 @@ import {
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { persistSessionTranscriptTurn } from "./session-accessor.js";
+import * as reconcilePool from "./session-transcript-reconcile-pool.js";
 import { getSessionTranscriptReconcileWorkerPoolSnapshot } from "./session-transcript-reconcile-pool.js";
 import {
   isSessionTranscriptIndexReconcileRunning,
@@ -247,11 +248,16 @@ describe("session transcript reconcile worker lifecycle", () => {
       agentId: "main",
       env: { ...env, OPENCLAW_STATE_DIR: `${stateDir}-unrelated` },
     };
-    const checkpoint = timers.setImmediate;
-    const immediateSpy = vi.spyOn(timers, "setImmediate");
+    const runOperation = reconcilePool.runSessionTranscriptReconcileOperation;
+    const operationSpy = vi.spyOn(reconcilePool, "runSessionTranscriptReconcileOperation");
     const startDeferred = (options: OpenClawAgentDatabaseOptions) => {
       const release = createDeferred();
-      immediateSpy.mockReturnValueOnce(release.promise);
+      operationSpy.mockImplementationOnce((generation, run) =>
+        runOperation(generation, async (operation) => {
+          await release.promise;
+          return run(operation);
+        }),
+      );
       startSessionTranscriptIndexReconcile(options);
       return release;
     };
@@ -267,7 +273,7 @@ describe("session transcript reconcile worker lifecycle", () => {
     try {
       releaseFirst.resolve();
       await waitForSessionTranscriptIndexReconcile(first);
-      await checkpoint();
+      await timers.setImmediate();
       expect(settled).toBe(false);
       expect(isSessionTranscriptIndexReconcileRunning(later)).toBe(true);
 
@@ -275,12 +281,12 @@ describe("session transcript reconcile worker lifecycle", () => {
       await waitForSessionTranscriptIndexReconcile(later);
       // A checkpoint makes a wrongly global wait fail here, while finally can
       // still release the unrelated owner instead of deadlocking the test.
-      await checkpoint();
+      await timers.setImmediate();
       expect(settled).toBe(true);
       expect(isSessionTranscriptIndexReconcileRunning(unrelated)).toBe(true);
       expect(isOpenClawAgentDatabaseOpen(resolveOpenClawAgentSqlitePath(unrelated))).toBe(false);
     } finally {
-      immediateSpy.mockRestore();
+      operationSpy.mockRestore();
       releaseFirst.resolve();
       releaseLater.resolve();
       releaseUnrelated.resolve();
