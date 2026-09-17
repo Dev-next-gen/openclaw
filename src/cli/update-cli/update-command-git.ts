@@ -652,6 +652,7 @@ export async function updateGitInstall(params: {
               ? normalizeFallbackFailureReason(packageUpdate.failedStep.name)
               : undefined),
         recovery: packageUpdate.recovery,
+        failedStep: packageUpdate.failedStep ?? undefined,
         steps: [...steps, ...packageUpdate.steps],
         durationMs: Date.now() - params.startedAt,
       };

@@ -22,7 +22,7 @@ import { FreeBsdPkgOwnershipError } from "../../infra/update-freebsd-pkg-ownersh
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { UpdateRunAdmissionBusyError } from "../../infra/update-run-admission.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
@@ -84,26 +84,20 @@ export function createUpdateCommandFailureResult(
         : admissionFailure
           ? "managed-service-preflight"
           : "update-failed";
-  return {
-    ...result,
-    status: "error",
-    reason,
-    steps: [
-      {
-        name: preMutationFailure || pkgOwnershipFailure || admissionFailure ? reason : "update",
-        command: "openclaw update",
-        cwd: result.root ?? process.cwd(),
-        durationMs: result.durationMs,
-        exitCode: 1,
-        ...(isAbortError(cause) ? { termination: "signal" as const } : {}),
-        ...(detail !== undefined ? { stderrTail: detail } : {}),
-        // Recorded diagnostics do not change post-mutation recovery eligibility.
-        ...(preMutationFailure || cause instanceof GatewayServiceUpdateOwnershipError
-          ? { failureFacts: cause.failureFacts }
-          : {}),
-      },
-    ],
+  const failedStep: UpdateStepResult = {
+    name: preMutationFailure || pkgOwnershipFailure || admissionFailure ? reason : "update",
+    command: "openclaw update",
+    cwd: result.root ?? process.cwd(),
+    durationMs: result.durationMs,
+    exitCode: 1,
+    ...(isAbortError(cause) ? { termination: "signal" as const } : {}),
+    ...(detail !== undefined ? { stderrTail: detail } : {}),
+    // Recorded diagnostics do not change post-mutation recovery eligibility.
+    ...(preMutationFailure || cause instanceof GatewayServiceUpdateOwnershipError
+      ? { failureFacts: cause.failureFacts }
+      : {}),
   };
+  return { ...result, status: "error", reason, failedStep, steps: [failedStep] };
 }
 
 /** Report rejected read-only admission without creating a run or recovery diagnostics. */

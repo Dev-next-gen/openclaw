@@ -52,7 +52,7 @@ export function resolveUpdateResultNextAction(params: {
   }
   if (result.status === "error") {
     if (result.reason && UPDATE_ENVIRONMENT_FAILURE_REASONS.has(result.reason)) {
-      const detail = result.steps.find((step) => step.exitCode !== 0 && !step.advisory)?.stderrTail;
+      const detail = result.failedStep?.stderrTail;
       if (detail) {
         return result.recovery?.serviceRestartSafe === false
           ? `${detail} ${resolveUnsafeUpdateRecoveryGuidance(result.recovery.reason, env)}`
@@ -80,10 +80,12 @@ export function resolveUpdateResultNextAction(params: {
     const configRefusal = result.steps.findLast(
       (step) => step.name === "config rollback",
     )?.stderrTail;
-    const failedStep = result.steps.findLast((step) => step.exitCode !== 0 && !step.advisory);
+    const failedStep = result.failedStep;
     const containerPermissionFailure =
       (result.mode === "npm" || result.mode === "pnpm" || result.mode === "bun") &&
       failedStep !== undefined &&
+      failedStep.exitCode !== 0 &&
+      !failedStep.advisory &&
       (failedStep.name.startsWith("global update") ||
         failedStep.name.startsWith("global install")) &&
       /\beacces\b/i.test(failedStep.stderrTail ?? "") &&

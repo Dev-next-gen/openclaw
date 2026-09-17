@@ -17,21 +17,21 @@ const hostGuidance =
   "Run `openclaw triage` on this machine to open a coding agent that can diagnose and repair the installation.";
 const redeploy = "recreate or redeploy the container";
 function failure(overrides: Partial<UpdateRunResult> = {}): UpdateRunResult {
+  const failedStep = {
+    name: "global install stage",
+    command: "prepare staged npm install",
+    cwd: "/fixture",
+    durationMs: 0,
+    exitCode: 1,
+    stderrTail: "EACCES: permission denied",
+  };
   return {
     status: "error",
     mode: "npm",
     reason: "global-install-failed",
     recovery: { serviceRestartSafe: true, version: "1.0.0" },
-    steps: [
-      {
-        name: "global install stage",
-        command: "prepare staged npm install",
-        cwd: "/fixture",
-        durationMs: 0,
-        exitCode: 1,
-        stderrTail: "EACCES: permission denied",
-      },
-    ],
+    steps: [failedStep],
+    failedStep,
     durationMs: 0,
     ...overrides,
   };
@@ -61,21 +61,21 @@ describe("update recovery reporting", () => {
         reason === "node-runtime-preflight"
           ? "openclaw@2026.9.4 requires Node >=24.16.0; this host runs 22.23.2; upgrade Node then rerun openclaw update."
           : "Cannot write /usr/lib/node_modules (owner UID 0); run the package update as the owning account.";
+      const failedStep = {
+        name: reason,
+        command: "openclaw update",
+        cwd: "/fixture",
+        durationMs: 0,
+        exitCode: 1,
+        stderrTail: message,
+      };
       vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
       publishUpdateCommandTerminalResult(
         { opts: { json: true, run }, coreAlreadyCurrent: false },
         failure({
           reason,
-          steps: [
-            {
-              name: reason,
-              command: "openclaw update",
-              cwd: "/fixture",
-              durationMs: 0,
-              exitCode: 1,
-              stderrTail: message,
-            },
-          ],
+          failedStep,
+          steps: [failedStep],
         }),
         { rolledBack: false },
       );
@@ -199,7 +199,8 @@ describe("update recovery reporting", () => {
     "covers the %s permission failure",
     (name) => {
       const result = failure();
-      result.steps[0] = { ...result.steps[0]!, name };
+      result.failedStep = { ...result.steps[0]!, name };
+      result.steps = [result.failedStep];
       expect(resolveUpdateResultNextAction({ result, env: {} })).toContain(redeploy);
     },
   );
@@ -208,7 +209,7 @@ describe("update recovery reporting", () => {
     ["success", { status: "ok" }],
     ["git update", { mode: "git" }],
     ["unknown install", { mode: "unknown" }],
-    ["missing steps", { steps: [] }],
+    ["missing failure", { steps: [], failedStep: undefined }],
   ] satisfies [string, Partial<UpdateRunResult>][])(
     "does not give image advice for %s",
     (_name, overrides) => {
@@ -230,11 +231,12 @@ describe("update recovery reporting", () => {
         step.name = "config validate";
       }
       if (kind === "later failure") {
-        result.steps.push({
+        result.failedStep = {
           ...step,
           name: "config validate",
           stderrTail: "invalid configuration",
-        });
+        };
+        result.steps.push(result.failedStep);
       }
       if (kind === "advisory") {
         step.advisory = { kind: "recoverable-maintenance", message: "Old backup retained" };
