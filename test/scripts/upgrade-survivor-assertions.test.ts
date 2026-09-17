@@ -1879,7 +1879,7 @@ process.stdout.write(sessionDir + "\\n");
     }
   });
 
-  it("accepts the ACPX OpenClaw tools bridge scenario during seed", () => {
+  it("requires saved ACP identity and model selection to survive the bridge scenario", () => {
     const root = mkdtempSync(join(tmpdir(), "openclaw-upgrade-survivor-acpx-"));
     try {
       const stateDir = join(root, "state");
@@ -1896,6 +1896,45 @@ process.stdout.write(sessionDir + "\\n");
         },
         stdio: "pipe",
       });
+      const seeded = JSON.parse(readFileSync(join(stateDir, "sessions", "sessions.json"), "utf8"));
+      const acp = seeded["slack:channel:CUPGRADE"].acp;
+      expect(acp).toMatchObject({
+        backend: "acpx",
+        identity: {
+          acpxSessionId: "upgrade-acpx-session",
+          agentSessionId: "upgrade-agent-session",
+        },
+        runtimeOptions: { model: "gpt-5.5", runtimeMode: "plan" },
+      });
+      const assertSavedAcp = (saved: unknown) =>
+        runSessionStateAssertion(
+          (migratedStateDir) => {
+            writeMigratedSessionState(migratedStateDir);
+            const db = new DatabaseSync(
+              join(migratedStateDir, "agents", "main", "agent", "openclaw-agent.sqlite"),
+            );
+            try {
+              db.prepare("UPDATE session_nodes SET entry_json = ? WHERE session_key = ?").run(
+                JSON.stringify({ acp: saved }),
+                "agent:main:slack:channel:cupgrade",
+              );
+            } finally {
+              db.close();
+            }
+            return undefined;
+          },
+          { scenario: "acpx-openclaw-tools-bridge" },
+        );
+      expect(() => assertSavedAcp(acp)).not.toThrow();
+      expect(() => assertSavedAcp(undefined)).toThrow(
+        "saved ACP session or model selection changed",
+      );
+      expect(() =>
+        assertSavedAcp({
+          ...acp,
+          runtimeOptions: { ...acp.runtimeOptions, model: "changed-model" },
+        }),
+      ).toThrow("saved ACP session or model selection changed");
     } finally {
       rmSync(root, { force: true, recursive: true });
     }
