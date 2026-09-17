@@ -259,6 +259,9 @@ export async function createServiceChildRelayAdapter(
   };
 
   const expireCleanup = () => {
+    if (completionSettled) {
+      return;
+    }
     const pending = {
       closingReceipt: !closingReceipt,
       controlClose: !control?.closed,
@@ -294,7 +297,9 @@ export async function createServiceChildRelayAdapter(
     // One owner budget spans cancellation, ACK, native joins and output drain.
     // Repeated KILL, a later receipt or control EOF must not renew it.
     cleanupDeadline = performance.now() + GRACEFUL_CANCEL_TIMEOUT_MS;
-    cleanupTimer = setTimeout(expireCleanup, GRACEFUL_CANCEL_TIMEOUT_MS);
+    // A busy host can resume with native completion queued behind this timer.
+    // Let the next I/O poll deliver those facts before rejecting pending joins.
+    cleanupTimer = setTimeout(() => setImmediate(expireCleanup), GRACEFUL_CANCEL_TIMEOUT_MS);
   };
 
   const sendChildMessage = (
@@ -383,7 +388,11 @@ export async function createServiceChildRelayAdapter(
     extinctionCompletion.resolve();
   };
 
-  const finishPosixAuthority = async (missingReceiptError: string) => {
+  const finishPosixAuthority = async () => {
+    const missingReceiptError =
+      childError?.message ??
+      controlError?.message ??
+      "anchor channel closed without a matching closing receipt";
     if (state === "closed" || state === "identity-lost") {
       return;
     }
@@ -397,21 +406,10 @@ export async function createServiceChildRelayAdapter(
     if (!childExited) {
       // Control EOF can precede the relay reaping its anchor. Darwin reports
       // EPERM for that unreaped zombie group, so join before observing it.
-      try {
-        await Promise.race([relayExit.promise, extinctionCompletion.promise]);
-      } catch {
-        return;
-      }
-      if (state !== "closing") {
-        return;
-      }
+      await Promise.race([relayExit.promise, extinctionCompletion.promise]);
     }
     if (!lineage?.readableEnded) {
-      try {
-        await Promise.race([lineageEnd.promise, extinctionCompletion.promise]);
-      } catch {
-        return;
-      }
+      await Promise.race([lineageEnd.promise, extinctionCompletion.promise]);
     }
     if (state !== "closing") {
       return;
@@ -561,14 +559,8 @@ export async function createServiceChildRelayAdapter(
         offset += newline + 1;
       }
     });
-    control.once("close", () => {
-      authorityClose = Promise.allSettled([
-        finishPosixAuthority(
-          childError?.message ??
-            controlError?.message ??
-            "anchor channel closed without a matching closing receipt",
-        ),
-      ]).then(([outcome]) => {
+    const finishControl = () => {
+      authorityClose = Promise.allSettled([finishPosixAuthority()]).then(([outcome]) => {
         if (outcome.status === "rejected") {
           // Unexpected finalization failures belong to the same cleanup outcome.
           state = "identity-lost";
@@ -580,6 +572,13 @@ export async function createServiceChildRelayAdapter(
         }
         return outcome;
       });
+    };
+    // The final socket close callback can follow the queued expiry; start the join at EOF.
+    control.once("end", finishControl);
+    control.once("close", () => {
+      if (!control.readableEnded) {
+        finishControl();
+      }
     });
     control.on("error", (error) => {
       controlError ??= error;

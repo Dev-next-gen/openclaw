@@ -674,4 +674,6 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["talk.voice.set", "talk", "operator.talk", "2026.9"],
   ["talk.voice.complete", "talk", "operator.talk", "2026.9"],
   ["plugins.credentials.inspect", "plugins", "operator.admin", "2026.9"],
+  // Plugin skill reads append without shifting previously advertised method indices.
+  ["plugins.skills.read", "plugins", "operator.read", "2026.9"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];
