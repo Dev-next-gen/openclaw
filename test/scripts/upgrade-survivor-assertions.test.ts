@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
+import { UPGRADE_SURVIVOR_ASSERTION_SCENARIOS } from "../../scripts/lib/upgrade-survivor-policy.mjs";
 import type { PluginInstallRecord } from "../../src/config/types.plugins.js";
 import type { PluginUpdateOutcome } from "../../src/plugins/update.js";
 import { withEnv } from "../../src/test-utils/env.js";
@@ -419,6 +420,67 @@ describe("upgrade recovery result assertions", () => {
           runPrefixedJsonAssertion("assert-successful-update-json", result, "2026.8.1").status,
         ).toBe(0);
       }),
+  );
+
+  it.each(["projects-doctor", "projects-startup-migration", "taskflow-restoration"])(
+    "validates published worker update results through the real assertion CLI (%s)",
+    (scenario) =>
+      withEnv({ OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: scenario }, () => {
+        const report = {
+          status: "ok",
+          before: { version: "2026.9.4" },
+          after: { version: "2026.9.4" },
+          steps: [{ name: "global install swap", exitCode: 0 }],
+          postUpdate: { plugins: { status: "ok", integrityDrifts: [] } },
+        };
+        const accepted = runJsonAssertion("assert-successful-update-json", report, "2026.9.4");
+        expect(accepted.status, accepted.stderr).toBe(0);
+        for (const before of [undefined, { version: "2026.9.3" }]) {
+          const rejected = runJsonAssertion(
+            "assert-successful-update-json",
+            { ...report, before },
+            "2026.9.4",
+          );
+          expect(rejected.status).not.toBe(0);
+          expect(rejected.stderr).toContain("Worker cell used the wrong published driver");
+        }
+        for (const change of [
+          { steps: [{ name: "global install swap", exitCode: 1 }] },
+          { after: { version: "2026.9.5" } },
+          { postUpdate: { plugins: { status: "error" } } },
+          { postUpdate: { plugins: { status: "ok", integrityDrifts: ["fixture-drift"] } } },
+        ]) {
+          expect(
+            runJsonAssertion("assert-successful-update-json", { ...report, ...change }, "2026.9.4")
+              .status,
+          ).not.toBe(0);
+        }
+      }),
+  );
+
+  it.each([
+    ["qualified advisory", "openclaw doctor", 86, "package-post-install-doctor", true],
+    ["wrong step", "global update", 86, "package-post-install-doctor", false],
+    ["wrong exit", "openclaw doctor", 1, "package-post-install-doctor", false],
+    ["missing kind", "openclaw doctor", 86, undefined, false],
+    ["wrong kind", "openclaw doctor", 86, "recoverable-maintenance", false],
+  ] as const)(
+    "accepts only the package post-install Doctor advisory (%s)",
+    (_case, name, exitCode, kind, accepted) => {
+      const result = runJsonAssertion(
+        "assert-successful-update-json",
+        {
+          status: "ok",
+          after: { version: "2026.8.1" },
+          steps: [
+            { name: "global install swap", exitCode: 0 },
+            { name, exitCode, ...(kind ? { advisory: { kind } } : {}) },
+          ],
+        },
+        "2026.8.1",
+      );
+      expect(result.status, result.stderr).toBe(accepted ? 0 : 1);
+    },
   );
 
   describe("missing Codex migration update result", () => {
@@ -1118,10 +1180,13 @@ function assertCompanionPluginRecords(
       const isolatedLib = join(isolatedScripts, "e2e", "lib");
       cpSync("scripts/e2e/lib", isolatedLib, { recursive: true });
       mkdirSync(join(isolatedScripts, "lib"), { recursive: true });
-      cpSync(
-        "scripts/lib/release-version.mjs",
-        join(isolatedScripts, "lib", "release-version.mjs"),
-      );
+      for (const file of [
+        "release-version.mjs",
+        "upgrade-survivor-policy.mjs",
+        "upgrade-survivor-scenarios.json",
+      ]) {
+        cpSync(join("scripts/lib", file), join(isolatedScripts, "lib", file));
+      }
       cpSync(
         "scripts/prepublish-plugin-registry-artifact.mjs",
         join(isolatedScripts, "prepublish-plugin-registry-artifact.mjs"),
@@ -1597,10 +1662,12 @@ process.stdout.write(sessionDir + "\\n");
     ) as string[];
 
     expect(scenarios).toContain("base");
+    expect(scenarios).toContain("codex-allowlist-survival");
     expect(scenarios).toContain("mobile-pairing-reconnect");
     expect(scenarios).toContain("acpx-openclaw-tools-bridge");
     expect(scenarios).toContain("prerelease-plugin-registry");
     expect(scenarios).toContain("sqlite-volume");
+    expect(scenarios).toEqual(UPGRADE_SURVIVOR_ASSERTION_SCENARIOS);
     expect(new Set(scenarios).size).toBe(scenarios.length);
   });
 

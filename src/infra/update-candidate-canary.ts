@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -11,7 +11,6 @@ import {
   redactSupportDiagnosticLine,
   redactSupportString,
 } from "../logging/diagnostic-support-redaction.js";
-import { signalProcessTree } from "../process/kill-tree.js";
 import {
   parseOpenClawSchemaVersions,
   type OpenClawSchemaVersions,
@@ -20,6 +19,7 @@ import { hasErrnoCode } from "./errors.js";
 import { readPackageVersion } from "./package-json.js";
 import { runtimeProcessEntrypoints } from "./runtime-process-entrypoints.js";
 import { resolveSqliteInspectionBudget } from "./sqlite-readonly-worker.js";
+import { terminateCanary, waitBounded } from "./update-candidate-canary-process.js";
 import { waitForUpdateCandidateReadiness } from "./update-candidate-canary-readiness.js";
 import {
   prepareUpdateCandidateRehearsal,
@@ -35,7 +35,11 @@ import {
   UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
   type UpdatePostInstallDoctorResult,
 } from "./update-doctor-result.js";
-import { createUpdateFailureFact } from "./update-failure-facts.js";
+import {
+  createUpdateFailureFact,
+  parseConfigFailureFacts,
+  type UpdateFailureFact,
+} from "./update-failure-facts.js";
 import { cleanupUpdateTemporaryDirectory } from "./update-maintenance.js";
 import { resolveUpdateDoctorExecutionPolicy } from "./update-runner-doctor.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
@@ -70,57 +74,6 @@ type CanaryResult = {
       reason: "doctor-failed" | "runtime-verification-failed";
     }
 );
-
-async function waitBounded<T>(
-  promise: Promise<T>,
-  milliseconds: number,
-  signal?: AbortSignal,
-): Promise<{ status: "completed"; value: T } | { status: "deadline" | "aborted" }> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let abort: (() => void) | undefined;
-  try {
-    return await Promise.race([
-      promise.then((value) => ({ status: "completed" as const, value })),
-      new Promise<{ status: "deadline" | "aborted" }>((resolve) => {
-        timer = setTimeout(() => resolve({ status: "deadline" }), Math.max(0, milliseconds));
-        abort = () => resolve({ status: "aborted" });
-        signal?.addEventListener("abort", abort, { once: true });
-        if (signal?.aborted) {
-          abort();
-        }
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-    if (abort) {
-      signal?.removeEventListener("abort", abort);
-    }
-  }
-}
-
-async function terminateCanary(
-  child: ChildProcess,
-  closed: Promise<unknown>,
-  deadline: number,
-): Promise<void> {
-  if (!child.pid) {
-    return;
-  }
-  const options = { detached: process.platform !== "win32" };
-  const signal = (kind: "SIGTERM" | "SIGKILL") =>
-    new Promise<void>((resolve) => {
-      signalProcessTree(child.pid!, kind, { ...options, onComplete: resolve });
-    });
-  await waitBounded(
-    Promise.all([signal("SIGTERM"), closed]),
-    Math.min(1_000, Math.max(0, deadline - Date.now())),
-  );
-  // A reaped group leader does not prove its descendants have exited.
-  await waitBounded(
-    Promise.all([signal("SIGKILL"), closed]),
-    Math.min(1_000, Math.max(0, deadline - Date.now())),
-  );
-}
 
 /** Rehearse the exact candidate against private SQLite snapshots while the serving generation stays up. */
 export async function validateUpdateCandidateCanary(params: {
@@ -240,12 +193,9 @@ export async function validateUpdateCandidateCanary(params: {
       }
     });
     let exited = false;
-    const closed = new Promise<number | null>((resolve) => {
+    const result = new Promise<number | null>((resolve) => {
       child.once("error", (error) => {
-        firstStderrLine ??= redactSupportDiagnosticLine(error.message, {
-          env,
-          stateDir: params.stateDir,
-        });
+        captureStderr(error.message);
         capture(error.message);
         exited = true;
         resolve(null);
@@ -258,14 +208,39 @@ export async function validateUpdateCandidateCanary(params: {
         resolve(code);
       });
     });
+    // An error can settle validation without proving that the child and its pipes closed.
+    const closed = new Promise<void>((resolve) => {
+      child.once("close", () => resolve());
+    });
     return {
       child,
+      result,
       closed,
       hasExited: () => exited,
       stdout: () => stdout,
       firstStderrLine: () => cliReason ?? firstStderrLine,
       outputExceeded: () => outputExceeded,
     };
+  };
+  const stopCanary = async (running: ReturnType<typeof launch>, name: string, deadline: number) => {
+    const cleanupStarted = Date.now();
+    if (await terminateCanary(running.child, running.closed, deadline)) {
+      return;
+    }
+    const step: UpdateStepResult = {
+      name: `${name} cleanup`,
+      command: "SIGTERM, SIGKILL",
+      cwd: params.root,
+      durationMs: Date.now() - cleanupStarted,
+      exitCode: null,
+      advisory: {
+        kind: "recoverable-maintenance",
+        message:
+          "Candidate cleanup deadline elapsed before process close and termination requests both completed. Update validation results are unchanged.",
+      },
+    };
+    steps.push(step);
+    params.onStep?.(step);
   };
   try {
     const entry = await resolveGatewayInstallEntrypoint(params.root);
@@ -407,16 +382,17 @@ export async function validateUpdateCandidateCanary(params: {
       let code: number | null = null;
       let doctorAdvisory: UpdateStepResult["advisory"];
       let doctorReceipt: UpdatePostInstallDoctorResult | null = null;
+      const pluginFailures: UpdateFailureFact[] = [];
       const pluginObservations: string[] = [];
       let timedOut = false;
       try {
-        const outcome = await waitBounded(running.closed, remaining(), params.signal);
+        const outcome = await waitBounded(running.result, remaining(), params.signal);
         // Freeze the winning outcome before teardown can make a killed child
         // emit a successful close event.
         code = outcome.status === "completed" ? outcome.value : 1;
         timedOut = outcome.status === "deadline";
       } finally {
-        await terminateCanary(running.child, running.closed, deadline);
+        await stopCanary(running, command.name, deadline);
         if (doctorResultPath) {
           doctorReceipt = await consumeUpdatePostInstallDoctorResult(
             doctorResultPath,
@@ -464,6 +440,14 @@ export async function validateUpdateCandidateCanary(params: {
         );
       }
       if (code === 0 && phase === "plugins") {
+        const fail = (message: string) => {
+          code = 1;
+          capture(message);
+          if (pluginFailures.length < 5) {
+            const fact = { check: "plugins", code: "candidate-plugins-failed", message };
+            pluginFailures.push(createUpdateFailureFact(fact, env));
+          }
+        };
         const inventory: unknown = running.outputExceeded()
           ? undefined
           : JSON.parse(running.stdout());
@@ -482,8 +466,7 @@ export async function validateUpdateCandidateCanary(params: {
           !plugins ||
           plugins.some((plugin) => !isRecord(plugin) || typeof plugin.id !== "string")
         ) {
-          code = 1;
-          capture("Candidate plugin resolution returned an invalid inventory");
+          fail("Plugin checks returned an invalid inventory");
         } else {
           for (const plugin of plugins) {
             if (isRecord(plugin) && plugin.status === "error" && typeof plugin.id === "string") {
@@ -493,8 +476,11 @@ export async function validateUpdateCandidateCanary(params: {
           for (const diagnostic of diagnostics) {
             if (isRecord(diagnostic) && diagnostic.level === "error") {
               if (typeof diagnostic.pluginId !== "string") {
-                code = 1;
-                capture("Candidate plugin registry reported an unattributed error");
+                fail(
+                  typeof diagnostic.message === "string"
+                    ? diagnostic.message
+                    : "Plugin registry reported an unattributed error",
+                );
               } else {
                 failedPluginIds.add(diagnostic.pluginId);
               }
@@ -530,13 +516,17 @@ export async function validateUpdateCandidateCanary(params: {
           : {}),
       };
       if (code !== 0 && !doctorAdvisory) {
-        let findings = doctorReceipt?.status === "error" ? doctorReceipt.failureFacts : undefined;
+        let findings =
+          doctorReceipt?.status === "error" ? doctorReceipt.failureFacts : pluginFailures;
         if (!findings?.length && phase === "lint" && !running.outputExceeded()) {
           try {
             findings = parseUpdateDoctorLintReport(running.stdout(), env).failureFacts;
           } catch {
             // A failed child may exit before emitting JSON; retain its first stderr line below.
           }
+        }
+        if (!findings?.length && phase === "config" && !running.outputExceeded()) {
+          findings = parseConfigFailureFacts(running.stdout(), env);
         }
         step.failureFacts = findings?.length
           ? findings
@@ -569,15 +559,9 @@ export async function validateUpdateCandidateCanary(params: {
     phase = "startup";
     remaining();
     const gatewayStart = Date.now();
-    const running = launch(entry, [
-      "gateway",
-      "run",
-      "--update-canary",
-      "--bind",
-      "loopback",
-      "--port",
-      String(port),
-    ]);
+    const args = ["gateway", "run", "--update-canary", "--bind", "loopback", "--port"];
+    args.push(String(port));
+    const running = launch(entry, args);
     try {
       const probeFailure = await waitForUpdateCandidateReadiness({
         port,
@@ -613,7 +597,7 @@ export async function validateUpdateCandidateCanary(params: {
       steps.push(step);
       params.onStep?.(step);
     } finally {
-      await terminateCanary(running.child, running.closed, deadline);
+      await stopCanary(running, "candidate gateway canary", deadline);
     }
     return {
       status: "ok",

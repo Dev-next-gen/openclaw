@@ -81,7 +81,7 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  IOS_SCREENSHOT_FASTLANE_VERSION: "2.238.0"
+  IOS_SCREENSHOT_FASTLANE_VERSION: "2.239.0"
   IOS_SCREENSHOT_NODE_VERSION: "24.16.0"
   IOS_SCREENSHOT_XCODE_VERSION: "Xcode 26.6 Build version 17F113"
   NODE_VERSION: "24.x"
@@ -95,7 +95,7 @@ jobs:
     permissions:
       contents: read
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid') && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    runs-on: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt != 1)) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
     timeout-minutes: 20
     outputs:
       checkout_revision: ${{ steps.checkout_ref.outputs.sha }}
@@ -317,6 +317,49 @@ jobs:
               set_job = bind("SetInformationJobObject", w.BOOL, w.HANDLE, c.c_int, c.c_void_p, w.DWORD)
               query_job = bind("QueryInformationJobObject", w.BOOL, w.HANDLE, c.c_int, c.c_void_p, w.DWORD, c.c_void_p)
               terminate_job = bind("TerminateJobObject", w.BOOL, w.HANDLE, w.UINT)
+              open_process = bind("OpenProcess", w.HANDLE, w.DWORD, w.BOOL, w.DWORD)
+              in_job = bind("IsProcessInJob", w.BOOL, w.HANDLE, w.HANDLE, c.POINTER(w.BOOL))
+              wait_process = kernel.WaitForSingleObject
+              wait_process.argtypes, wait_process.restype = [w.HANDLE, w.DWORD], w.DWORD
+
+              def job_members(job, deadline):
+                  # PIDs are discovery hints only. Hold query/synchronize handles and verify
+                  # job membership before using them; never signal a process found by PID.
+                  before = Accounting()
+                  query_job(job, 1, c.byref(before), c.sizeof(before), None)
+                  capacity = max(16, before.ActiveProcesses + 1)
+                  while True:
+                      if time.monotonic() >= deadline or capacity > 65536:
+                          raise RuntimeError("Job member census did not complete")
+                      class Members(c.Structure):
+                          _fields_ = [("assigned", w.DWORD), ("count", w.DWORD),
+                                      ("pids", c.c_size_t * capacity)]
+                      members = Members()
+                      try:
+                          query_job(job, 3, c.byref(members), c.sizeof(members), None)
+                          break
+                      except OSError as error:
+                          if error.winerror != 234:  # ERROR_MORE_DATA: retry the census, not cleanup.
+                              raise
+                          capacity *= 2
+                  handles = []
+                  try:
+                      for pid in members.pids[:members.count]:
+                          handle = open_process(0x00100000 | 0x1000, False, pid)
+                          handles.append(handle)
+                          member = w.BOOL()
+                          in_job(handle, job, c.byref(member))
+                          if not member.value:
+                              raise RuntimeError("Job member identity changed during census")
+                      after = Accounting()
+                      query_job(job, 1, c.byref(after), c.sizeof(after), None)
+                      if after.TotalProcesses != before.TotalProcesses:
+                          raise RuntimeError("Job membership grew during census")
+                      return handles, after.TotalProcesses
+                  except BaseException:
+                      for handle in handles:
+                          close_handle(handle)
+                      raise
               bootstrap = windows_api + '\'''\'''\''
           job = int(sys.argv[1])
           assign = bind("AssignProcessToJobObject", w.BOOL, w.HANDLE, w.HANDLE)
@@ -391,15 +434,36 @@ jobs:
                   # an empty Job alone cannot prove that no Git will start afterwards.
                   child.kill()
                   child.wait(timeout=max(0.001, deadline - time.monotonic()))
-                  terminate_job(job, 1)
-                  accounting = Accounting()
-                  while True:
-                      query_job(job, 1, c.byref(accounting), c.sizeof(accounting), None)
-                      if accounting.ActiveProcesses == 0:
-                          return
-                      if time.monotonic() >= deadline:
-                          raise RuntimeError("Job cleanup did not complete")
-                      time.sleep(0.05)
+                  handles = []
+                  terminated = False
+                  try:
+                      handles, total = job_members(job, deadline)
+                      terminate_job(job, 1)
+                      terminated = True
+                      accounting = Accounting()
+                      while True:
+                          settled = True
+                          for handle in handles:
+                              status = wait_process(handle, 0)
+                              if status == 258:  # WAIT_TIMEOUT: accounting can reach zero first.
+                                  settled = False
+                              elif status != 0:
+                                  raise c.WinError(c.get_last_error())
+                          query_job(job, 1, c.byref(accounting), c.sizeof(accounting), None)
+                          if accounting.TotalProcesses != total:
+                              raise RuntimeError("Job membership grew during cleanup")
+                          if accounting.ActiveProcesses == 0 and settled:
+                              return
+                          if time.monotonic() >= deadline:
+                              raise RuntimeError("Job cleanup did not complete")
+                          time.sleep(0.05)
+                  finally:
+                      try:
+                          if not terminated:
+                              terminate_job(job, 1)
+                      finally:
+                          for handle in handles:
+                              close_handle(handle)
               else:
                   # The group remains ours after leader exit. Reserve half the existing
                   # cleanup allowance for KILL and extinction verification after TERM.
@@ -1431,14 +1495,11 @@ jobs:
             existsSync("test/vitest/vitest.ui-e2e.config.ts") &&
             readFileSync("test/vitest/vitest.ui-e2e.config.ts", "utf8")
               .includes("ui-e2e-projects-contract-v1");
-          // Six shards share setup on Blacksmith first attempts, including hybrid.
-          // Failed-job reruns retain this matrix and its existing live routing;
-          // frozen targets and fresh hosted plans retain their established widths.
-          const compactUiE2e = !frozenTarget &&
-            (runnerProfile === "blacksmith" || runnerProfile === "hybrid") &&
-            process.env.GITHUB_RUN_ATTEMPT === "1";
+          // Keep the existing twelve-shard split on 16-class capacity; the compact
+          // six-shard plan can exceed the unchanged job deadline. Earlier failed-job
+          // reruns retain their emitted matrix and existing live routing.
           const uiE2eJobCount = supportsUiE2eProjects
-            ? (compactUiE2e ? 7 : 13)
+            ? 13
             : usesHostedRunnerProfile ? 14 : 4;
           // The logical profile already owns contributor routing. Reuse the
           // four-part plan only for normal hybrid first attempts on Blacksmith.
@@ -1764,8 +1825,8 @@ jobs:
               // Diff generation took 209–246s on smaller hosts; keep its 8GiB heap isolated.
               { check_name: "report-plugin-sdk-api-diff", group: "plugin-sdk-api-diff", runner: "blacksmith-8vcpu-ubuntu-2404" },
             ] : []),
-            // Cold SDK/plugin compilation needs the measured 8CPU class.
-            { check_name: "check-additional-extension-package-boundary", group: "extension-package-boundary", runner: "blacksmith-32vcpu-ubuntu-2404" },
+            // Keep these scans on available capacity; their resource guards remain authoritative.
+            { check_name: "check-additional-extension-package-boundary", group: "extension-package-boundary", runner: "blacksmith-16vcpu-ubuntu-2404" },
             { check_name: "check-additional-runtime-topology-architecture", group: "runtime-topology-architecture", runner: "blacksmith-16vcpu-ubuntu-2404" },
           ];
 
@@ -1935,8 +1996,8 @@ jobs:
             ).length;
             // Include control jobs, every emitted matrix row and native hosted jobs.
             // The guard independently expands the workflow to catch inventory drift.
+            // Eligible hybrid preflight already runs on Blacksmith.
             hybridHostedBaseRows = Object.values({
-              preflight: 1,
               "ci-gate": 1,
               "pnpm-store-warmup": count(manifest.run_node || manifest.run_check_docs),
               "control-ui-performance": count(manifest.run_control_ui_performance),
@@ -2223,7 +2284,8 @@ jobs:
       contents: read
     needs: [preflight]
     if: needs.preflight.outputs.run_build_artifacts == 'true'
-    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-32vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    # Use available 16-class capacity; SDK memory admission retains serial declarations when needed.
+    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 35 || 20 }}
     steps:
       - *linux_node_checkout_step
@@ -2776,9 +2838,8 @@ jobs:
     # that release, not current main.
     if: needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true'
     # Only the browser-extension row can consume the optional hosted budget.
-    # UI's two workers received two CPUs on the 8-vCPU label; request the measured
-    # eight-CPU class only for Control UI, retaining browser-extension placement.
-    runs-on: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && needs.preflight.outputs.hybrid_hosted_offload == 'true' && matrix.task == 'browser-extension') && 'ubuntu-24.04' || vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (matrix.task == 'control-ui' && 'blacksmith-32vcpu-ubuntu-2404' || 'blacksmith-8vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
+    # Keep Control UI on available 16-class capacity and retain browser-extension placement.
+    runs-on: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && needs.preflight.outputs.hybrid_hosted_offload == 'true' && matrix.task == 'browser-extension') && 'ubuntu-24.04' || vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (matrix.task == 'control-ui' && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-8vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
     # Source-server and runtime-budget owners retain serial Chromium execution.
     timeout-minutes: 25
     env:
@@ -2844,7 +2905,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: control-ui-e2e-timeout-${{ matrix.shard }}-${{ github.run_attempt }}
-          path: .artifacts/control-ui-e2e-timeouts/shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: .artifacts/control-ui-e2e-timeouts/shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}/failure-*/failure.public.json
           if-no-files-found: ignore
           retention-days: 7
 
@@ -2887,8 +2948,8 @@ jobs:
     if: needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true'
     # Contributor trust controls Blacksmith eligibility; manual runs and PR retries
     # stay hosted. Hybrid also uses hosted capacity on push retries.
-    # The 32-class request can fit both staged SDK compilers; actual remaining
-    # memory still gates overlap, with unchanged browser worker limits.
+    # Restore eight-CPU capacity for the fixed 20-minute budget; actual
+    # remaining memory still gates SDK overlap, with unchanged browser workers.
     runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-32vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     # Hosted preparation and the complete suite need a larger job budget; test deadlines stay fixed.
     timeout-minutes: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.run_attempt > 1) || github.repository != 'openclaw/openclaw' || (github.event_name == 'pull_request' && !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association))) && 40 || 20 }}
@@ -2934,6 +2995,7 @@ jobs:
           FROZEN_TARGET: ${{ needs.preflight.outputs.frozen_target }}
           OPENCLAW_CAPTURE_UI_PROOF: ${{ github.event_name == 'workflow_dispatch' && inputs.capture_ui_proof && '1' || '0' }}
           OPENCLAW_UI_E2E_ARTIFACT_DIR: .artifacts/control-ui-e2e/real-gateway
+          OPENCLAW_UI_E2E_DIAGNOSTIC_DIR: .artifacts/control-ui-e2e-timeouts/real-gateway-attempt-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           config=test/vitest/vitest.ui-e2e-prebuilt.config.ts
@@ -2985,6 +3047,15 @@ jobs:
             extensions/qa-lab/src/session-host-command-state.real-gateway.e2e.test.ts \
             extensions/qa-lab/src/control-ui-openclaw-delegation.real-gateway.e2e.test.ts \
             extensions/qa-lab/src/control-ui-automation-management.real-gateway.e2e.test.ts
+
+      - name: Upload Control UI real-Gateway timeout diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: control-ui-real-gateway-timeout-${{ github.run_attempt }}
+          path: .artifacts/control-ui-e2e-timeouts/real-gateway-attempt-${{ github.run_attempt }}/failure-*/failure.public.json
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload sanitized desktop resize proof
         if: always()
@@ -3193,6 +3264,9 @@ jobs:
                 fi
               fi
               pnpm check:max-lines-ratchet --base "$base_ref"
+              if [[ -n "${RATCHET_PR_HEAD_SHA:-}" ]]; then
+                pnpm check:line-cap-ratchet --base "$base_ref"
+              fi
               pnpm check:assertion-safety --base "$base_ref"
               pnpm config:docs:check
               pnpm plugins:inventory:check
@@ -3543,8 +3617,8 @@ jobs:
     name: ${{ matrix.check_name || 'checks-node-core-test-nondist-shard' }}
     needs: [preflight]
     if: needs.preflight.outputs.run_checks_node_core_nondist == 'true'
-    # Apply selected transitions only: numbered bins can use another class in other profiles.
-    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && ((matrix.runner == 'blacksmith-8vcpu-ubuntu-2404' && contains(fromJSON('["checks-node-changed-extensions-bundle-16","checks-node-compact-large-9","checks-node-changed-extensions-bundle-25","checks-node-compact-large-5"]'), matrix.check_name) || matrix.runner == 'blacksmith-32vcpu-ubuntu-2404' && contains(fromJSON('["checks-node-compact-small-4","checks-node-compact-small-3","checks-node-compact-small-10"]'), matrix.check_name)) && 'blacksmith-16vcpu-ubuntu-2404' || matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
+    # Keep planner capacity; apply only the selected 8-to-16 promotions.
+    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && ((matrix.runner == 'blacksmith-8vcpu-ubuntu-2404' && contains(fromJSON('["checks-node-changed-extensions-bundle-16","checks-node-compact-large-9","checks-node-changed-extensions-bundle-25","checks-node-compact-large-5"]'), matrix.check_name)) && 'blacksmith-16vcpu-ubuntu-2404' || matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
     timeout-minutes: ${{ matrix.timeout_minutes || 60 }}
     strategy:
       fail-fast: false
@@ -3751,16 +3825,15 @@ jobs:
           - check_name: check-lint
             task: lint
             # Oxlint shard concurrency scales with observed CPU and memory capacity.
-            runner: blacksmith-32vcpu-ubuntu-2404
+            runner: blacksmith-16vcpu-ubuntu-2404
           - check_name: check-dependencies
             task: dependencies
             # Concurrent Knip scans need CPU and memory headroom.
-            runner: blacksmith-32vcpu-ubuntu-2404
+            runner: blacksmith-16vcpu-ubuntu-2404
           - check_name: check-test-types
             task: test-types
-            # The 16 label delivered 4 CPUs/15 GiB; 32 delivered 8 CPUs/31 GiB.
-            # Keep type checks above the constrained-host threshold; see docs/ci.md#blacksmith-runner-capacity.
-            runner: blacksmith-32vcpu-ubuntu-2404
+            # Actual CPU and memory capacity still govern type-check parallelism.
+            runner: blacksmith-16vcpu-ubuntu-2404
     steps:
       - *linux_node_checkout_step
       - name: Setup Node environment
@@ -3805,7 +3878,7 @@ jobs:
       # protected boundary lane may publish this repository-global snapshot.
       - name: Mount extension boundary sticky disk
         if: matrix.task == 'lint' && steps.extension-boundary-inputs.outputs.enabled == 'true' && vars.OPENCLAW_CI_RUNNER_BACKEND != 'github' && vars.OPENCLAW_CI_RUNNER_BACKEND != 'hybrid' && github.event_name != 'workflow_dispatch' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw')
-        uses: useblacksmith/stickydisk@35ba2e331a80056a42af053ee54968511de2b7c7 # v1.5.0
+        uses: useblacksmith/stickydisk@74f3f01ab1392726dd6ee06904f0452b0ec1e151 # v1.6.0
         with:
           # One stable disk for the whole repository. The v1 per-PR/per-config
           # keys minted a new backing disk for every PR and toolchain change
@@ -4202,16 +4275,15 @@ jobs:
 
   # Pair four original core stripes; check-test-types owns the fifth and its tail.
   # Each stripe retains fresh compiler processes and its two-child limit;
-  # all-Blacksmith mode uses one 32-vCPU test-types job for the full workload.
+  # all-Blacksmith mode uses one 16-vCPU test-types job for the full workload.
   check-test-types-hosted-core-shard:
     permissions:
       contents: read
     name: check-test-types-core-${{ matrix.stripe }}
     needs: [preflight]
     if: ${{ needs.preflight.outputs.run_check == 'true' && !needs.preflight.outputs.changed_core_test_paths_json && (needs.preflight.outputs.runner_profile == 'github' || needs.preflight.outputs.runner_profile == 'hybrid') && (needs.preflight.outputs.frozen_target != 'true' || needs.preflight.outputs.hosted_runner_profile_contract == 'true') }}
-    # The 8 label delivered only 2 CPUs/8 GiB; 32 delivered 8 CPUs/31 GiB.
-    # Preserve two compiler children and hosted retries; see docs/ci.md#blacksmith-runner-capacity.
-    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-32vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    # Use available 16-class capacity with the same compiler children and hosted retries.
+    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -4298,7 +4370,7 @@ jobs:
       # repository-global snapshots, so they keep the GitHub cache path.
       - name: Mount extension boundary sticky disk
         if: matrix.group == 'extension-package-boundary' && steps.extension-boundary-inputs.outputs.enabled == 'true' && vars.OPENCLAW_CI_RUNNER_BACKEND != 'github' && vars.OPENCLAW_CI_RUNNER_BACKEND != 'hybrid' && github.event_name != 'workflow_dispatch' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw')
-        uses: useblacksmith/stickydisk@35ba2e331a80056a42af053ee54968511de2b7c7 # v1.5.0
+        uses: useblacksmith/stickydisk@74f3f01ab1392726dd6ee06904f0452b0ec1e151 # v1.6.0
         with:
           # One stable disk for the whole repository. The v1 per-PR/per-config
           # keys minted a new backing disk for every PR and toolchain change
@@ -5689,7 +5761,7 @@ jobs:
       # runs-on already selects non-Blacksmith ubuntu-24.04 runners).
       - name: Mount Gradle sticky disk
         if: vars.OPENCLAW_CI_RUNNER_BACKEND != 'github' && !(vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && github.event_name != 'workflow_dispatch' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw')
-        uses: useblacksmith/stickydisk@35ba2e331a80056a42af053ee54968511de2b7c7 # v1.5.0
+        uses: useblacksmith/stickydisk@74f3f01ab1392726dd6ee06904f0452b0ec1e151 # v1.6.0
         with:
           # One stable disk per matrix task. The v1 per-PR/per-dependency-hash
           # keys minted a new backing disk for every PR and dependency bump

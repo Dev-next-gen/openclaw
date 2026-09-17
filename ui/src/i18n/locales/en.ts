@@ -47,6 +47,7 @@ export const en: TranslationMap & {
   devices: TranslationMap;
   desktop: TranslationMap &
     Record<"title" | "openWindow" | "unavailable" | "toggle" | "reconnect" | "connecting", string>;
+  filePreview: TranslationMap & { bundle: TranslationMap };
   updates: TranslationMap;
   login: TranslationMap;
   newSession: TranslationMap;
@@ -250,6 +251,7 @@ export const en: TranslationMap & {
     openInControlUi: "Open links in Control UI browser",
   },
   filePreview: {
+    bundle: {},
     label: "Support files",
     listLabel: "Files",
     searchPlaceholder: "Search files…",
@@ -315,6 +317,7 @@ export const en: TranslationMap & {
   sessionProgressCard: {
     title: "Progress",
     composerTitle: "Task progress",
+    gestureHint: "Drag or scroll up on the header to open; move down to close. Click to toggle.",
     shortCount: "{completed} of {total}",
     noteLabel: "Progress note",
     dismiss: "Dismiss progress card",
@@ -348,6 +351,7 @@ export const en: TranslationMap & {
     receipt: {
       updating: "Updating progress",
       failed: "Progress update failed",
+      skipped: "Progress update skipped",
       updated: "Progress updated — {completed}/{total} · {current}",
       noteUpdated: "Progress note updated",
       cleared: "Progress cleared",
@@ -1843,6 +1847,8 @@ export const en: TranslationMap & {
       "Settings restoration could not be confirmed. Your draft is kept. Check {path} before saving again.",
     recoveryBackup: "Inspect the recovery backup at {path}.",
     recoveryReload: "Discard draft and reload",
+    discardUnconfirmed:
+      "The last save could not be confirmed. Your draft is kept. Reload configuration before discarding this setting.",
     autoSaveConflict: "Settings changed elsewhere",
     retry: "Retry",
     applyChanges: "Apply changes",
@@ -2836,8 +2842,8 @@ export const en: TranslationMap & {
       groupTitle: "Parallel tasks",
       defaultPhase: "Unphased",
       progress: "{complete} of {total}",
-      active: "{running} running · {queued} queued · {failed} failed",
-      finished: "{done} completed · {failed} failed",
+      active: "{running} running · {queued} queued · {failed} failed or stopped",
+      finished: "{done} completed · {failed} failed or stopped",
       completed: "{done} completed",
       childOutcome: "Child runs finished. Check the conversation for the final response.",
       childOutcomeProcessing: "Child runs finished. The parent is processing their results.",
@@ -3762,6 +3768,7 @@ export const en: TranslationMap & {
       ofInput: "of input",
       of: "of",
       timelineFiltered: "timeline filtered",
+      loadedIntervalMessages: "Loaded conversation · selected interval",
       conversation: "Conversation",
       noMessages: "No messages",
       tool: "Tool",
@@ -4975,6 +4982,8 @@ export const en: TranslationMap & {
       fileChanges: "File changes",
       attemptedChanges: "Attempted changes",
       failed: "failed",
+      skipped: "Skipped",
+      skippedCount: "{count} skipped",
       running: "Running",
       completed: "Completed",
       exitCode: "Exit code {code}",
@@ -5123,6 +5132,7 @@ export const en: TranslationMap & {
       searchResults: "Search results",
       parentFolder: "Parent folder",
       noBrowserFiles: "No files in this folder.",
+      folderUnavailable: "This folder is unavailable. Open its parent folder to continue browsing.",
       noSearchResults: "No matching files.",
       truncated: "Showing the first matching files. Refine the search to narrow results.",
       session: "Session",

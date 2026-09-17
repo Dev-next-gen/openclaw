@@ -4,6 +4,7 @@ import {
   readNonBlankString as normalizeTtsSupplementSpokenText,
 } from "@openclaw/normalization-core/string-coerce";
 /** Reply payload contracts and metadata helpers shared by dispatch and channel renderers. */
+import type { HarnessCompletionRecovery } from "../config/sessions/restart-recovery-types.js";
 import type { ReplyToMode } from "../config/types.base.js";
 import type { AssistantDeliveryTtsFacts } from "../llm/types.js";
 import type { ReplyPayload, ReplyPayloadTtsSupplement } from "../shared/reply-payload.types.js";
@@ -186,6 +187,8 @@ export function buildTtsSupplementMediaPayload(payload: ReplyPayload): ReplyPayl
 /** WeakMap-backed metadata attached to payload objects without changing wire shape. */
 export type SessionWriterDeliveryAuthority = {
   agentId?: string;
+  /** Captured admitted completion authority, retained by the durable queue. */
+  harnessCompletion?: HarnessCompletionRecovery;
   expectedLifecycleRevision?: string;
   expectedSessionId: string;
   expectedWriterRunId?: string;
@@ -197,6 +200,8 @@ export type ReplyPayloadMetadata = {
   /** The model failed after a committed recovery compaction in the same turn. */
   postCompactionModelFailure?: true;
   assistantMessageIndex?: number;
+  /** Answer to a preceding user input in the same run. */
+  precedingInputAnswer?: true;
   /** Visible source represented by this block, excluding synthetic chunk wrappers. */
   blockSourceText?: string;
   /** Live source receipts retained until final text recovery settles. */

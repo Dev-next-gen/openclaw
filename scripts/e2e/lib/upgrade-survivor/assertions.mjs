@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { UPGRADE_SURVIVOR_ASSERTION_SCENARIOS } from "../../../lib/upgrade-survivor-policy.mjs";
 import { validatePrepublishPluginRegistryArtifact } from "../../../prepublish-plugin-registry-artifact.mjs";
 import { readPluginInstallIndex } from "../plugin-index-sqlite.mjs";
 import { readPostCoreSnapshot } from "./diagnostics.mjs";
@@ -17,6 +18,7 @@ import {
   assertMSTeamsPollMigration,
   assertMSTeamsPluginFiles,
 } from "./msteams-polls.mjs";
+import * as sessionSourceFixture from "./session-source-fixture.mjs";
 import { assertUpgradeVolumeMigrated, seedUpgradeVolume } from "./sqlite-volume.mjs";
 
 const command = process.argv[2];
@@ -26,36 +28,7 @@ const legacyOperator =
   command?.includes("legacy-operator")
     ? await import("./legacy-operator-state.mjs")
     : undefined;
-const SCENARIOS = new Set([
-  "base",
-  "msteams-polls",
-  "abandoned-update",
-  "legacy-operator-state",
-  "workshop-doctor-recovery",
-  "mobile-pairing-reconnect",
-  "acpx-openclaw-tools-bridge",
-  "feishu-channel",
-  "bootstrap-persona",
-  "channel-post-core-restore",
-  "codex-allowlist-survival",
-  "plugin-deps-cleanup",
-  "configured-plugin-installs",
-  "missing-configured-plugin-migration",
-  "custom-plugin-siblings",
-  "projects-doctor",
-  "taskflow-restoration",
-  "stale-source-plugin-shadow",
-  "prerelease-plugin-registry",
-  "tilde-log-path",
-  "meeting-transcripts-sqlite",
-  "versioned-runtime-deps",
-  "cron-scheduled-authority",
-  "sqlite-volume",
-  "recovery-cleanup",
-  "auth-profile-v2026-7-2-beta-5",
-  "watchos-direct-node",
-]);
-
+const SCENARIOS = new Set(UPGRADE_SURVIVOR_ASSERTION_SCENARIOS);
 const PERSONA_FILES = new Map([
   ["BOOTSTRAP.md", "# Existing Bootstrap\n\nDo not overwrite me during update.\n"],
   ["SOUL.md", "# Existing Soul\n\nKeep this voice intact.\n"],
@@ -408,6 +381,7 @@ function seedState() {
   });
   // Volume imports start in per-agent JSON; other scenarios cover the older shared-store move.
   seedLegacySessionMetadata(stateDir, scenario === "sqlite-volume");
+  sessionSourceFixture.recordLegacySessionSources(stateDir);
   seedLegacyExecApprovalPolicy(stateDir);
   if (scenario === "msteams-polls") {
     seedMSTeamsPollMigration(stateDir, requireEnv("OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT"));
@@ -1081,12 +1055,8 @@ function assertSessionMetadataMigrated(stateDir, stage) {
   const legacyStorePath = path.join(stateDir, "sessions", "sessions.json");
   const agentSessionsDir = path.join(stateDir, "agents", "main", "sessions");
   const targetStorePath = path.join(agentSessionsDir, "sessions.json");
-  assert(
-    !fs.existsSync(legacyStorePath),
-    `legacy sessions.json survived migration: ${legacyStorePath}`,
-  );
-
   const { source, store } = readMigratedSessionStore(stateDir, targetStorePath);
+  sessionSourceFixture.assertLegacySessionSourceDisposition(legacyStorePath, source);
   const main = store["agent:main:main"];
   const direct = store["agent:main:+15551234567"];
   const group = store["agent:main:slack:channel:cupgrade"];
@@ -1667,7 +1637,11 @@ function assertSuccessfulUpdateJson([file, expectedVersion, observationRoot]) {
   const result = readUpdateJson(file, observationRoot);
   const plugins = result?.postUpdate?.plugins;
   assert(result?.status === "ok", `update did not report ok: ${String(result?.status)}`);
-  if (["projects-doctor", "taskflow-restoration"].includes(getScenario())) {
+  if (
+    ["projects-doctor", "projects-startup-migration", "taskflow-restoration"].includes(
+      getScenario(),
+    )
+  ) {
     assertStrict.equal(
       result.before?.version,
       "2026.9.4",
@@ -1696,7 +1670,14 @@ function assertSuccessfulUpdateJson([file, expectedVersion, observationRoot]) {
     `successful update version changed: ${String(result?.after?.version)}`,
   );
   assert(
-    Array.isArray(result?.steps) && result.steps.every((step) => step?.exitCode === 0),
+    Array.isArray(result?.steps) &&
+      result.steps.every(
+        (step) =>
+          step?.exitCode === 0 ||
+          (step?.name === "openclaw doctor" &&
+            step.exitCode === 86 &&
+            step.advisory?.kind === "package-post-install-doctor"),
+      ),
     "successful update contained a failed core step",
   );
 }
@@ -1946,6 +1927,8 @@ function assertMobilePairingEvidence(files) {
 
 if (command === "list-scenarios") {
   process.stdout.write(`${JSON.stringify([...SCENARIOS])}\n`);
+} else if (command === "missing-load-path") {
+  await import("./missing-load-path.mjs");
 } else if (command === "seed") {
   seedState();
 } else if (command === "seed-msteams-doctor") {

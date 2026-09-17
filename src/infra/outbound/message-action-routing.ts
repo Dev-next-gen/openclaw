@@ -435,6 +435,7 @@ export async function prepareMessageRoute(params: {
       conversationReadOrigin: normalizeConversationReadInvocationOrigin(
         input.conversationReadOrigin,
       ),
+      messageActionAuthorization: input.messageActionAuthorization,
     });
   let assertReadAuthorityCurrent: (() => void) | undefined;
   if (!delegatesActionToGateway || dryRun) {
@@ -453,6 +454,7 @@ export async function prepareMessageRoute(params: {
         input.conversationReadOrigin,
       ),
       toolContext: authorization !== undefined ? authorization.toolContext : input.toolContext,
+      messageActionAuthorization: authorization,
       assertDirectAdapterHandoff: input.assertDirectAdapterHandoff,
     });
     actionParams = preparedRead.params;

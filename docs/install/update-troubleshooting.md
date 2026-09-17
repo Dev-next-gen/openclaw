@@ -84,6 +84,39 @@ The controls require a connected Gateway, support for the corresponding typed
 Gateway method, and administrator scope. When those conditions are not met, use
 the CLI fallback on the Gateway host.
 
+## Plugin repair warnings
+
+Doctor's configured-plugin repair and payload-verification warnings do not block
+Gateway readiness. A tracked plugin whose payload is unavailable is marked
+unavailable, and its configuration and pending migration inputs stay preserved.
+This includes host-link repair failures during updates.
+`openclaw update status --json` lists pending plugin migration warnings, and
+Doctor reports the affected plugin and repair command. Run `openclaw update repair`,
+then `openclaw doctor --fix` to retry after restoring access to the plugin source.
+
+Missing configured `plugins.load.paths` are availability warnings.
+The update continues and the Gateway can become ready with the available plugins.
+The update report and Doctor lint identify the unavailable path with
+`configured-plugin-path-unavailable`.
+Permission, I/O, and other filesystem inspection failures use the distinct
+`configured-plugin-path-inspection-failed` warning with the original error code
+and message. For permission errors, fix permissions on the reported path, then
+run `openclaw doctor --fix`; for other failures, resolve the reported filesystem
+problem first. Both warnings preserve uninspected configuration and let the update continue.
+
+A load path can contain several plugins or override a bundled plugin, so discovery
+cannot infer which settings belong to its missing payload. Doctor preserves
+uninspected plugin settings, channel settings, model selections, and load-path
+entries instead of treating them as stale or applying another plugin's repair.
+Restore the path or correct its `plugins.load.paths` entry, then run
+`openclaw doctor --fix` to resume inspection and repair. Other discovery errors
+retain their existing diagnostics.
+
+Official version-bound runtime plugins installed through ClawHub use their
+declared ClawHub source for the new core release cohort. The released 2026.9.4
+catalog omitted that source for Codex; the correction is on main in
+[#148518](https://github.com/openclaw/openclaw/pull/148518).
+
 ## Reason codes
 
 - `dirty`, `no-upstream`: repair the source checkout before retrying.
