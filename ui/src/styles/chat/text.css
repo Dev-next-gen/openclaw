@@ -700,6 +700,38 @@
   font: inherit;
 }
 
+.chat-reply-attribution--forwarded a.markdown-session-link:hover,
+.chat-reply-attribution--forwarded a.markdown-session-link:focus-visible {
+  opacity: 0.75;
+  text-decoration: none;
+}
+
+.chat-reply-attribution--forwarded a.markdown-session-link--agent {
+  padding-inline-start: 0;
+}
+
+.chat-reply-attribution--forwarded a.markdown-session-link--agent::before {
+  content: none;
+}
+
+.chat-reply-attribution__agent-avatar,
+.chat-reply-attribution__agent-avatar :is(.chat-avatar, .chat-avatar-slot) {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  border: 0;
+  border-radius: 50%;
+  box-shadow: none;
+}
+
+/* Keep inline identities visible on mobile without exposing an image's fallback. */
+.chat-reply-attribution__agent-avatar,
+.chat-reply-attribution__agent-avatar > :is(.chat-avatar, .chat-avatar-slot),
+.chat-reply-attribution__agent-avatar > .chat-avatar-slot:not(.is-fallback) > img {
+  display: inline-grid;
+}
+
 .chat-reply-attribution--forwarded .session-label {
   display: block;
 }

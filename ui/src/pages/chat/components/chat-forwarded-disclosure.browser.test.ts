@@ -9,16 +9,27 @@ import "../../../styles/chat/grouped.css";
 import "../../../styles/chat/text.css";
 
 let host: HTMLDivElement;
-afterEach(() => {
+let avatarUrl: string | undefined;
+afterEach(async () => {
   if (host) {
     render(null, host);
     host.remove();
+  }
+  if (avatarUrl) {
+    URL.revokeObjectURL(avatarUrl);
+    avatarUrl = undefined;
+    const { page } = await import("vitest/browser");
+    await page.viewport(1280, 720);
   }
   document.documentElement.removeAttribute("data-theme-mode");
 });
 
 const longText = Array.from({ length: 24 }, (_, i) => `Instruction ${i + 1}.`).join("\n");
-function fixture(role: string, width: number) {
+function fixture(
+  role: string,
+  width: number,
+  senderAgentAvatars?: ReadonlyMap<string, string | null>,
+) {
   host = document.createElement("div");
   host.className = "chat-thread";
   host.style.width = `${width}px`;
@@ -45,6 +56,7 @@ function fixture(role: string, width: number) {
       renderMessageGroup(group, {
         agentId: "main",
         mainKey: "main",
+        senderAgentAvatars,
         agents: [{ id: "research", identity: { name: "research" } }],
         showReasoning: true,
         showToolCalls: true,
@@ -168,3 +180,33 @@ it("rechecks wrapped content when the transcript width changes", async () => {
   await expect.poll(() => toggle.hidden).toBe(true);
   expect(content.scrollHeight - content.clientHeight).toBeLessThanOrEqual(1);
 });
+
+it.each([true, false].flatMap((loaded) => [1440, 390].map((width) => ({ loaded, width }))))(
+  "shows one inline agent avatar with image loaded=$loaded at $width",
+  async ({ loaded, width }) => {
+    const { page } = await import("vitest/browser");
+    await page.viewport(width, 800);
+    avatarUrl = URL.createObjectURL(
+      new Blob(
+        [
+          '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18"><rect width="18" height="18" fill="blue"/></svg>',
+        ],
+        { type: "image/svg+xml" },
+      ),
+    );
+    if (!loaded) {
+      URL.revokeObjectURL(avatarUrl);
+    }
+    fixture("assistant", width, new Map([["research", avatarUrl]]));
+    const slot = host.querySelector<HTMLElement>(
+      ".chat-reply-attribution__agent-avatar .chat-avatar-slot",
+    )!;
+    await expect.poll(() => slot.dataset.avatarState).toBe(loaded ? "loaded" : "failed");
+    const image = slot.querySelector<HTMLImageElement>("img")!;
+    const fallback = slot.querySelector<HTMLElement>(":scope > .identity-avatar--agent")!;
+    await expect.poll(() => fallback.querySelector("svg") !== null).toBe(true);
+    expect(image.getBoundingClientRect().height).toBe(loaded ? 18 : 0);
+    expect(fallback.getBoundingClientRect().height).toBe(loaded ? 0 : 18);
+    expect(slot.scrollHeight).toBe(18);
+  },
+);
