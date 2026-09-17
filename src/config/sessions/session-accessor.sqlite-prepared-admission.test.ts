@@ -909,9 +909,10 @@ it("rechecks maintenance lifetime after cold finalizer admission", async () => {
   current = false;
   probe.release.resolve();
   await expect(work).resolves.toMatchObject({ capped: 0, archivedTranscripts: [] });
+  // The transcript postcondition reopens a writable reader and may validate on the caller.
+  await probe.expectHealthy(1);
   expect(loadSessionEntryReadOnly(f.stale)?.sessionId).toBe("old");
   expect(loadTranscriptEventsSync(f.stale)).toEqual(f.events);
-  await probe.expectHealthy(1);
 });
 
 it.each([false, true])(

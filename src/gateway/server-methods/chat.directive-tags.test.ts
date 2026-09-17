@@ -1,7 +1,6 @@
 // Chat directive tag tests cover reply directive metadata, transcript mirrors,
 // current-message reply routing, and dispatched payload ordering.
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { asOptionalRecord, expectDefined } from "@openclaw/normalization-core";
@@ -58,12 +57,6 @@ import {
   runExclusiveSessionLifecycleMutation,
 } from "../../sessions/session-lifecycle-admission.js";
 import { projectAssistantDisplayContent } from "../../shared/assistant-display-content.js";
-import {
-  disposeOpenClawAgentDatabaseByPath,
-  openOpenClawAgentDatabase,
-} from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseByPath } from "../../state/openclaw-state-db-cache.js";
-import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import { consumeCronCreatorAuthorityGrant } from "../cron-creator-authority-grant.js";
@@ -73,6 +66,7 @@ import { STALE_WORKER_BUILD_REASON } from "../worker-environments/admission.js";
 import { agentWaitHandler } from "./agent-wait.js";
 import { handleChatSend, handleTrustedInternalChatSend } from "./chat-send-handler.js";
 import { readChatSendDedupeResponse } from "./chat-send-pre-admission.js";
+import { createChatDirectiveSuiteResources } from "./chat.directive-tags.test-support.js";
 import type { GatewayRequestContext, RespondFn } from "./types.js";
 
 type ProjectedDispatchParams = Parameters<
@@ -189,6 +183,7 @@ type SourceReplyTranscriptMirror = NonNullable<
   Parameters<typeof setReplyPayloadMetadata>[1]["sourceReplyTranscriptMirror"]
 >;
 
+let suiteResources: ReturnType<typeof createChatDirectiveSuiteResources>;
 let suiteFixtureRoot = "";
 let suiteDatabasePath = "";
 let suiteFixtureEnv: NodeJS.ProcessEnv = {};
@@ -1479,15 +1474,12 @@ async function expectImageOnlyFinal(params: {
 }
 
 beforeAll(() => {
-  suiteFixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-chat-directive-suite-"));
-  suiteDatabasePath = path.join(suiteFixtureRoot, "openclaw-agent.sqlite");
-  suiteFixtureEnv = { ...process.env, OPENCLAW_STATE_DIR: suiteFixtureRoot };
+  suiteResources = createChatDirectiveSuiteResources();
+  suiteFixtureRoot = suiteResources.root;
+  suiteDatabasePath = suiteResources.databasePath;
+  suiteFixtureEnv = suiteResources.env;
   mockState.storePath = suiteDatabasePath;
-  openOpenClawAgentDatabase({
-    agentId: "main",
-    env: suiteFixtureEnv,
-    path: suiteDatabasePath,
-  });
+  suiteResources.open();
 });
 
 afterEach(async () => {
@@ -1508,9 +1500,7 @@ afterAll(async () => {
       path: suiteDatabasePath,
     });
   } finally {
-    disposeOpenClawAgentDatabaseByPath(suiteDatabasePath, { env: suiteFixtureEnv });
-    closeOpenClawStateDatabaseByPath(resolveOpenClawStateSqlitePath(suiteFixtureEnv));
-    fs.rmSync(suiteFixtureRoot, { recursive: true, force: true });
+    await suiteResources.close();
   }
 });
 
