@@ -49,14 +49,14 @@ it.each(
       name: "same-agent subagent stays a subagent session",
       key: "agent:main:subagent:audit",
       chipText: "agent:main:subagent:audit",
-      prefix: "Subagent:",
+      prefix: null,
       titled: false,
     },
     {
       name: "other-agent subagent stays a subagent session",
       key: "agent:research:subagent:audit",
       chipText: "agent:research:subagent:audit",
-      prefix: "Subagent:",
+      prefix: null,
       titled: false,
     },
   ].flatMap((entry) => ["assistant", "user"].map((role) => Object.assign({ role }, entry))),
@@ -107,9 +107,5 @@ it.each(
       ? "blob:research-avatar"
       : null,
   );
-  if (prefix) {
-    expect(attributionText).toContain(prefix.replace(/\s+/g, " "));
-  } else {
-    expect(attributionText).not.toContain("—");
-  }
+  expect(attributionText).toBe(`From ${prefix ? `${prefix} ` : ""}${chipText}`);
 });

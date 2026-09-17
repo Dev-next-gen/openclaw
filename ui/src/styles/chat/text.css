@@ -690,6 +690,10 @@
   font-size: inherit;
 }
 
+.chat-reply-attribution.chat-reply-attribution--forwarded {
+  gap: 6px;
+}
+
 .chat-reply-attribution--forwarded a.markdown-session-link {
   min-width: 0;
   padding-block: 0;
@@ -712,6 +716,15 @@
 
 .chat-reply-attribution--forwarded a.markdown-session-link--agent::before {
   content: none;
+}
+
+.chat-reply-attribution__agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .chat-reply-attribution__agent-avatar,

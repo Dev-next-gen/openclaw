@@ -40,6 +40,16 @@ export function renderForwardedAttribution(group: MessageGroup, opts: ForwardedA
   const sourceMainLabel = sourceIsMainSession ? sourceAgentDisplayName : undefined;
   const sourceAgentPrefix =
     !sourceIsMainSession && sourceIsOtherAgent ? sourceAgentDisplayName : undefined;
+  // The titler keeps this label node and its navigation contract when decorating it.
+  const sourceLink = html`<a
+    class="markdown-session-link${sourceMainLabel ? " markdown-session-link--titled" : ""}${
+      sourceIsOtherAgent && sourceMainLabel ? " markdown-session-link--agent" : ""
+    }"
+    role="link"
+    tabindex="0"
+    data-session-key=${linkableSourceKey}
+    ><span class="session-label" .textContent=${sourceMainLabel ?? linkableSourceKey}></span
+  ></a>`;
   return html`
     <div class="chat-reply-attribution chat-reply-attribution--forwarded">
       <span class="chat-reply-attribution__icon" aria-hidden="true">${icons.forward}</span>
@@ -54,25 +64,19 @@ export function renderForwardedAttribution(group: MessageGroup, opts: ForwardedA
             html`<span>${t("chat.messages.forwardedFrom")}</span>
               ${
                 sourceIsOtherAgent
-                  ? html`<span class="chat-reply-attribution__agent-avatar" aria-hidden="true"
-                      >${renderForwardedAvatar(sourceParsed.agentId, opts)}</span
-                    >`
-                  : nothing
-              }
-              ${sourceAgentPrefix ? html`<span>${sourceAgentPrefix} ·</span>` : nothing}
-              ${sourceIsSubagent ? html`<span>${t("sessionsView.subagentPrefix")}</span>` : nothing}
-              <a
-                class="markdown-session-link${
-                  sourceMainLabel ? " markdown-session-link--titled" : ""
-                }${sourceIsOtherAgent && sourceMainLabel ? " markdown-session-link--agent" : ""}"
-                role="link"
-                tabindex="0"
-                data-session-key=${linkableSourceKey}
-                ><span
-                  class="session-label"
-                  .textContent=${sourceMainLabel ?? linkableSourceKey}
-                ></span
-              ></a>`
+                  ? html`<span class="chat-reply-attribution__agent">
+                        <span class="chat-reply-attribution__agent-avatar" aria-hidden="true"
+                          >${renderForwardedAvatar(sourceParsed.agentId, opts)}</span
+                        >
+                        ${sourceAgentPrefix ? html`<span>${sourceAgentPrefix}</span>` : sourceLink}
+                      </span>
+                      ${
+                        sourceAgentPrefix
+                          ? html`<span aria-hidden="true">·</span> ${sourceLink}`
+                          : nothing
+                      }`
+                  : sourceLink
+              } `
           : sourceSessionKey
             ? html`<span>${t("chat.messages.forwardedFrom")}</span>
                 <span>${sourceSessionKey}</span>`
