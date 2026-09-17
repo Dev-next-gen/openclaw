@@ -1,15 +1,11 @@
 // Managed service identity, shutdown, and recovery shared by update and Doctor.
 import { Writable } from "node:stream";
-import { stableStringify } from "@openclaw/normalization-core/stable-stringify";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { isGatewayServiceEnv, resolveGatewayProfileSuffix } from "../../daemon/constants.js";
 import { resolveLaunchAgentLabel } from "../../daemon/launchd-label.js";
 import { resolveTaskName } from "../../daemon/schtasks-layout.js";
 import { ScheduledTaskAutoStartRecoveryError } from "../../daemon/schtasks-update-recovery.js";
-import {
-  formatServiceInspectionReason,
-  ServiceInspectionError,
-} from "../../daemon/service-inspection-error.js";
+import { ServiceInspectionError } from "../../daemon/service-inspection-error.js";
 import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
 import {
   resolveManagedGatewayServiceCommand,
@@ -17,9 +13,6 @@ import {
 } from "../../daemon/service-types.js";
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { resolveSystemdServiceName } from "../../daemon/systemd-service-files.js";
-import { sha256Hex } from "../../infra/crypto-digest.js";
-import { readActiveGatewayLockIdentity } from "../../infra/gateway-lock.js";
-import { probePortUsage } from "../../infra/ports-probe.js";
 import { isCurrentManagedServiceUpdateHandoffProcess } from "../../infra/update-managed-service-handoff.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -33,16 +26,14 @@ import type {
 import {
   assertGatewayServiceAdmissionUnchanged,
   assertGatewayServiceManagementAllowedForUpdate,
-  gatewayServiceCommandUsesRoot,
+  GATEWAY_SERVICE_INSPECTION_WARNING,
   GatewayServiceUpdateOwnershipError,
+  inspectManagedGatewayServiceBeforeUpdate,
+  observedSystemdManagerUid,
   resolveGatewayServiceManagementBlockMessageForUpdate,
   resolveManagedServiceNodeRunner,
-  resolveUpdatedGatewayRestartPort,
 } from "./update-command-service-plan.js";
-import {
-  isManagedGatewayServiceOffline,
-  observedSystemdManagerUid,
-} from "./update-command-service-publication.js";
+import { isManagedGatewayServiceOffline } from "./update-command-service-publication.js";
 import {
   createWindowsTaskAutoStartRecovery,
   UpdateCommandAbort,
@@ -53,41 +44,11 @@ export { withGatewayRuntimeArtifactPublication } from "./update-command-service-
 export type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 export { UpdateCommandAbort } from "./update-command-windows-task.js";
 
-const GATEWAY_SERVICE_INSPECTION_WARNING =
-  "Gateway service inspection is unavailable; automatic service restart was skipped. Restart the Gateway you launched manually after the update. Any recorded service definition was left unchanged; inspect it with `openclaw gateway status --deep`.";
 const JSON_MODE_SERVICE_STDOUT = new Writable({
   write(_chunk, _encoding, callback) {
     callback();
   },
 });
-
-function serviceInspectionWarningMessage(state: GatewayServiceState): string {
-  if (state.inspectionReason) {
-    return `${GATEWAY_SERVICE_INSPECTION_WARNING} ${formatServiceInspectionReason(state.inspectionReason)}`;
-  }
-  if (process.platform === "freebsd") {
-    return (
-      `${GATEWAY_SERVICE_INSPECTION_WARNING} ` +
-      "On FreeBSD, use the Gateway's rc.d or foreground process owner for service management."
-    );
-  }
-  const runtime = state.runtime;
-  const tasksCurrent = runtime?.systemd?.tasksCurrent;
-  if (
-    process.platform === "linux" &&
-    runtime?.status === "unknown" &&
-    (runtime.state === "inactive" || runtime.state === "failed") &&
-    !runtime.pid &&
-    tasksCurrent !== undefined &&
-    tasksCurrent > 0
-  ) {
-    return `${GATEWAY_SERVICE_INSPECTION_WARNING} Processes remain in the systemd service cgroup (${tasksCurrent} tasks). Have their owner stop them before state maintenance.`;
-  }
-  const detail = runtime?.inspectionFailure?.detail;
-  return detail
-    ? `${GATEWAY_SERVICE_INSPECTION_WARNING} ${detail}`
-    : GATEWAY_SERVICE_INSPECTION_WARNING;
-}
 
 export function resolvePreparedGatewayUpdatePolicy(
   stopState: PreManagedServiceStop | undefined,
@@ -100,63 +61,6 @@ export function resolvePreparedGatewayUpdatePolicy(
     allowGatewayActivation:
       shouldRestart && stopState?.stopped === true && verdict?.kind === "owned",
   };
-}
-
-async function inspectManagedGatewayServiceBeforeUpdate(params: {
-  root: string;
-  state: GatewayServiceState;
-  retainedCommand?: boolean;
-}): Promise<ManagedGatewayUpdateVerdict> {
-  const { state, root } = params;
-  const { command } = state;
-  const unavailable = (): ManagedGatewayUpdateVerdict => ({
-    kind: "unavailable",
-    message: serviceInspectionWarningMessage(state),
-    ...(state.inspectionReason ? { inspectionReason: state.inspectionReason } : {}),
-  });
-  if (!command) {
-    return !state.installed &&
-      state.loadState.status === "not-loaded" &&
-      !state.running &&
-      state.runtime?.missingUnit &&
-      (await readActiveGatewayLockIdentity({ env: state.env, requireInspection: true }).then(
-        (identity) => !identity,
-        () => false,
-      )) &&
-      (await probePortUsage(await resolveUpdatedGatewayRestartPort({ serviceEnv: state.env }))) ===
-        "free"
-      ? { kind: "absent" }
-      : unavailable();
-  }
-  if (
-    state.loadState.status === "unknown" ||
-    (state.runtime?.status !== "running" && state.runtime?.status !== "stopped") ||
-    (process.platform === "linux" && observedSystemdManagerUid(state) === undefined)
-  ) {
-    return unavailable();
-  }
-  // Lifecycle authority follows the effective launcher, not the writable base
-  // that a drop-in may replace with a different installation.
-  const ownsRoot = await gatewayServiceCommandUsesRoot({ root, command });
-  if (ownsRoot === null && !params.retainedCommand) {
-    return unavailable();
-  }
-  if (ownsRoot === false) {
-    return { kind: "foreign" };
-  }
-  const serialized = stableStringify(command);
-  if (Buffer.byteLength(serialized) > 4 * 1024 * 1024) {
-    return unavailable();
-  }
-  const fingerprint = sha256Hex(serialized);
-  return ownsRoot
-    ? {
-        kind: "owned",
-        root,
-        fingerprint,
-        refreshDefinition: (state.definitionMutationCapability?.kind ?? "writable") === "writable",
-      }
-    : { kind: "unresolved", root, fingerprint };
 }
 
 function matchesStoppedService(

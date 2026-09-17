@@ -200,7 +200,11 @@ describe("mutable update execution", () => {
           vi.spyOn(gatewayService, "resolveGatewayService").mockReturnValue(service);
           vi.spyOn(service, "isAbsent").mockResolvedValue(false);
           vi.spyOn(service, "isLoaded").mockResolvedValue(true);
-          vi.spyOn(service, "readRuntime").mockResolvedValue({ status: "running", pid: 8000 });
+          vi.spyOn(service, "readRuntime").mockResolvedValue({
+            status: "running",
+            pid: 8000,
+            systemd: { managerUid: 1000 },
+          });
           vi.spyOn(service, "readCommand").mockResolvedValue({
             programArguments: [process.execPath, path.join(root, "dist", "index.js"), "gateway"],
           });
