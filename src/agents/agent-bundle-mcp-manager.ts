@@ -121,32 +121,16 @@ export function createSessionMcpRuntimeManager(
         }
       }
     };
-  const prepareAcquisition = async (params: PreparedAcquisitionParams) => {
+  const prepareAcquisition = (params: PreparedAcquisitionParams) => {
     const fullConfig = loadSessionMcpConfig({ ...params, logDiagnostics: false });
     const partition = partitionMcpServersByConnectionScope(fullConfig.loaded.mcpServers);
     // Full-set names stay stable when only some requester connections resolve.
     const { safeServerNamesByServer } = fullConfig;
-    if (params.requester && partition.requesterScopedServerNames.length === 0) {
-      await lifecycle.disposeRuntimeKeyNow(params.requester.runtimeKey);
-    }
-    const advertisedCatalogConfigFingerprint = loadSessionMcpConfig({
-      ...params,
-      loaded: fullConfig.loaded,
-      logDiagnostics: false,
-      redactConnectionServerNames: new Set(partition.requesterScopedServerNames),
-      safeServerNamesByServer,
-    }).fingerprint;
-    lifecycle.reconcileAdvertisedScopedCatalogConfig(
-      params.sessionId,
-      advertisedCatalogConfigFingerprint,
-      params.requester !== undefined && partition.requesterScopedServerNames.length > 0,
-    );
     return {
       fullConfig,
       ...partition,
       safeServerNamesByServer,
       requester: params.requester,
-      advertisedCatalogConfigFingerprint,
     };
   };
   const materializeRequesterScopedRuntime = async (
@@ -201,7 +185,7 @@ export function createSessionMcpRuntimeManager(
         resolverRequesterServerNames,
         safeServerNamesByServer,
         requester,
-      } = await prepareAcquisition(params);
+      } = prepareAcquisition(params);
 
       const leases: SessionMcpRuntimeLease[] = [];
       try {
@@ -276,8 +260,21 @@ export function createSessionMcpRuntimeManager(
         resolverRequesterServerNames,
         safeServerNamesByServer,
         requester,
+      } = prepareAcquisition(params);
+      // Native acquisition can project only static servers. Requester discovery
+      // owns its advertised catalog; lease release/reload own server retirement.
+      const advertisedCatalogConfigFingerprint = loadSessionMcpConfig({
+        ...params,
+        loaded: fullConfig.loaded,
+        logDiagnostics: false,
+        redactConnectionServerNames: new Set(requesterScopedServerNames),
+        safeServerNamesByServer,
+      }).fingerprint;
+      lifecycle.reconcileAdvertisedScopedCatalogConfig(
+        params.sessionId,
         advertisedCatalogConfigFingerprint,
-      } = await prepareAcquisition(params);
+        requester !== undefined && requesterScopedServerNames.length > 0,
+      );
       if (!requester) {
         return undefined;
       }
