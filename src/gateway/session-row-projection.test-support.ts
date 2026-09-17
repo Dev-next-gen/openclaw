@@ -92,7 +92,7 @@ export function createSessionRowProjectionFixture(params: {
       includeDerivedTitles: true,
       includeLastMessage: true,
       skipTranscriptUsageFallback: true,
-      modelSource: { entry, loadSessionEntry: (parentKey) => store[parentKey] },
+      modelSource: { entry, readSourceEntry: (parentKey) => store[parentKey] },
     });
     rows.set(id(fields), {
       ...fields,

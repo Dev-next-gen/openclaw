@@ -57,10 +57,8 @@ const resolveSessionKeyFromResolveParams = (
             key,
             {
               ...target,
-              modelSource: {
-                entry: store[key],
-                loadSessionEntry: (parentKey: string) => store[parentKey],
-              },
+              entry: store[key],
+              readSourceEntry: (parentKey: string) => store[parentKey],
             },
           ]),
         ),

@@ -637,7 +637,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
             key: canonicalKey,
             entry,
             agentId: sessionAgentId,
-            modelSource: { entry, loadSessionEntry: createGatewaySessionEntryReader(selected) },
+            modelSource: { entry, readSourceEntry: createGatewaySessionEntryReader(selected) },
             lightweightListRow: true,
             skipTranscriptUsageFallback: true,
           })
