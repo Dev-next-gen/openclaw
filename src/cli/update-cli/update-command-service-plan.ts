@@ -13,7 +13,7 @@ import { resolveNodeRuntimeInfo } from "../../daemon/runtime-paths.js";
 import type { ServiceInspectionReason } from "../../daemon/service-inspection-error.js";
 import { summarizeGatewayServiceLayout } from "../../daemon/service-layout.js";
 import type { GatewayServiceCommandConfig } from "../../daemon/service-types.js";
-import { resolveGatewayService } from "../../daemon/service.js";
+import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { assertGatewayServiceMutationAllowed } from "../../infra/gateway-supervision.js";
 import { tryReadJson } from "../../infra/json-files.js";
 import { nodeVersionSatisfiesEngine } from "../../infra/runtime-guard.js";
@@ -123,6 +123,38 @@ export function isGatewayServiceManagementAllowedForUpdate(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   return resolveGatewayServiceManagementBlockMessageForUpdate(env) === undefined;
+}
+
+/** Recorded launchers cannot select an update's package, Node, or state without live inspection. */
+export async function readManagedGatewayServiceCommandForUpdate(
+  env: NodeJS.ProcessEnv,
+): Promise<GatewayServiceCommandConfig | null> {
+  let service: ReturnType<typeof resolveGatewayService> | undefined;
+  try {
+    service = resolveGatewayService();
+    const state = await readGatewayServiceState(service, {
+      env,
+      requireEffective: true,
+      requireLoadedCommand: true,
+      validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
+    });
+    return state.loadState.status !== "unknown" &&
+      (state.runtime?.status === "running" || state.runtime?.status === "stopped")
+      ? state.command
+      : null;
+  } catch (error) {
+    if (error instanceof GatewayServiceUpdateOwnershipError && service) {
+      // Probe only the invoker's manager; rejected record selectors must not route it.
+      const available = await service.isLoaded({ env }).then(
+        () => true,
+        () => false,
+      );
+      if (available) {
+        throw error;
+      }
+    }
+    return null;
+  }
 }
 
 type PackageRuntimePreflight = {
@@ -289,10 +321,11 @@ export async function resolveManagedServicePackageUpdatePlan(params: {
   }
   // Root and runtime planning share one effective command; mutation and restart
   // revalidate independently so this snapshot cannot grant later service authority.
-  const command = await resolveGatewayService()
-    .readCommand(process.env, { requireEffective: true, requireLoaded: true })
-    .catch(() => null);
+  const command = await readManagedGatewayServiceCommandForUpdate(process.env);
   const layout = await summarizeGatewayServiceLayout(command);
+  if (!layout?.packageRootReal) {
+    return { rootRedirect: null };
+  }
   const serviceRoot = layout?.packageRoot;
   await pkgOwnership.assertUnowned(serviceRoot);
   const serviceNode = resolveManagedServiceNodeRunner(command);
@@ -332,9 +365,7 @@ export async function gatewayServiceCommandUsesRoot(params: {
   const command =
     params.command === undefined
       ? isGatewayServiceManagementAllowedForUpdate(params.env ?? process.env)
-        ? await resolveGatewayService()
-            .readCommand(params.env ?? process.env, { requireEffective: true, requireLoaded: true })
-            .catch(() => null)
+        ? await readManagedGatewayServiceCommandForUpdate(params.env ?? process.env)
         : null
       : params.command;
   const layout = await summarizeGatewayServiceLayout(command);

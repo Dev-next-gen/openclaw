@@ -9,7 +9,6 @@ import { ScheduledTaskAutoStartRecoveryError } from "../../daemon/schtasks-updat
 import {
   formatServiceInspectionReason,
   ServiceInspectionError,
-  type ServiceInspectionReason,
 } from "../../daemon/service-inspection-error.js";
 import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
 import {
@@ -54,25 +53,22 @@ export { withGatewayRuntimeArtifactPublication } from "./update-command-service-
 export type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 export { UpdateCommandAbort } from "./update-command-windows-task.js";
 
-const GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE =
-  "Gateway service inspection is unavailable. Refusing to mutate code because managed service ownership cannot be verified. Run `openclaw gateway status --deep` and retry when service access is restored.";
+const GATEWAY_SERVICE_INSPECTION_WARNING =
+  "Gateway service inspection is unavailable; automatic service restart was skipped. Restart the Gateway you launched manually after the update. Any recorded service definition was left unchanged; inspect it with `openclaw gateway status --deep`.";
 const JSON_MODE_SERVICE_STDOUT = new Writable({
   write(_chunk, _encoding, callback) {
     callback();
   },
 });
 
-function serviceInspectionBlockMessage(state: GatewayServiceState): string {
+function serviceInspectionWarningMessage(state: GatewayServiceState): string {
   if (state.inspectionReason) {
-    return formatServiceInspectionReason(state.inspectionReason);
+    return `${GATEWAY_SERVICE_INSPECTION_WARNING} ${formatServiceInspectionReason(state.inspectionReason)}`;
   }
   if (process.platform === "freebsd") {
     return (
-      "Gateway service inspection is not supported by this CLI on FreeBSD. " +
-      "Refusing maintenance because service-owned state directories cannot be verified. " +
-      "Have the installation owner manage Gateway shutdown and state maintenance. " +
-      "For updates, use the original package manager or installer; " +
-      "keep pkg-owned files under pkg management."
+      `${GATEWAY_SERVICE_INSPECTION_WARNING} ` +
+      "On FreeBSD, use the Gateway's rc.d or foreground process owner for service management."
     );
   }
   const runtime = state.runtime;
@@ -85,12 +81,12 @@ function serviceInspectionBlockMessage(state: GatewayServiceState): string {
     tasksCurrent !== undefined &&
     tasksCurrent > 0
   ) {
-    return `The Gateway main process has stopped, but processes remain in its systemd service cgroup (${tasksCurrent} tasks). Inspect the unit with systemctl --user status and its journal, then have the process owner stop the remaining children before retrying Doctor or the update.`;
+    return `${GATEWAY_SERVICE_INSPECTION_WARNING} Processes remain in the systemd service cgroup (${tasksCurrent} tasks). Have their owner stop them before state maintenance.`;
   }
   const detail = runtime?.inspectionFailure?.detail;
   return detail
-    ? `${detail} ${GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE}`
-    : GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE;
+    ? `${GATEWAY_SERVICE_INSPECTION_WARNING} ${detail}`
+    : GATEWAY_SERVICE_INSPECTION_WARNING;
 }
 
 export function resolvePreparedGatewayUpdatePolicy(
@@ -109,12 +105,13 @@ export function resolvePreparedGatewayUpdatePolicy(
 async function inspectManagedGatewayServiceBeforeUpdate(params: {
   root: string;
   state: GatewayServiceState;
+  retainedCommand?: boolean;
 }): Promise<ManagedGatewayUpdateVerdict> {
   const { state, root } = params;
   const { command } = state;
   const unavailable = (): ManagedGatewayUpdateVerdict => ({
     kind: "unavailable",
-    message: serviceInspectionBlockMessage(state),
+    message: serviceInspectionWarningMessage(state),
     ...(state.inspectionReason ? { inspectionReason: state.inspectionReason } : {}),
   });
   if (!command) {
@@ -131,18 +128,21 @@ async function inspectManagedGatewayServiceBeforeUpdate(params: {
       ? { kind: "absent" }
       : unavailable();
   }
-  // Lifecycle authority follows the effective launcher, not the writable base
-  // that a drop-in may replace with a different installation.
-  const ownsRoot = await gatewayServiceCommandUsesRoot({ root, command });
-  if (ownsRoot === false) {
-    return { kind: "foreign" };
-  }
   if (
     state.loadState.status === "unknown" ||
     (state.runtime?.status !== "running" && state.runtime?.status !== "stopped") ||
     (process.platform === "linux" && observedSystemdManagerUid(state) === undefined)
   ) {
     return unavailable();
+  }
+  // Lifecycle authority follows the effective launcher, not the writable base
+  // that a drop-in may replace with a different installation.
+  const ownsRoot = await gatewayServiceCommandUsesRoot({ root, command });
+  if (ownsRoot === null && !params.retainedCommand) {
+    return unavailable();
+  }
+  if (ownsRoot === false) {
+    return { kind: "foreign" };
   }
   const serialized = stableStringify(command);
   if (Buffer.byteLength(serialized) > 4 * 1024 * 1024) {
@@ -203,7 +203,11 @@ export async function revalidateManagedGatewayServiceAfterUpdate(params: {
   const before = params.preManagedServiceStop;
   const verdict = before?.serviceUpdateVerdict;
   assertGatewayServiceManagementAllowedForUpdate(params.state.env);
-  const inspection = await inspectManagedGatewayServiceBeforeUpdate(params);
+  // Shipped handoffs and package root swaps retain the exact launcher fingerprint.
+  const inspection = await inspectManagedGatewayServiceBeforeUpdate({
+    ...params,
+    retainedCommand: verdict?.kind === "owned" || verdict?.kind === "unresolved",
+  });
   if (
     params.allowInstallRootChange &&
     before &&
@@ -215,6 +219,7 @@ export async function revalidateManagedGatewayServiceAfterUpdate(params: {
     const retained = await inspectManagedGatewayServiceBeforeUpdate({
       state: params.state,
       root: verdict.root,
+      retainedCommand: true,
     });
     // A verified core install can replace its root before rewriting the launcher.
     // Pin the original command even when pnpm has removed its old package directory.
@@ -365,6 +370,21 @@ type ManagedServiceStopParams = {
   timeoutMs?: number;
 };
 
+function unavailableServiceState(
+  verdict: Extract<ManagedGatewayUpdateVerdict, { kind: "unavailable" }>,
+): PreManagedServiceStop {
+  // Unverified records supply diagnostics, never selectors or later native authority.
+  return {
+    stopped: false,
+    inspected: false,
+    runtimeInspected: false,
+    running: false,
+    serviceMutationAllowed: false,
+    serviceUpdateVerdict: verdict,
+    serviceMutationSkipMessage: verdict.message,
+  };
+}
+
 export async function maybeStopManagedServiceBeforeMutableUpdate(
   params: ManagedServiceStopParams,
 ): Promise<PreManagedServiceStop> {
@@ -372,6 +392,10 @@ export async function maybeStopManagedServiceBeforeMutableUpdate(
     throw new UpdateCommandRecoveryPendingError(
       "Full-state checkpoint recovery is deferred; retained state was left unchanged.",
     );
+  }
+  const expected = params.expectedService?.serviceUpdateVerdict;
+  if (expected?.kind === "unavailable") {
+    return unavailableServiceState(expected);
   }
   if (params.phase === "inspect") {
     return await stopManagedServiceBeforeMutableUpdate(params);
@@ -418,20 +442,6 @@ async function stopManagedServiceBeforeMutableUpdate(
   };
   assertCurrent();
   const uninspected = { stopped: false, inspected: false, runtimeInspected: false, running: false };
-  const markInspectionUnavailable = (
-    base: PreManagedServiceStop,
-    message: string,
-    inspectionReason?: ServiceInspectionReason,
-  ): PreManagedServiceStop => ({
-    ...base,
-    serviceMutationAllowed: false,
-    serviceUpdateVerdict: {
-      kind: "unavailable",
-      message,
-      ...(inspectionReason ? { inspectionReason } : {}),
-    },
-    blockMessage: message,
-  });
   // Preparation must keep using the manager route admitted during inspection.
   // Re-reading through process.env can select a different raw systemd route
   // (for example after the service snapshot fills in an explicit unit/profile),
@@ -442,7 +452,7 @@ async function stopManagedServiceBeforeMutableUpdate(
   if (serviceMutationSkipMessage) {
     return { ...uninspected, serviceMutationAllowed: false, serviceMutationSkipMessage };
   }
-  let service: ReturnType<typeof resolveGatewayService>;
+  let service: ReturnType<typeof resolveGatewayService> | undefined;
   let serviceState: GatewayServiceState;
   try {
     service = resolveGatewayService();
@@ -467,16 +477,26 @@ async function stopManagedServiceBeforeMutableUpdate(
     }
   } catch (err) {
     assertCurrent();
-    if (err instanceof GatewayServiceUpdateOwnershipError) {
-      return { ...uninspected, serviceMutationAllowed: false, blockMessage: err.message };
+    if (err instanceof GatewayServiceUpdateOwnershipError && service) {
+      const available = await service
+        .isLoaded({ env: serviceEnv, timeoutMs: params.timeoutMs })
+        .then(
+          () => true,
+          () => false,
+        );
+      assertCurrent();
+      if (available) {
+        return { ...uninspected, serviceMutationAllowed: false, blockMessage: err.message };
+      }
     }
-    return markInspectionUnavailable(
-      uninspected,
-      err instanceof ServiceInspectionError
-        ? err.message
-        : GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE,
-      err instanceof ServiceInspectionError ? err.reason : undefined,
-    );
+    return unavailableServiceState({
+      kind: "unavailable",
+      message:
+        err instanceof ServiceInspectionError || err instanceof GatewayServiceUpdateOwnershipError
+          ? `${GATEWAY_SERVICE_INSPECTION_WARNING} ${err.message}`
+          : GATEWAY_SERVICE_INSPECTION_WARNING,
+      ...(err instanceof ServiceInspectionError ? { inspectionReason: err.reason } : {}),
+    });
   }
   assertCurrent();
   const serviceUpdateVerdict = await revalidateManagedGatewayServiceAfterUpdate({
@@ -489,6 +509,9 @@ async function stopManagedServiceBeforeMutableUpdate(
   if (params.phase) {
     // Admission pins the definition; post-update ownership permits authorized refresh.
     assertGatewayServiceAdmissionUnchanged(params.expectedService, serviceUpdateVerdict);
+  }
+  if (serviceUpdateVerdict.kind === "unavailable") {
+    return unavailableServiceState(serviceUpdateVerdict);
   }
   const inspected = {
     stopped: false,
@@ -506,13 +529,6 @@ async function stopManagedServiceBeforeMutableUpdate(
     serviceUpdateVerdict,
   };
   assertCurrent();
-  if (serviceUpdateVerdict.kind === "unavailable") {
-    return markInspectionUnavailable(
-      inspected,
-      serviceUpdateVerdict.message,
-      serviceUpdateVerdict.inspectionReason,
-    );
-  }
   if (serviceUpdateVerdict.kind === "foreign") {
     return {
       ...inspected,
@@ -685,11 +701,10 @@ export function shouldBlockMutableUpdateFromGatewayServiceEnv(params: {
 }): boolean {
   const stopState = params.preManagedServiceStop;
   return (
+    stopState?.serviceUpdateVerdict?.kind !== "unavailable" &&
     isGatewayServiceEnv(process.env) &&
     (!stopState?.inspected ||
       (!stopState.stopped &&
-        (!stopState.runtimeInspected ||
-          (stopState.running &&
-            (!stopState.blockMessage || stopState.serviceUpdateVerdict?.kind === "unavailable")))))
+        (!stopState.runtimeInspected || (stopState.running && !stopState.blockMessage))))
   );
 }

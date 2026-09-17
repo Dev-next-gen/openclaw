@@ -53,6 +53,13 @@ installed name as the same selection, including names with or without the
 `.service` suffix. The updater still rechecks service ownership before stopping
 the Gateway.
 
+Unavailable service inspection produces a recorded `managed-service` warning,
+including the manual restart action. A stale, uninspectable service record cannot
+select the update's package root, Node executable, or state directory. Staging,
+validation, installation, and Doctor finalization continue in the invoking
+installation. Doctor leaves unverified service records unchanged and reports an
+advisory; state coordinators and database leases still protect active writers.
+
 The baseline package fingerprint is best effort. If its bounded scan times out,
 the update records a warning and continues with the retained package copy.
 Rollback then verifies the restored directory identity, package version, and
