@@ -1,5 +1,5 @@
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import * as timers from "node:timers/promises";
 import type { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
@@ -21,7 +21,6 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { withEnvAsync } from "../../test-utils/env.js";
-import * as sleepUtils from "../../utils/sleep.js";
 import { persistSessionTranscriptTurn } from "./session-accessor.js";
 import { getSessionTranscriptReconcileWorkerPoolSnapshot } from "./session-transcript-reconcile-pool.js";
 import {
@@ -39,6 +38,10 @@ import { transcriptMessage } from "./transcript-message.test-support.js";
 vi.mock("node:worker_threads", async () =>
   (await import("./session-transcript-reconcile.test-support.js")).createObservedWorkerThreads(),
 );
+
+vi.mock("node:timers/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:timers/promises")>()),
+}));
 
 const observer = useReconcileWorkerObserver();
 const EXPECTED_OPEN_HANDLE_CAP = 64;
@@ -244,18 +247,11 @@ describe("session transcript reconcile worker lifecycle", () => {
       agentId: "main",
       env: { ...env, OPENCLAW_STATE_DIR: `${stateDir}-unrelated` },
     };
-    const realSetImmediate = globalThis.setImmediate;
-    const immediateSpy = vi.spyOn(globalThis, "setImmediate");
-    const checkpoint = () =>
-      new Promise<void>((resolve) => {
-        realSetImmediate(resolve);
-      });
+    const checkpoint = timers.setImmediate;
+    const immediateSpy = vi.spyOn(timers, "setImmediate");
     const startDeferred = (options: OpenClawAgentDatabaseOptions) => {
       const release = createDeferred();
-      immediateSpy.mockImplementationOnce((callback) => {
-        void release.promise.then(() => callback());
-        return realSetImmediate(() => undefined);
-      });
+      immediateSpy.mockReturnValueOnce(release.promise);
       startSessionTranscriptIndexReconcile(options);
       return release;
     };
@@ -398,8 +394,8 @@ describe("session transcript reconcile worker lifecycle", () => {
     let tasks = 0;
     let injectPending = true;
     let injectedPending = 0;
-    const realSleep = sleepUtils.sleep;
-    const sleepSpy = vi.spyOn(sleepUtils, "sleep");
+    const realSleep = timers.setTimeout;
+    const sleepSpy = vi.spyOn(timers, "setTimeout");
     try {
       for (const target of [scope, readyScope]) {
         await persistSessionTranscriptTurn(target, {
@@ -432,12 +428,12 @@ describe("session transcript reconcile worker lifecycle", () => {
         });
       };
       sleepSpy.mockClear();
-      sleepSpy.mockImplementation(async (ms) => {
+      sleepSpy.mockImplementation(async (ms, value, options) => {
         if (ms === 50) {
           paused.resolve();
           await resume.promise;
         }
-        await realSleep(ms);
+        return await realSleep(ms, value, options);
       });
       startSessionTranscriptIndexReconcile({
         ...databaseOptions,
@@ -725,7 +721,7 @@ describe("session transcript reconcile worker lifecycle", () => {
             expect(countAgentDatabaseLeases(databasePath)).toBe(baselineLeaseCount + 1);
             await waitForCurrentProjection(databasePath, primarySessionId);
             await expect(probe.terminal).resolves.toBe(expectedTerminal);
-            await delay(25);
+            await timers.setTimeout(25);
             expect(settled).toBe(false);
             expect(countAgentDatabaseLeases(databasePath)).toBe(baselineLeaseCount + 1);
           } finally {

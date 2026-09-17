@@ -1,7 +1,8 @@
 // Transcript projection reconciliation owner. Gateway startup awaits it;
 // request paths may only schedule it and return a bounded retryable response.
+// Native timers keep accepted work runnable after a caller replaces its timer globals.
 import { randomInt, randomUUID } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
+import { setImmediate as yieldToGateway, setTimeout as delay } from "node:timers/promises";
 import type { MessagePort } from "node:worker_threads";
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
@@ -21,7 +22,6 @@ import {
   type OpenClawAgentDatabase,
   type OpenClawAgentDatabaseOptions,
 } from "../../state/openclaw-agent-db.js";
-import { sleep } from "../../utils/sleep.js";
 import { resolveStateDir } from "../paths.js";
 import type { SessionTranscriptReadScope } from "./session-accessor.sqlite-contract.js";
 import {
@@ -115,12 +115,6 @@ function captureMemorySource(params: OpenClawAgentDatabaseOptions) {
   return database && isIncognitoOpenClawAgentDatabase(database)
     ? createMemoryTranscriptProjectionSource(database, { ...params, path: database.path })
     : undefined;
-}
-
-function yieldToGateway(): Promise<void> {
-  return new Promise((resolve) => {
-    setImmediate(resolve);
-  });
 }
 
 function nextProjectionClaimId(): number {
@@ -564,7 +558,7 @@ function startPreparedSessionTranscriptIndexReconcile(params: PreparedReconcileP
           reconciledSessions += result.reconciledSessions;
           if (state.pending) {
             retryCount += 1;
-            await sleep(computeBackoffSchedule(RECONCILE_RETRY_BACKOFF_MS, retryCount));
+            await delay(computeBackoffSchedule(RECONCILE_RETRY_BACKOFF_MS, retryCount));
             continue;
           }
           // Check and relinquish ownership without an async boundary. A later
