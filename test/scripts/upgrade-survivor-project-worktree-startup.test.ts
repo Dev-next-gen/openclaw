@@ -1,12 +1,19 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertProjectWorktreeImportReport,
   assertProjectWorktreeStartupLog,
   assertProjectWorktreeStartupPreservation,
 } from "../../scripts/e2e/lib/upgrade-survivor/project-worktree-startup.mjs";
+import {
+  readWorkerCellPackageIdentity,
+  resolveWorkerCellExport,
+  resolveWorkerCellFunctionBinding,
+} from "../../scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -87,7 +94,85 @@ function publishedImportEvidence() {
   };
 }
 
+const schemaSymbol = "migrateLegacyMediaPersistence";
+const schemaDefinition = `throw new Error("Fixture modules must not execute");
+async function ${schemaSymbol}() {}
+export { ${schemaSymbol} as t };
+`;
+const schemaForwarder = `import { t as ${schemaSymbol} } from "./doctor-owner-real.mjs";
+export { ${schemaSymbol} };
+`;
+function doctorOwnerFixture(files: Record<string, string>) {
+  const root = tempDirs.make("openclaw-doctor-owner-binding-");
+  mkdirSync(path.join(root, "dist"));
+  writeFileSync(
+    path.join(root, "package.json"),
+    JSON.stringify({ name: "openclaw", version: "0.0.0-test" }),
+  );
+  writeFileSync(path.join(root, "openclaw.mjs"), "// synthetic package identity\n");
+  writeFileSync(
+    path.join(root, "dist/build-info.json"),
+    JSON.stringify({ version: "0.0.0-test", commit: "1".repeat(40) }),
+  );
+  for (const [name, source] of Object.entries(files)) {
+    writeFileSync(path.join(root, "dist", name), source);
+  }
+  return { root, identity: readWorkerCellPackageIdentity(root) };
+}
+
 describe("published project-worktree Doctor ownership evidence", () => {
+  it("selects the defining Doctor chunk while retaining valid forwarding exports", () => {
+    const { root, identity } = doctorOwnerFixture({
+      "doctor-owner-entry.mjs": schemaForwarder,
+      "doctor-owner-real.mjs": schemaDefinition,
+    });
+    expect(resolveWorkerCellExport(schemaForwarder, schemaSymbol)).toBe(schemaSymbol);
+    expect(
+      resolveWorkerCellFunctionBinding(identity, root, "doctor-owner", schemaSymbol, ts),
+    ).toEqual([
+      "doctor-owner-real.mjs",
+      schemaSymbol,
+      createHash("sha256").update(schemaDefinition).digest("hex"),
+    ]);
+  });
+
+  it.each<{ name: string; files: Record<string, string>; error: RegExp }>([
+    {
+      name: "two defining owners",
+      files: {
+        "doctor-owner-real.mjs": schemaDefinition,
+        "doctor-owner-other.mjs": schemaDefinition,
+      },
+      error: /one installed defining/,
+    },
+    {
+      name: "forwarder without a definition",
+      files: { "doctor-owner-entry.mjs": schemaForwarder },
+      error: /one installed defining/,
+    },
+    {
+      name: "malformed definition",
+      files: { "doctor-owner-real.mjs": `function ${schemaSymbol}( {` },
+      error: /Cannot parse package owner/,
+    },
+  ])("rejects $name before importing Doctor code", ({ files, error }) => {
+    const { root, identity } = doctorOwnerFixture(files);
+    expect(() =>
+      resolveWorkerCellFunctionBinding(identity, root, "doctor-owner", schemaSymbol, ts),
+    ).toThrow(error);
+  });
+
+  it("rejects changed candidate owner bytes", () => {
+    const { root, identity } = doctorOwnerFixture({ "doctor-owner-real.mjs": schemaDefinition });
+    writeFileSync(
+      path.join(root, "dist/doctor-owner-real.mjs"),
+      `${schemaDefinition}\n// changed\n`,
+    );
+    expect(() =>
+      resolveWorkerCellFunctionBinding(identity, root, "doctor-owner", schemaSymbol, ts),
+    ).toThrow(/Package owner changed/);
+  });
+
   it("prepares the independent schema before startup and repairs workspace metadata between runs", () => {
     const root = tempDirs.make("openclaw-project-worktree-doctor-order-");
     const bin = path.join(root, "bin");
