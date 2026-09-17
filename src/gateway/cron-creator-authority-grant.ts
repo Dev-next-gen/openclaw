@@ -10,7 +10,6 @@ import {
   validateAgentRunDelegatedAuthority,
   type AgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
-import type { AgentRuntimeIdentity } from "./agent-runtime-identity-token.js";
 import type {
   CronAuthenticatedChannelRequester,
   CronCreatorAuthorityGrant,
@@ -24,8 +23,12 @@ export const CRON_MANAGEMENT_METHODS = [
   "cron.remove",
 ] as const;
 type CronManagementBinding = { method: string; authority: AgentRunDelegatedAuthority };
+type CronManagementCaller = {
+  operationalRunInstance: AgentRunDelegatedAuthority["operationalRunInstance"];
+  delegatedAuthority: Pick<AgentRunDelegatedAuthority, "lifecycleGeneration" | "claimId">;
+};
 const activeManagement = new AsyncLocalStorage<{
-  identity: AgentRuntimeIdentity;
+  identity: CronManagementCaller;
   assertActive: () => void;
   channelRequester?: CronAuthenticatedChannelRequester;
 }>();
@@ -296,7 +299,7 @@ function expiredManagementError(): TypeError {
 /** Redeem once, retaining the exact operational owner through every await and commit. */
 export async function withCronManagementGrant<T>(
   grant: CronCreatorAuthorityGrant,
-  identity: AgentRuntimeIdentity,
+  identity: CronManagementCaller,
   method: string,
   run: () => Promise<T>,
 ): Promise<T> {
@@ -341,14 +344,14 @@ export async function withCronManagementGrant<T>(
 }
 
 export function getCronManagementAuthority(
-  identity: AgentRuntimeIdentity,
+  identity: CronManagementCaller,
 ): (() => void) | undefined {
   const management = activeManagement.getStore();
   return management?.identity === identity ? management.assertActive : undefined;
 }
 
 export function getCronManagementChannelRequester(
-  identity: AgentRuntimeIdentity,
+  identity: CronManagementCaller,
 ): CronAuthenticatedChannelRequester | undefined {
   const management = activeManagement.getStore();
   if (management?.identity !== identity) {
