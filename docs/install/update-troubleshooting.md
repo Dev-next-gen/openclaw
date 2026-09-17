@@ -84,6 +84,25 @@ The controls require a connected Gateway, support for the corresponding typed
 Gateway method, and administrator scope. When those conditions are not met, use
 the CLI fallback on the Gateway host.
 
+## Node and global install permissions
+
+For `node-runtime-preflight`, upgrade the runtime named in the message to a
+version satisfying the candidate's full engine range, then rerun the same
+`openclaw update` command. If the Gateway uses a different Node executable from
+your shell, its runtime must also be compatible. See [Node.js](/install/node).
+
+For `global-install-permission-denied`, check the named directory and owner.
+If you own the directory, the message gives a scoped `chmod u+rwx` command.
+For an administrator-owned npm prefix, have that account perform the package
+update or grant the intended updater write access. Keep the Gateway's existing
+state and configuration; invoking the whole updater with `sudo` can select a
+different home and service account. Do not recursively change ownership of a
+shared system prefix. A personal install can instead use a
+[user-writable npm prefix](/install/node#permission-errors-on-npm-install-g-linux).
+
+Permission errors discovered after admission carry the same reason. The report's
+rollback and service-recovery constraints still apply if activation had begun.
+
 ## Plugin repair warnings
 
 Doctor's configured-plugin repair and payload-verification warnings do not block

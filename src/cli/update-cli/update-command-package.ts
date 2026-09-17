@@ -405,6 +405,7 @@ export async function stagePackageInstallUpdate(
       ready.result.reason ?? "package-staging-failed",
       ready.result.steps.find((step) => step.exitCode !== 0)?.stderrTail ??
         "Package staging did not produce a target runtime.",
+      { failureFacts: ready.result.steps.find((step) => step.exitCode !== 0)?.failureFacts },
     );
   }
   return {

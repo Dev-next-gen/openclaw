@@ -130,7 +130,7 @@ describe("package runtime compatibility guidance", () => {
       } else {
         expect(result).toMatchObject({
           ok: false,
-          error: expect.stringContaining("Node 22.23.1 at /old/node is incompatible"),
+          error: expect.stringContaining("selected runtime is Node 22.23.1 at /old/node"),
         });
       }
     },
@@ -144,7 +144,7 @@ describe("package runtime compatibility guidance", () => {
       );
       expect(await resolvePackageRuntimePreflight({ installedRoot: root })).toMatchObject({
         ok: false,
-        error: expect.stringContaining("The requested package requires >=90.0.0."),
+        error: expect.stringContaining("requires Node >=90.0.0"),
       });
     });
   });
@@ -168,25 +168,23 @@ describe("package runtime compatibility guidance", () => {
           },
         ],
         error: [
-          `Node ${node} is incompatible with openclaw@2026.9.3.`,
+          `openclaw@2026.9.3 requires Node ${engine}; selected runtime is Node ${node}; with nvm, run \`nvm install 24.16.0 && nvm use 24.16.0\`, then rerun \`openclaw update\`.`,
           `Node ${node}: node:sqlite truncates TEXT at embedded NUL (nodejs/node#61954); use 24.16+/26.1+ or a build with the fix`,
-          `The requested package requires ${engine}.`,
-          "Use a Node runtime that satisfies the engine range above, then rerun `openclaw update`.",
-          "Bare `npm i -g openclaw` can silently install an older compatible release.",
-          "After switching Node versions, use `npm i -g openclaw@latest`.",
         ].join("\n"),
       });
     },
   );
 
-  for (const { name, engine } of [
+  for (const { name, engine, minimum } of [
     {
       name: "reports the full target range when Node is below its minimum",
       engine: ">=90.2.0 <91 || >=92.5.0",
+      minimum: "90.2.0",
     },
     {
       name: "reports incompatibility when Node exceeds an exclusive upper bound",
       engine: ">=22.22.3 <23",
+      minimum: "22.22.3",
     },
   ]) {
     it(name, async () => {
@@ -197,24 +195,15 @@ describe("package runtime compatibility guidance", () => {
       if (result.ok) {
         throw new Error("Expected an incompatible Node runtime to be refused");
       }
-      expect(result.error.split("\n")).toHaveLength(5);
-      expect(result.error).toContain(`The requested package requires ${engine}.`);
-      const runtime = `Node ${process.versions.node}`;
       expect(result.error, "Node compatibility guidance must describe the target range").toBe(
-        [
-          `${runtime} is incompatible with openclaw@${version}.`,
-          `The requested package requires ${engine}.`,
-          "Use a Node runtime that satisfies the engine range above, then rerun `openclaw update`.",
-          "Bare `npm i -g openclaw` can silently install an older compatible release.",
-          "After switching Node versions, use `npm i -g openclaw@latest`.",
-        ].join("\n"),
+        `openclaw@${version} requires Node ${engine}; selected runtime is Node ${process.versions.node}; with nvm, run \`nvm install ${minimum} && nvm use ${minimum}\`, then rerun \`openclaw update\`.`,
       );
     });
   }
 
   it.each([
     ["24.16.0", false, "nodejs/node#61954"],
-    ["24.15.0+vendor.1", true, "The requested package requires >=24.16.0 <25 || >=26.1.0."],
+    ["24.15.0+vendor.1", true, "requires Node >=24.16.0 <25 || >=26.1.0"],
     ["24.19.0", true, null],
   ] as const)(
     "requires target engines and SQLite capabilities for Node %s",
@@ -358,9 +347,7 @@ describe("package runtime compatibility guidance", () => {
       } else {
         expect(result).toMatchObject({
           ok: false,
-          error: expect.stringContaining(
-            "The requested package requires >=24.16.0 <25 || >=26.1.0.",
-          ),
+          error: expect.stringContaining("requires Node >=24.16.0 <25 || >=26.1.0"),
         });
       }
     },

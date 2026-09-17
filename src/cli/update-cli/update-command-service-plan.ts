@@ -214,17 +214,19 @@ export async function resolvePackageRuntimePreflight(params: {
     : `Node ${runtime.version ?? "unknown"}`;
   const engineRange = target.nodeEngine ? validRange(target.nodeEngine) : null;
   const minimum = engineRange ? (minVersion(engineRange)?.version ?? "unspecified") : "unspecified";
+  const requirement = target.nodeEngine ? `Node ${target.nodeEngine}` : "a working Node runtime";
+  const upgrade =
+    minimum === "unspecified"
+      ? "install a compatible Node build from https://nodejs.org/en/download"
+      : `with nvm, run \`nvm install ${minimum} && nvm use ${minimum}\``;
   return {
     ...resultError<PackageRuntimePreflight, string>(
       [
-        `${runtimeLabel} is incompatible with openclaw@${targetVersion}.`,
+        `openclaw@${targetVersion} requires ${requirement}; selected runtime is ${runtimeLabel}; ${upgrade}, then rerun \`openclaw update\`.`,
         ...(runtime.failure ? [runtime.failure] : []),
-        `The requested package requires ${target.nodeEngine}.`,
-        runtime.nodeRunner
-          ? "Use a compatible version of the Node runtime that owns the managed Gateway service, then rerun `openclaw update`."
-          : "Use a Node runtime that satisfies the engine range above, then rerun `openclaw update`.",
-        "Bare `npm i -g openclaw` can silently install an older compatible release.",
-        "After switching Node versions, use `npm i -g openclaw@latest`.",
+        ...(runtime.nodeRunner
+          ? ["The managed Gateway service must also use the compatible Node runtime."]
+          : []),
       ].join("\n"),
     ),
     failureFacts: [

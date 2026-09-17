@@ -48,6 +48,43 @@ afterEach(() => {
 });
 
 describe("update recovery reporting", () => {
+  it.each(["node-runtime-preflight", "global-install-permission-denied"])(
+    "retains the actionable %s outcome in history",
+    (reason) => {
+      const state = dirs.make("update-environment-report-");
+      const env = {
+        OPENCLAW_STATE_DIR: state,
+        OPENCLAW_CONFIG_PATH: path.join(state, "openclaw.json"),
+      };
+      const run = { runId: createUpdateRun({ trigger: "cli" }, { env }).runId, env };
+      const message =
+        reason === "node-runtime-preflight"
+          ? "openclaw@2026.9.4 requires Node >=24.16.0; this host runs 22.23.2; upgrade Node then rerun openclaw update."
+          : "Cannot write /usr/lib/node_modules (owner UID 0); run the package update as the owning account.";
+      vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
+      publishUpdateCommandTerminalResult(
+        { opts: { json: true, run }, coreAlreadyCurrent: false },
+        failure({
+          reason,
+          steps: [
+            {
+              name: reason,
+              command: "openclaw update",
+              cwd: "/fixture",
+              durationMs: 0,
+              exitCode: 1,
+              stderrTail: message,
+            },
+          ],
+        }),
+        { rolledBack: false },
+      );
+      const stored = getUpdateRun(run.runId, { env });
+      expect(stored?.origin.nextAction).toBe(message);
+      expect(stored && renderUpdateRunReport(stored).markdown).toContain(message);
+    },
+  );
+
   it.each(["error", "skipped"] as const)("records an untouched dirty checkout (%s)", (status) => {
     const state = dirs.make("dirty-update-report-");
     const env = {

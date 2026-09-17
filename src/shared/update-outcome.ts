@@ -1,4 +1,9 @@
 export const UPDATE_ACTIVATION_TIMEOUT_REASON = "update-activation-timeout";
+export const UPDATE_GLOBAL_PERMISSION_REASON = "global-install-permission-denied";
+export const UPDATE_ENVIRONMENT_FAILURE_REASONS: ReadonlySet<string> = new Set([
+  "node-runtime-preflight",
+  UPDATE_GLOBAL_PERMISSION_REASON,
+]);
 
 export function formatUpdateActivationTimeoutGuidance(
   command: (value: string) => string = (value) => value,

@@ -37,6 +37,12 @@ export async function handleDryRunPreflightError(
   return { incompatible: [], indeterminate: [] };
 }
 
+export type UpdateDryRunFailure = {
+  reason: string;
+  message: string;
+  failureFacts?: readonly UpdateFailureFact[];
+};
+
 type UpdateDryRunPreview = {
   runId: string;
   run?: UpdateRunRecord;
@@ -58,6 +64,7 @@ type UpdateDryRunPreview = {
   downgradeRisk: boolean;
   actions: string[];
   notes: string[];
+  failures?: readonly UpdateDryRunFailure[];
 };
 
 function printDryRunPreview(preview: UpdateDryRunPreview, jsonMode: boolean): void {
@@ -124,6 +131,7 @@ export function printUpdateDryRun(params: {
   explicitTag: string | null;
   packageSchemaPreflight: OpenClawDatabaseSchemaPreflight;
   preflightNotes?: readonly string[];
+  preflightFailures?: readonly UpdateDryRunFailure[];
   opts: Pick<UpdateCommandOptions, "tag" | "json" | "run">;
 }): void {
   const actions: string[] = [];
@@ -207,6 +215,7 @@ export function printUpdateDryRun(params: {
       downgradeRisk: params.downgradeRisk,
       actions,
       notes,
+      ...(params.preflightFailures?.length ? { failures: params.preflightFailures } : {}),
     },
     Boolean(params.opts.json),
   );

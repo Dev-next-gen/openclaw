@@ -7,6 +7,7 @@ import {
   formatUpdateActivationTimeoutGuidance,
   UPDATE_ACTIVATION_TIMEOUT_REASON,
   UPDATE_INSTALL_SKIP_GUIDANCE,
+  UPDATE_ENVIRONMENT_FAILURE_REASONS,
 } from "../../shared/update-outcome.js";
 import { formatCliCommand } from "../command-format.js";
 
@@ -50,6 +51,14 @@ export function resolveUpdateResultNextAction(params: {
     return UPDATE_INSTALL_SKIP_GUIDANCE[result.reason];
   }
   if (result.status === "error") {
+    if (result.reason && UPDATE_ENVIRONMENT_FAILURE_REASONS.has(result.reason)) {
+      const detail = result.steps.find((step) => step.exitCode !== 0 && !step.advisory)?.stderrTail;
+      if (detail) {
+        return result.recovery?.serviceRestartSafe === false
+          ? `${detail} ${resolveUnsafeUpdateRecoveryGuidance(result.recovery.reason, env)}`
+          : detail;
+      }
+    }
     if (result.reason === UPDATE_ACTIVATION_TIMEOUT_REASON) {
       return formatUpdateActivationTimeoutGuidance((command) => formatCliCommand(command, env));
     }

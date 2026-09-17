@@ -346,6 +346,7 @@ async function publishPreMutationUpdateOutcome(
                 cwd: params.root,
                 durationMs: 0,
                 exitCode: 1,
+                stderrTail: params.message,
                 failureFacts: normalizeUpdateFailureFacts(
                   params.failureFacts ?? [
                     { check: params.reason, code: params.reason, message: params.message },

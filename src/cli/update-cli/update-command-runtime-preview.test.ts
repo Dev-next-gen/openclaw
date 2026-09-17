@@ -5,6 +5,7 @@ import * as runtimePaths from "../../daemon/runtime-paths.js";
 import * as daemonService from "../../daemon/service.js";
 import * as gatewaySupervision from "../../infra/gateway-supervision.js";
 import * as packageMetadata from "../../infra/update-check-package-target.js";
+import * as updateGlobal from "../../infra/update-global.js";
 import { defaultRuntime } from "../../runtime.js";
 import * as shared from "./shared.js";
 import * as databaseContext from "./update-command-database-context.js";
@@ -107,13 +108,28 @@ it.each(cases.flatMap((entry) => [true, false].map((json) => Object.assign({}, e
 
     await updateCommand({ ...opts, dryRun: true });
 
-    const notes = json
-      ? JSON.stringify(vi.mocked(defaultRuntime.writeJson).mock.calls.at(-1)?.[0])
-      : log.mock.calls.flat().join("\n");
+    const preview = vi.mocked(defaultRuntime.writeJson).mock.calls.at(-1)?.[0];
+    const notes = json ? JSON.stringify(preview) : log.mock.calls.flat().join("\n");
     const replacement = !compatible && restart && owned && (!current || (running && refresh));
     if (!compatible && !replacement) {
-      expect(notes).toContain("Would refuse update: Node 24.16.0 at /service/node is incompatible");
-      expect(notes).toContain("The requested package requires >=26.1.0.");
+      expect(notes).toContain(
+        `Would refuse update: openclaw@${targetMetadata.version} requires Node >=26.1.0; selected runtime is Node 24.16.0 at /service/node; with nvm, run`,
+      );
+      expect(notes).toContain("nvm install 26.1.0 && nvm use 26.1.0");
+      expect(notes).toContain("then rerun `openclaw update`");
+      expect(notes).not.toContain("openclaw@latest");
+      if (json) {
+        expect(preview).toMatchObject({
+          failures: [
+            {
+              reason: "node-runtime-preflight",
+              failureFacts: [
+                { code: "node-runtime-preflight", message: expect.stringContaining("24.16.0") },
+              ],
+            },
+          ],
+        });
+      }
     } else if (replacement) {
       expect(notes).toContain("/service/node");
       expect(notes).toContain("/current/node");
@@ -121,6 +137,9 @@ it.each(cases.flatMap((entry) => [true, false].map((json) => Object.assign({}, e
     } else {
       expect(notes).not.toContain("Would refuse");
       expect(notes).not.toContain("Would replace");
+    }
+    if (json && (compatible || replacement)) {
+      expect(preview).not.toHaveProperty("failures");
     }
     expect(packageUpdate.stagePackageInstallUpdate).not.toHaveBeenCalled();
     expect(fs.existsSync(fixture.databasePath)).toBe(false);
@@ -134,11 +153,60 @@ it.each(cases.flatMap((entry) => [true, false].map((json) => Object.assign({}, e
         );
       } else {
         expect(defaultRuntime.writeJson).toHaveBeenLastCalledWith(
-          expect.objectContaining({ reason: "node-runtime-preflight" }),
+          expect.objectContaining({
+            reason: "node-runtime-preflight",
+            steps: expect.arrayContaining([
+              expect.objectContaining({
+                stderrTail: expect.stringContaining("nvm install 26.1.0 && nvm use 26.1.0"),
+                failureFacts: [
+                  expect.objectContaining({
+                    code: "node-runtime-preflight",
+                    message: expect.stringContaining("Minimum Node engine: 26.1.0"),
+                  }),
+                ],
+              }),
+            ]),
+          }),
         );
         expect(packageUpdate.stagePackageInstallUpdate).not.toHaveBeenCalled();
       }
       expect(fs.existsSync(fixture.databasePath)).toBe(false);
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "previews the global directory permission reason without staging or creating state",
+  async () => {
+    const globalRoot = path.join(path.dirname(fixture.root), "prefix", "lib", "node_modules");
+    fs.mkdirSync(globalRoot, { recursive: true });
+    vi.mocked(updateGlobal.resolveGlobalInstallTarget).mockResolvedValue({
+      manager: "npm",
+      command: "npm",
+      globalRoot,
+      packageRoot: fixture.root,
+      npmOwner: { version: "12.0.0", lifecyclePolicy: "allow-scripts" },
+    });
+    fs.chmodSync(globalRoot, 0o555);
+    try {
+      await updateCommand({ dryRun: true, json: true, yes: true });
+      expect(defaultRuntime.writeJson).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          dryRun: true,
+          failures: [
+            expect.objectContaining({
+              reason: "global-install-permission-denied",
+              message: expect.stringContaining(globalRoot),
+              failureFacts: [expect.objectContaining({ code: "global-install-permission-denied" })],
+            }),
+          ],
+        }),
+      );
+      expect(packageUpdate.stagePackageInstallUpdate).not.toHaveBeenCalled();
+      expect(fs.existsSync(fixture.databasePath)).toBe(false);
+      expect(fs.readdirSync(globalRoot)).toEqual([]);
+    } finally {
+      fs.chmodSync(globalRoot, 0o755);
     }
   },
 );
