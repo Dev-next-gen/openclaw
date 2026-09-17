@@ -14,6 +14,7 @@ import {
 } from "./server-prefs-state.ts";
 import { configWithPrefs, createServerPrefsWriter } from "./server-prefs.test-support.ts";
 import {
+  applyServerUiPrefs,
   changedServerUiPrefs,
   flushServerUiPrefs,
   pushServerUiPrefs,
@@ -175,6 +176,57 @@ describe("profile-bound appearance preferences", () => {
         .provenance,
     ).toBe("synced");
   });
+
+  it.each(["override", "empty", "unavailable"] as const)(
+    "retains the boot mirror while the profile is unresolved, then handles %s",
+    async (outcome) => {
+      const config = configWithPrefs({
+        theme: "absolutely",
+        themeMode: "light",
+        chatShowThinking: false,
+      });
+      const mirror = { theme: "rose" as const, themeMode: "dark" as const, accent: "#123456" };
+      patchSettings(mirror);
+      const lastSeenKey = `openclaw.control.serverPrefs.v1:${scope}:profile:${profileId}`;
+      localStorage.setItem(lastSeenKey, JSON.stringify(mirror));
+      const { promise, resolve } = createDeferred<unknown>();
+      const request = vi.fn(() => promise);
+      const writer = createServerPrefsWriter(request, scope);
+      const options = {
+        client: writer.state.client!,
+        profileId,
+        configObject: config,
+        scope,
+        onApplied: vi.fn(),
+      };
+
+      applyServerUiPrefs(config, options);
+      const refresh = refreshProfileAppearancePrefs(options);
+
+      expect(loadSettings()).toMatchObject({ ...mirror, chatShowThinking: false });
+      expect(JSON.parse(localStorage.getItem(lastSeenKey)!)).toEqual({
+        ...mirror,
+        chatShowThinking: false,
+      });
+      resolve(
+        outcome === "unavailable"
+          ? { status: "unavailable" }
+          : {
+              status: "ok",
+              entries:
+                outcome === "override"
+                  ? { "ui.theme": "rose", "ui.themeMode": "dark", "ui.accent": "#123456" }
+                  : {},
+            },
+      );
+      await refresh;
+      expect(loadSettings()).toMatchObject(
+        outcome === "empty"
+          ? { theme: "absolutely", themeMode: "light", accent: undefined, chatShowThinking: false }
+          : { ...mirror, chatShowThinking: false },
+      );
+    },
+  );
 
   it("writes profile-bound appearance without requiring config-admin access", async () => {
     const request = vi.fn(async () => ({ status: "ok" as const }));
@@ -356,6 +408,95 @@ describe("profile-bound appearance preferences", () => {
     expect(reset.theme).toBe("dash");
   });
 
+  it("applies a returning identity when the initial profile never resolved", async () => {
+    const config = configWithPrefs({});
+    patchSettings({ theme: "rose", accent: "#123456", fontUi: "geist" });
+    localStorage.setItem(
+      `openclaw.control.serverPrefs.v1:${scope}:profile:profile-b`,
+      JSON.stringify({ theme: "knot" }),
+    );
+    applyServerUiPrefs(config, { scope, profileId: "profile-a", onApplied: vi.fn() });
+    applyServerUiPrefs(config, { scope, profileId: "profile-b", onApplied: vi.fn() });
+    const writer = createServerPrefsWriter(
+      vi.fn(async () => ({
+        status: "ok",
+        entries: { "ui.theme": "knot" },
+      })),
+      scope,
+    );
+
+    await refreshProfileAppearancePrefs({
+      client: writer.state.client!,
+      profileId: "profile-b",
+      configObject: config,
+      scope,
+      onApplied: vi.fn(),
+    });
+
+    expect(loadSettings()).toMatchObject({ theme: "knot", accent: undefined, fontUi: undefined });
+  });
+
+  it("restores profile appearance after reloading during a pending identity switch", async () => {
+    const config = configWithPrefs({});
+    let activeProfile = "profile-b";
+    const request = vi.fn(async () => ({
+      status: "ok",
+      entries:
+        activeProfile === "profile-b"
+          ? { "ui.theme": "knot" }
+          : { "ui.theme": "rose", "ui.accent": "#123456", "ui.fontUi": "geist" },
+    }));
+    const writer = createServerPrefsWriter(request, scope);
+    const options = (selectedProfileId: string) => ({
+      client: writer.state.client!,
+      profileId: selectedProfileId,
+      configObject: config,
+      scope,
+      onApplied: vi.fn(),
+    });
+    await refreshProfileAppearancePrefs(options(activeProfile));
+    activeProfile = "profile-a";
+    await refreshProfileAppearancePrefs(options(activeProfile));
+    expect(loadSettings().theme).toBe("rose");
+    activeProfile = "profile-b";
+    applyServerUiPrefs(config, options(activeProfile));
+    resetServerUiPrefsSync();
+    applyServerUiPrefs(config, options(activeProfile));
+
+    await refreshProfileAppearancePrefs(options(activeProfile));
+
+    expect(loadSettings()).toMatchObject({ theme: "knot", accent: undefined, fontUi: undefined });
+  });
+
+  it.each(["pending", "device-local"] as const)(
+    "restores the returning profile after a %s edit under an unresolved identity",
+    async (edit) => {
+      const config = configWithPrefs({});
+      const request = vi.fn(async () => ({ status: "ok", entries: { "ui.theme": "rose" } }));
+      const writer = createServerPrefsWriter(request, scope);
+      const options = {
+        client: writer.state.client!,
+        profileId: "profile-a",
+        configObject: config,
+        scope,
+        onApplied: vi.fn(),
+      };
+      await refreshProfileAppearancePrefs(options);
+      applyServerUiPrefs(config, { ...options, profileId: "profile-b" });
+      patchSettings({ theme: "knot", accent: "#123456" });
+      pushServerUiPrefs(
+        createServerPrefsWriter(request, scope, false),
+        { theme: "knot", accent: "#123456" },
+        { profileId: "profile-b", canWrite: edit === "pending" },
+      );
+
+      applyServerUiPrefs(config, options);
+      await refreshProfileAppearancePrefs(options);
+
+      expect(loadSettings()).toMatchObject({ theme: "rose", accent: undefined });
+    },
+  );
+
   it("reapplies the returning profile's appearance after an identity switch", async () => {
     // A→B→A in one browser: per-scope last-seen state must not skip re-applying
     // A's values while the DOM still shows B's.
@@ -377,6 +518,7 @@ describe("profile-bound appearance preferences", () => {
     const writer = createServerPrefsWriter(request, scope, true, { ok: true }, false);
     const refresh = (nextProfile: string) => {
       activeProfile = nextProfile;
+      applyServerUiPrefs(config, { scope, profileId: nextProfile, onApplied: vi.fn() });
       return refreshProfileAppearancePrefs({
         client: writer.state.client!,
         profileId: nextProfile,

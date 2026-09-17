@@ -326,6 +326,10 @@ export function applyServerUiPrefs(
   // mean the DOM shows this profile's values, so a switch between two known
   // scopes forces a full reconcile. Boot keeps the shortcut (mirror is current).
   const scopeChanged = lastReconciledScope !== "" && scope !== lastReconciledScope;
+  const profilePrefs = resolveProfileAppearancePrefs(gatewayScope, hooks.profileId);
+  // A known identity switch keeps the existing full reset; its mirror belongs
+  // to the previous identity. Only defer a pending profile within the same scope.
+  const appearanceReady = !hooks.profileId || profilePrefs !== null || scopeChanged;
   const recordReconciledObject = () => {
     lastReconciledScope = scope;
     lastReconciledConfigObject = configObject;
@@ -333,25 +337,38 @@ export function applyServerUiPrefs(
   const shadowPrefs =
     scope === pendingScope ? pendingPrefs : parseStoredPrefs(readStorage(PENDING_KEY, scope));
   const retainedLocalKeys = readRetainedLocalKeys(scope);
-  const prefs = {
-    ...extractServerUiPrefs(configObject),
-    ...resolveProfileAppearancePrefs(gatewayScope, hooks.profileId),
-  };
-  const key = JSON.stringify(prefs);
+  const reconciledRetainedKeys = [...retainedLocalKeys].filter(
+    (key) => appearanceReady || !isAppearancePref(key),
+  );
+  const prefs = { ...extractServerUiPrefs(configObject), ...profilePrefs };
   const lastSeenRaw = readStorage(LAST_SEEN_KEY, scope);
+  const lastSeen = parseStoredPrefs(lastSeenRaw) ?? {};
+  if (!appearanceReady) {
+    // A pending profile is not an empty profile. Keep its mirror and last-seen
+    // appearance until the profile can confirm overrides or Gateway fallbacks.
+    for (const key of SYNCED_PREF_KEYS) {
+      if (isAppearancePref(key)) {
+        delete prefs[key];
+        if (Object.hasOwn(lastSeen, key)) {
+          Object.assign(prefs, { [key]: lastSeen[key] });
+        }
+      }
+    }
+  }
+  const key = JSON.stringify(prefs);
   if (!scopeChanged && key === lastSeenRaw) {
-    if (retainedLocalKeys.size) {
-      updateRetainedLocalKeys(scope, [...retainedLocalKeys], false);
+    if (reconciledRetainedKeys.length) {
+      updateRetainedLocalKeys(scope, reconciledRetainedKeys, false);
     }
     recordReconciledObject();
     return false;
   }
-  const lastSeen = parseStoredPrefs(lastSeenRaw) ?? {};
   const changed: ServerUiPrefs = {};
   // Apply per field: only keys whose server value changed since last seen. Reapplying unchanged
   // fields would revert unpushable local edits whenever any other server field moves.
   for (const prefKey of Object.keys(prefs) as Array<keyof ServerUiPrefs>) {
     if (
+      (appearanceReady || !isAppearancePref(prefKey)) &&
       !(shadowPrefs && prefKey in shadowPrefs) &&
       !retainedLocalKeys.has(prefKey) &&
       (scopeChanged || lastSeenRaw === null || !prefValuesEqual(prefs[prefKey], lastSeen[prefKey]))
@@ -361,6 +378,7 @@ export function applyServerUiPrefs(
   }
   for (const prefKey of Object.keys(lastSeen) as Array<keyof ServerUiPrefs>) {
     if (
+      (appearanceReady || !isAppearancePref(prefKey)) &&
       !(prefKey in prefs) &&
       !(shadowPrefs && prefKey in shadowPrefs) &&
       !retainedLocalKeys.has(prefKey) &&
@@ -386,8 +404,8 @@ export function applyServerUiPrefs(
     }
   }
   writeStorage(LAST_SEEN_KEY, scope, key);
-  if (retainedLocalKeys.size) {
-    updateRetainedLocalKeys(scope, [...retainedLocalKeys], false);
+  if (reconciledRetainedKeys.length) {
+    updateRetainedLocalKeys(scope, reconciledRetainedKeys, false);
   }
   recordReconciledObject();
   if (Object.hasOwn(changed, "theme")) {
