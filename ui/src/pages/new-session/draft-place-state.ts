@@ -691,6 +691,10 @@ export class DraftPlaceState {
     this.repositoryState.setWorktreeName(worktreeName, this.read().submitting);
   }
 
+  clearSubmittedWorktreeName() {
+    this.repositoryState.clearSubmittedWorktreeName();
+  }
+
   restorePreferenceSelections() {
     let changed = false;
     const preferredWhere = this.whereSelectedByUser ? null : this.preferredWhereRestore;

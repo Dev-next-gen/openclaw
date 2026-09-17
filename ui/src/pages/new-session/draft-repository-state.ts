@@ -172,6 +172,12 @@ export class DraftRepositoryController {
     this.callbacks.requestUpdate();
   }
 
+  clearSubmittedWorktreeName() {
+    this.worktreeNameValue = "";
+    this.callbacks.persistPreference({ worktreeName: "" });
+    this.callbacks.requestUpdate();
+  }
+
   available(): boolean {
     const state = this.repositoryValue;
     // A saved path or .git marker cannot prove that Git has a usable HEAD.

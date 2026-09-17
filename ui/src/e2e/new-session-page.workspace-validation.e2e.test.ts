@@ -116,6 +116,68 @@ async function expectPendingNewSession(page: Page, message: string) {
 }
 
 suite.define(() => {
+  it("keeps worktree editing stable and resets the accepted name", async () => {
+    await withNewSessionPage(DESKTOP_CONTEXT, async (page) => {
+      const sessionKey = "agent:main:picker-inputs";
+      const gateway = await installMockGateway(page, {
+        workspaceGit: true,
+        models: NEW_SESSION_MODEL_CATALOG,
+        methodResponses: {
+          "agents.list": mainAgentList(),
+          "worktrees.branches": {
+            ...branchList(),
+            branches: [
+              { kind: "local", name: "main" },
+              { kind: "local", name: "release/next" },
+            ],
+          },
+          "sessions.create": { key: sessionKey, runStarted: true, runId: "picker-inputs-run" },
+        },
+      });
+      await page.goto(`${suite.server.baseUrl}new`);
+      const checkout = page.locator("wa-popover.new-session-page__checkout-popover");
+      await page.locator("#new-session-checkout-trigger").click();
+      await checkout
+        .getByRole("button", { name: "New worktree Isolated copy of the repo", exact: true })
+        .click();
+
+      const baseRef = checkout.getByLabel("From", { exact: true });
+      await baseRef.focus();
+      await checkout.getByRole("option", { name: "release/next", exact: true }).click();
+      await expect.poll(() => baseRef.inputValue()).toBe("release/next");
+      const name = checkout.getByLabel("Name", { exact: true });
+      await name.fill("picker-inputs");
+      await checkout
+        .getByText("Creates branch openclaw/picker-inputs in a separate checkout.", {
+          exact: true,
+        })
+        .waitFor();
+
+      const box = await name.boundingBox();
+      expect(box).not.toBeNull();
+      await page.mouse.move(box!.x + box!.width - 8, box!.y + box!.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(box!.x - 12, box!.y + box!.height / 2, { steps: 6 });
+      await page.mouse.up();
+      await expect.poll(() => checkout.getAttribute("open")).not.toBeNull();
+
+      await name.press("Enter");
+      await expect.poll(() => checkout.getAttribute("open")).toBeNull();
+      await expect
+        .poll(() => page.evaluate(() => document.activeElement?.className))
+        .toContain("new-session-page__message");
+
+      await page.locator(".new-session-page__message").fill("verify the picker inputs");
+      await page.getByRole("button", { name: "Start session" }).click();
+      await gateway.waitForRequest("sessions.create");
+      await expect.poll(() => new URL(page.url()).pathname).toBe(controlUiSessionPath(sessionKey));
+
+      await page.goto(`${suite.server.baseUrl}new`);
+      await page.locator("#new-session-checkout-trigger").click();
+      await expect.poll(() => page.getByLabel("Name", { exact: true }).inputValue()).toBe("");
+    });
+  });
+
   it.each([false, true])(
     "starts a worktree from an unsuggested ref when branch suggestions are unavailable=%s",
     async (branchesUnavailable) => {
@@ -141,11 +203,13 @@ suite.define(() => {
           .getByRole("button", { name: "New worktree Isolated copy of the repo", exact: true })
           .click();
         await expect.poll(() => checkout.getAttribute("data-worktree")).toBe("true");
-        const baseRef = page.locator('input[list="new-session-branches"]');
+        const baseRef = page.getByLabel("From", { exact: true });
         await baseRef.fill("origin/release-outside-suggestions");
         expect(
           await page
-            .locator('#new-session-branches option[value="origin/release-outside-suggestions"]')
+            .locator(".new-session-page__branch-suggestions button", {
+              hasText: "origin/release-outside-suggestions",
+            })
             .count(),
         ).toBe(0);
         await captureUiProof(

@@ -474,7 +474,9 @@ suite.define(() => {
       await checkoutSelect.getByLabel("From").waitFor();
       await checkoutSelect.getByLabel("Name", { exact: true }).waitFor();
       await checkoutSelect
-        .getByText("Creates branch openclaw/<name> in a separate checkout.", { exact: true })
+        .getByText("Creates a branch from the session title in a separate checkout.", {
+          exact: true,
+        })
         .waitFor();
       await page.keyboard.press("Escape");
       await expect.poll(() => checkoutTrigger.getAttribute("aria-expanded")).toBe("false");

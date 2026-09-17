@@ -54,6 +54,7 @@ export class DraftPlaceBrowser {
   private openPopoverValue: DraftPickerKind | null = null;
   // Independent hide animations can overlap; keep every trigger fenced until its own completes.
   private readonly hidingPopovers = new Set<DraftPickerKind>();
+  private readonly afterPopoverHide = new Map<DraftPickerKind, () => void>();
   private projectSearchTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
 
   readonly browser: PlaceBrowserState;
@@ -381,6 +382,20 @@ export class DraftPlaceBrowser {
     }
   }
 
+  closePopover(kind: DraftPickerKind, afterHide?: () => void) {
+    const popover = this.callbacks.querySelector(`.new-session-page__${kind}-popover`) as
+      | (HTMLElement & { open: boolean })
+      | null;
+    if (!popover?.open) {
+      afterHide?.();
+      return;
+    }
+    if (afterHide) {
+      this.afterPopoverHide.set(kind, afterHide);
+    }
+    popover.open = false;
+  }
+
   showRoot() {
     this.resetBrowser(false);
   }
@@ -475,7 +490,16 @@ export class DraftPlaceBrowser {
 
   onPopoverAfterHide(kind: DraftPickerKind) {
     this.hidingPopovers.delete(kind);
-    this.restorePopoverTrigger(`new-session-${kind}-trigger`, `.new-session-page__${kind}-popover`);
+    const afterHide = this.afterPopoverHide.get(kind);
+    this.afterPopoverHide.delete(kind);
+    if (afterHide) {
+      afterHide();
+    } else {
+      this.restorePopoverTrigger(
+        `new-session-${kind}-trigger`,
+        `.new-session-page__${kind}-popover`,
+      );
+    }
     this.callbacks.requestUpdate();
   }
 
@@ -493,6 +517,7 @@ export class DraftPlaceBrowser {
   }
 
   disconnect() {
+    this.afterPopoverHide.clear();
     this.environmentQueryValue = "";
     this.browser.reset();
     this.clearProjectSearchTimer();

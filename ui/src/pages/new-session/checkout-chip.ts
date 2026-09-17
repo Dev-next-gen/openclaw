@@ -3,6 +3,7 @@ import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
 import { registerNewSessionSetupEnglish } from "../../i18n/locales/en-new-session-setup.ts";
 import { renderSessionMenuItem } from "./cloud-target.ts";
+import { isWorktreeNameValid } from "./create-params.ts";
 import type { DraftBranches } from "./discovery.ts";
 
 registerNewSessionSetupEnglish();
@@ -10,6 +11,34 @@ registerNewSessionSetupEnglish();
 type CheckoutChipState = Readonly<{
   label: string;
 }>;
+
+const activeFieldDrags = new WeakSet<HTMLInputElement>();
+
+function handleFieldPointerDown(event: PointerEvent) {
+  if (event.currentTarget instanceof HTMLInputElement) {
+    activeFieldDrags.add(event.currentTarget);
+  }
+}
+
+function handleFieldPointerEnd(event: PointerEvent) {
+  if (event.currentTarget instanceof HTMLInputElement) {
+    activeFieldDrags.delete(event.currentTarget);
+  }
+}
+
+function handlePopoverHide(event: Event, onHide: () => void) {
+  const active = document.activeElement;
+  if (
+    active instanceof HTMLInputElement &&
+    activeFieldDrags.has(active) &&
+    active.selectionStart !== active.selectionEnd
+  ) {
+    activeFieldDrags.delete(active);
+    event.preventDefault();
+    return;
+  }
+  onHide();
+}
 
 export function resolveCheckoutChip(params: {
   destination: "local" | "remote";
@@ -48,14 +77,41 @@ function renderWorktreeFields(params: {
   pendingPlacement: boolean;
   onBaseRefInput: (baseRef: string) => void;
   onWorktreeNameInput: (name: string) => void;
+  onConfirm: () => void;
   repository?: boolean;
 }) {
+  const confirmOnEnter = (event: KeyboardEvent) => {
+    const liveWorktreeName =
+      event.currentTarget instanceof HTMLElement
+        ? (event.currentTarget
+            .closest("wa-popover")
+            ?.querySelector<HTMLInputElement>("input[data-worktree-name]")?.value ??
+          params.worktreeName)
+        : params.worktreeName;
+    if (
+      event.key !== "Enter" ||
+      event.isComposing ||
+      params.submitting ||
+      params.pendingPlacement ||
+      (!params.repository && !isWorktreeNameValid(liveWorktreeName))
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    if (document.activeElement instanceof HTMLInputElement) {
+      activeFieldDrags.delete(document.activeElement);
+    }
+    params.onConfirm();
+  };
+  const suggestions = (params.branches?.branches ?? []).slice(0, 8);
+  const branchName = params.worktreeName.trim();
   return html`
-    <label class="new-session-page__menu-field">
+    <div class="new-session-page__menu-field new-session-page__worktree-base-field">
       <span>${t("newSession.worktreeBaseRef")}</span>
       <input
         type="text"
-        list="new-session-branches"
+        aria-label=${t("newSession.worktreeBaseRef")}
         ?disabled=${params.submitting || params.pendingPlacement}
         placeholder=${
           params.branchesLoading
@@ -65,16 +121,32 @@ function renderWorktreeFields(params: {
         .value=${params.baseRef}
         @input=${(event: Event) => {
           if (event.currentTarget instanceof HTMLInputElement) {
-            params.onBaseRefInput(event.currentTarget.value.trim());
+            params.onBaseRefInput(event.currentTarget.value);
           }
         }}
+        @keydown=${confirmOnEnter}
+        @pointerdown=${handleFieldPointerDown}
+        @pointerup=${handleFieldPointerEnd}
+        @pointercancel=${handleFieldPointerEnd}
       />
-      <datalist id="new-session-branches">
-        ${(params.branches?.branches ?? []).map(
-          (branch) => html`<option value=${branch.name}></option>`,
-        )}
-      </datalist>
-    </label>
+      ${
+        suggestions.length
+          ? html`<div class="new-session-page__branch-suggestions" role="listbox">
+              ${suggestions.map(
+                (branch) => html`<button
+                  type="button"
+                  role="option"
+                  aria-selected=${String(branch.name === params.baseRef)}
+                  @mousedown=${(event: MouseEvent) => event.preventDefault()}
+                  @click=${() => params.onBaseRefInput(branch.name)}
+                >
+                  ${branch.name}
+                </button>`,
+              )}
+            </div>`
+          : nothing
+      }
+    </div>
     <div class="new-session-page__menu-note">
       ${t(
         params.branches?.branchesUnavailable
@@ -89,17 +161,28 @@ function renderWorktreeFields(params: {
               <span>${t("newSession.worktreeName")}</span>
               <input
                 type="text"
+                data-worktree-name
                 ?disabled=${params.submitting || params.pendingPlacement}
                 placeholder=${t("newSession.worktreeNamePlaceholder")}
                 .value=${params.worktreeName}
                 @input=${(event: Event) => {
                   if (event.currentTarget instanceof HTMLInputElement) {
-                    params.onWorktreeNameInput(event.currentTarget.value.trim());
+                    params.onWorktreeNameInput(event.currentTarget.value);
                   }
                 }}
+                @keydown=${confirmOnEnter}
+                @pointerdown=${handleFieldPointerDown}
+                @pointerup=${handleFieldPointerEnd}
+                @pointercancel=${handleFieldPointerEnd}
               />
             </label>
-            <div class="new-session-page__menu-note">${t("newSession.worktreeBranchNote")}</div>`
+            <div class="new-session-page__menu-note">
+              ${
+                branchName
+                  ? t("newSession.worktreeBranchNote", { branch: `openclaw/${branchName}` })
+                  : t("newSession.worktreeBranchFromTitleNote")
+              }
+            </div>`
     }
   `;
 }
@@ -127,6 +210,7 @@ export function renderCheckoutChip(params: {
   onSelectWorktree: (value: boolean) => void;
   onBaseRefInput: (baseRef: string) => void;
   onWorktreeNameInput: (name: string) => void;
+  onConfirm: () => void;
 }) {
   return html`
     <span class="new-session-page__select">
@@ -164,7 +248,7 @@ export function renderCheckoutChip(params: {
       placement="bottom-start"
       without-arrow
       @wa-show=${params.onPopoverShow}
-      @wa-hide=${params.onPopoverHide}
+      @wa-hide=${(event: Event) => handlePopoverHide(event, params.onPopoverHide)}
       @wa-after-hide=${params.onPopoverAfterHide}
     >
       <div class="new-session-page__picker-root">

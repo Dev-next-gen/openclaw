@@ -99,6 +99,7 @@ describe("Checkout chip state", () => {
       const onSelectWorktree = vi.fn();
       const onBaseRefInput = vi.fn();
       const onWorktreeNameInput = vi.fn();
+      const onConfirm = vi.fn();
       render(
         renderCheckoutChip({
           state: { label: worktree ? "New worktree from main" : "feature" },
@@ -107,7 +108,14 @@ describe("Checkout chip state", () => {
           folderLabel: "OpenClaw",
           worktree,
           worktreeAvailable: true,
-          branches: { repoRoot: "/repo", branches: [], headBranch: "feature" },
+          branches: {
+            repoRoot: "/repo",
+            branches: [
+              { name: "main", kind: "local" },
+              { name: "release/next", kind: "local" },
+            ],
+            headBranch: "feature",
+          },
           branchesLoading: false,
           baseRef: "main",
           worktreeName: "",
@@ -122,6 +130,7 @@ describe("Checkout chip state", () => {
           onSelectWorktree,
           onBaseRefInput,
           onWorktreeNameInput,
+          onConfirm,
         }),
         container,
       );
@@ -134,6 +143,8 @@ describe("Checkout chip state", () => {
         inputs[0]!.value = "release/next";
         inputs[0]!.dispatchEvent(new Event("input"));
         expect(onBaseRefInput).toHaveBeenCalledWith("release/next");
+        inputs[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+        expect(onConfirm).toHaveBeenCalledOnce();
         expect(container.textContent).toContain(
           "Clones OpenClaw on the selected runner. No Gateway checkout is created.",
         );
@@ -173,10 +184,21 @@ describe("Checkout chip state", () => {
         baseRef.dispatchEvent(new Event("input"));
         name.value = " checkout-proof ";
         name.dispatchEvent(new Event("input"));
-        expect(onBaseRefInput).toHaveBeenCalledWith("release");
-        expect(onWorktreeNameInput).toHaveBeenCalledWith("checkout-proof");
+        expect(onBaseRefInput).toHaveBeenCalledWith(" release ");
+        expect(onWorktreeNameInput).toHaveBeenCalledWith(" checkout-proof ");
+        const suggestions = container.querySelectorAll<HTMLButtonElement>(
+          ".new-session-page__branch-suggestions button",
+        );
+        expect([...suggestions].map((button) => button.textContent?.trim())).toEqual([
+          "main",
+          "release/next",
+        ]);
+        suggestions[1]!.click();
+        expect(onBaseRefInput).toHaveBeenLastCalledWith("release/next");
+        name.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+        expect(onConfirm).toHaveBeenCalledOnce();
         expect(container.textContent).toContain(
-          "Creates branch openclaw/<name> in a separate checkout.",
+          "Creates a branch from the session title in a separate checkout.",
         );
       } else {
         expect(container.querySelector(".new-session-page__menu-note")).toBeNull();
@@ -186,4 +208,64 @@ describe("Checkout chip state", () => {
       );
     },
   );
+
+  it("shows the actual branch name and only confirms valid input", () => {
+    const container = document.createElement("div");
+    const onConfirm = vi.fn();
+    const onPopoverHide = vi.fn();
+    const renderNamed = (worktreeName: string) =>
+      render(
+        renderCheckoutChip({
+          state: { label: "New worktree from main" },
+          remotePlacement: false,
+          folderLabel: "OpenClaw",
+          worktree: true,
+          worktreeAvailable: true,
+          branches: { repoRoot: "/repo", branches: [], headBranch: "main" },
+          branchesLoading: false,
+          baseRef: "main",
+          worktreeName,
+          submitting: false,
+          pendingPlacement: false,
+          popoverOpen: true,
+          popoverHiding: false,
+          onGuardTransition: vi.fn(),
+          onPopoverShow: vi.fn(),
+          onPopoverHide,
+          onPopoverAfterHide: vi.fn(),
+          onSelectWorktree: vi.fn(),
+          onBaseRefInput: vi.fn(),
+          onWorktreeNameInput: vi.fn(),
+          onConfirm,
+        }),
+        container,
+      );
+
+    renderNamed("picker-fixes");
+    expect(container.textContent).toContain(
+      "Creates branch openclaw/picker-fixes in a separate checkout.",
+    );
+    container
+      .querySelectorAll("input")[1]!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(onConfirm).toHaveBeenCalledOnce();
+
+    renderNamed("Not Valid");
+    container
+      .querySelectorAll("input")[1]!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(onConfirm).toHaveBeenCalledOnce();
+
+    renderNamed("picker-fixes");
+    document.body.append(container);
+    const name = container.querySelectorAll("input")[1]!;
+    name.focus();
+    name.setSelectionRange(0, 6);
+    name.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    const hide = new CustomEvent("wa-hide", { bubbles: true, cancelable: true });
+    container.querySelector("wa-popover")!.dispatchEvent(hide);
+    expect(hide.defaultPrevented).toBe(true);
+    expect(onPopoverHide).not.toHaveBeenCalled();
+    container.remove();
+  });
 });
