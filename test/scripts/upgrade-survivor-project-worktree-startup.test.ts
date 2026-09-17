@@ -88,7 +88,7 @@ function publishedImportEvidence() {
 }
 
 describe("published project-worktree Doctor ownership evidence", () => {
-  it("keeps the second specimen outside update and repairs it only between Gateway runs", () => {
+  it("prepares the independent schema before startup and repairs workspace metadata between runs", () => {
     const root = tempDirs.make("openclaw-project-worktree-doctor-order-");
     const bin = path.join(root, "bin");
     const artifacts = path.join(root, "artifacts");
@@ -162,8 +162,21 @@ node() {
     case "$2" in
       seed)
         printf legacy > "$OPENCLAW_STATE_DIR/workspace-state"
+        printf 19 > "$OPENCLAW_STATE_DIR/schema-version"
         printf 'seed %s\\n' "$OPENCLAW_STATE_DIR" >> "$UNIT_EVENTS" ;;
+      prepare-schema)
+        [ "$(cat "$OPENCLAW_STATE_DIR/schema-version")" = 19 ]
+        printf 21 > "$OPENCLAW_STATE_DIR/schema-version"
+        printf 'schema-doctor %s\\n' "$OPENCLAW_STATE_DIR" >> "$UNIT_EVENTS" ;;
       snapshot)
+        case "$3" in
+          published-import|before-schema) [ "$(cat "$OPENCLAW_STATE_DIR/schema-version")" = 19 ] ;;
+          *)
+            if [ "$(cat "$OPENCLAW_STATE_DIR/schema-version")" != 21 ]; then
+              printf 'Candidate schema migration required before Gateway startup\\n' >&2
+              return 96
+            fi ;;
+        esac
         printf 'snapshot %s %s %s\\n' "$3" "$OPENCLAW_STATE_DIR" "$(cat "$OPENCLAW_STATE_DIR/workspace-state")" >> "$UNIT_EVENTS" ;;
       assert-import|assert-logs) : ;;
       *) return 97 ;;
@@ -174,6 +187,7 @@ node() {
 }
 update_candidate() {
   printf repaired > "$OPENCLAW_STATE_DIR/workspace-state"
+  printf 21 > "$OPENCLAW_STATE_DIR/schema-version"
   printf '{}\\n' > "$ARTIFACT_ROOT/installed-package-identity.json"
   printf 'update %s\\n' "$OPENCLAW_STATE_DIR" >> "$UNIT_EVENTS"
 }
@@ -207,6 +221,8 @@ ${scenario}
       `snapshot published-import ${second} legacy`,
       `update ${first}`,
       `snapshot after-update ${first} repaired`,
+      `snapshot before-schema ${second} legacy`,
+      `schema-doctor ${second}`,
       `snapshot before-startup ${second} legacy`,
       `start ${second} legacy`,
       `stop ${second}`,

@@ -200,8 +200,10 @@ twice. It checks stored rows, schema, sentinels, and read-only snapshot cleanup.
 through the published owners using local Git. Each has a verified backup and
 synthetic legacy session JSON/JSONL imported through published Doctor. The update
 must repair the first specimen's canonical workspace through candidate Doctor.
-The second state stays outside that update's discovery: its first normal Gateway
-startup must preserve the legacy fields and exact session/transcript bytes. After
+The second state stays outside that update's discovery. Before startup, the
+candidate's Doctor schema owner runs under its maintenance lock to upgrade that
+database while preserving the legacy workspace fields and exact session/transcript
+bytes. Its first normal Gateway startup must preserve that state. After
 clean shutdown, an explicit `doctor --fix --non-interactive` repairs its canonical
 workspace; a second startup must leave the repaired state unchanged. These are
 supported legacy-format imports, not historical runtime-generated sessions.

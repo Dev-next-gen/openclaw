@@ -2121,6 +2121,10 @@ if [ "$WORKER_CELL" = "1" ]; then
     cp "$ARTIFACT_ROOT/installed-package-identity.json" "$ARTIFACT_ROOT/worktree-startup/installed-package-identity.json"
     source "$ARTIFACT_ROOT/worktree-startup/state-env"
     export USERPROFILE="$HOME"
+    phase snapshot-before-worktree-schema run_project_worktree_startup_fixture \
+      snapshot before-schema "$(package_root)" "$OPENCLAW_UPGRADE_SURVIVOR_STARTUP_BINDINGS"
+    phase prepare-worktree-schema run_project_worktree_startup_fixture \
+      prepare-schema "$(package_root)" "$OPENCLAW_UPGRADE_SURVIVOR_STARTUP_BINDINGS"
     phase snapshot-before-worktree-startup run_project_worktree_startup_fixture \
       snapshot before-startup "$(package_root)" "$OPENCLAW_UPGRADE_SURVIVOR_STARTUP_BINDINGS"
     for startup in first second; do

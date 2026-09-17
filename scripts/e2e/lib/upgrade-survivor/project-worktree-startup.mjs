@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { resolveWorkerCellExport } from "./worker-cell-package.mjs";
 
 const BASELINE = "3a9d69db306cd7f081e06254cb89c4bcc14a7107";
+const BASELINE_AGENT_SCHEMA = 19;
 const KEY = "agent:main:dashboard:legacy-project-worktree";
 const OTHER_KEY = "agent:main:dashboard:legacy-project-sentinel";
 const SESSION = "00000000-0000-4000-8000-000000000001";
@@ -15,6 +16,7 @@ const OTHER_SESSION = "00000000-0000-4000-8000-000000000002";
 const STAGES = new Set([
   "published-import",
   "after-update",
+  "before-schema",
   "before-startup",
   "after-first-stop",
   "after-doctor",
@@ -140,6 +142,7 @@ async function owners(ctx, packageRoot, baseline, bindingFile) {
   assert.equal(identity.buildInfo.commit, baseline ? BASELINE : candidateCommit);
   assert.equal(fs.realpathSync(path.join(packageRoot, "openclaw.mjs")), identity.cli);
   let bindings = BASELINE_BINDINGS;
+  let agentSchema = BASELINE_AGENT_SCHEMA;
   if (!baseline) {
     const approved = readJson(bindingFile);
     assert.equal(approved.commit, candidateCommit);
@@ -154,7 +157,17 @@ async function owners(ctx, packageRoot, baseline, bindingFile) {
       approved.agentSchema,
     );
     bindings = approved.operations;
+    agentSchema = approved.agentSchema;
   }
+  return {
+    ...(await loadBindings(identity, packageRoot, bindings)),
+    identity,
+    baseline,
+    agentSchema,
+  };
+}
+
+async function loadBindings(identity, packageRoot, bindings) {
   const api = {};
   const evidence = [];
   for (const [role, [name, symbol, expectedHash]] of Object.entries(bindings)) {
@@ -174,7 +187,86 @@ async function owners(ctx, packageRoot, baseline, bindingFile) {
     api[role] = module[alias];
     evidence.push({ role, relative, symbol, alias, sha256: expectedHash });
   }
-  return { api, evidence, baseline };
+  return { api, evidence };
+}
+
+async function prepareSchema(ctx, packageRoot, bindings) {
+  const owner = await owners(ctx, packageRoot, false, bindings);
+  const before = readJson(path.join(ctx.artifacts, "worktree-before-schema.json"));
+  assert.equal(before.agent.schema.userVersion, BASELINE_AGENT_SCHEMA);
+  assert(
+    owner.agentSchema > BASELINE_AGENT_SCHEMA,
+    "Expected a published-to-candidate schema upgrade",
+  );
+  const doctorBindings = {};
+  for (const [role, prefix, symbol] of [
+    ["lock", "doctor-sqlite-maintenance-lock", "withDoctorSqliteMaintenanceLock"],
+    ["migrate", "state-migrations.media-persistence", "migrateLegacyMediaPersistence"],
+    ["drain", "global-singleton", "drainGlobalSingletonLifecycleState"],
+    ["close", "openclaw-state-db-cache", "closeOpenClawStateDatabaseByPathAsync"],
+  ]) {
+    const matches = Object.keys(owner.identity.files).filter((relative) => {
+      if (!relative.startsWith(`dist/${prefix}-`) || !relative.endsWith(".mjs")) {
+        return false;
+      }
+      const file = path.join(packageRoot, relative);
+      assert.equal(
+        digest(file),
+        owner.identity.files[relative].sha256,
+        `Doctor owner changed: ${role}`,
+      );
+      return Boolean(resolveWorkerCellExport(fs.readFileSync(file, "utf8"), symbol));
+    });
+    assert.equal(matches.length, 1, `Expected one installed Doctor ${prefix} owner`);
+    const relative = matches[0];
+    doctorBindings[role] = [path.basename(relative), symbol, owner.identity.files[relative].sha256];
+  }
+  const doctor = await loadBindings(owner.identity, packageRoot, doctorBindings);
+  const { agentDb } = readJson(ctx.importReceipt);
+  const errors = [];
+  let result;
+  try {
+    result = await doctor.api.lock({
+      env: process.env,
+      operation: "project worktree fixture schema preparation",
+      run: () =>
+        doctor.api.migrate({
+          env: process.env,
+          configuredAgentDatabaseTargets: [{ agentId: "main", path: agentDb }],
+        }),
+    });
+  } catch (error) {
+    errors.push(error);
+  }
+  for (const [operation, argument] of [
+    [doctor.api.drain, "close"],
+    [doctor.api.close, ctx.stateDb],
+  ]) {
+    try {
+      await operation(argument);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length) {
+    throw new AggregateError(errors, "Doctor schema preparation did not settle");
+  }
+  writeJson(path.join(ctx.artifacts, "worktree-schema-doctor.json"), {
+    ownerBindings: doctor.evidence,
+    fromSchema: before.agent.schema,
+    targetSchema: owner.agentSchema,
+    result,
+  });
+  assert.deepEqual(
+    result,
+    {
+      changes: [
+        `Upgraded agent database schema in ${agentDb}: v${BASELINE_AGENT_SCHEMA} -> v${owner.agentSchema}.`,
+      ],
+      warnings: [],
+    },
+    "Doctor schema preparation warned, refused, or changed more than the schema",
+  );
 }
 
 async function inspectDatabase(owner, file, read) {
@@ -496,6 +588,14 @@ async function snapshot(ctx, stage, packageRoot, bindings) {
     worktrees: rows(db.prepare("SELECT * FROM worktrees ORDER BY id")),
   }));
   const agent = await inspectDatabase(owner, imported.agentDb, (db) => ({
+    schema: {
+      userVersion: db.prepare("PRAGMA user_version").get().user_version,
+      metadataVersion: db
+        .prepare("SELECT schema_version FROM schema_meta WHERE meta_key = 'primary'")
+        .get().schema_version,
+      agentId: db.prepare("SELECT agent_id FROM schema_meta WHERE meta_key = 'primary'").get()
+        .agent_id,
+    },
     sessions: rows(
       db.prepare(
         "SELECT session_key,current_session_id,entry_json,updated_at FROM session_nodes WHERE session_key IN ('agent:main:dashboard:legacy-project-worktree','agent:main:dashboard:legacy-project-sentinel') ORDER BY session_key",
@@ -507,6 +607,14 @@ async function snapshot(ctx, stage, packageRoot, bindings) {
       ),
     ),
   }));
+  const expectedSchema = ["published-import", "before-schema"].includes(stage)
+    ? BASELINE_AGENT_SCHEMA
+    : owner.agentSchema;
+  assert.deepEqual(agent.schema, {
+    userVersion: expectedSchema,
+    metadataVersion: expectedSchema,
+    agentId: "main",
+  });
   assert.equal(agent.sessions.length, 2);
   assert.equal(agent.transcript.length, 4);
   const row = agent.sessions.find((s) => s.session_key === KEY);
@@ -566,6 +674,9 @@ async function main() {
   } else if (mode === "snapshot") {
     assert.equal(args.length, 3);
     await snapshot(ctx, ...args);
+  } else if (mode === "prepare-schema") {
+    assert.equal(args.length, 2);
+    await prepareSchema(ctx, ...args);
   } else if (mode === "assert-logs") {
     assert.equal(args.length, 2);
     const [start, file] = args;
@@ -577,7 +688,7 @@ async function main() {
     });
   } else {
     throw new Error(
-      "Expected seed, assert-import, snapshot, or assert-logs; see reviewed recipe for arguments",
+      "Expected seed, assert-import, snapshot, prepare-schema, or assert-logs; see reviewed recipe for arguments",
     );
   }
 }
