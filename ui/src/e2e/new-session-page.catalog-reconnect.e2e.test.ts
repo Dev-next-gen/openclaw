@@ -870,7 +870,7 @@ suite.define(() => {
         exact: true,
       });
       await worktreeItem.click();
-      const baseInput = page.getByRole("textbox", { name: "From", exact: true });
+      const baseInput = placeSelect.locator('input[aria-label="From"]');
       await expect.poll(() => baseInput.inputValue()).toBe("main");
       await page.keyboard.press("Escape");
 
