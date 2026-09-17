@@ -14,6 +14,9 @@ mod lifecycle;
 mod node;
 mod reconnect;
 mod runtime;
+mod sidecar_handshake;
+mod sidecar_protocol;
+mod sidecar_runtime;
 
 pub use duplex::InvocationIo;
 pub use host::{run_host, AuthKind, HostConfig, HostCredentials, HostError};
@@ -34,4 +37,22 @@ pub use reconnect::{
 pub use runtime::{
     CancellationToken, CommandRuntime, CommandRuntimeBuilder, HandlerError,
     InvocationAdmissionContext, InvocationContext, RuntimeBuildError, RuntimeError,
+};
+pub use sidecar_handshake::{
+    SidecarHandshake, SidecarHandshakeError, SidecarHandshakeMessage, SidecarHandshakeState,
+    SidecarProtocolSelection,
+};
+pub use sidecar_protocol::{
+    negotiate_sidecar_protocol, read_sidecar_frame, write_sidecar_frame,
+    AuthenticatedSidecarChannel, NegotiatedSidecarProtocol, SidecarDirection, SidecarFrameError,
+    SidecarLimits, SidecarPeerIdentity, SidecarPeerRole, SidecarProtocolError,
+    SidecarProtocolOffer, SidecarSessionKey, SIDECAR_MAX_FEATURE_BITS, SIDECAR_PROTOCOL_MAJOR,
+    SIDECAR_PROTOCOL_MINOR,
+};
+pub use sidecar_runtime::{
+    SidecarAdapterError, SidecarAdapterFuture, SidecarAdmissionDecision, SidecarCapabilityAdapter,
+    SidecarCommandRegistration, SidecarConfigurationError, SidecarConfigurationExchange,
+    SidecarConfigurationState, SidecarInvocation, SidecarInvocationResult, SidecarRuntimeBridge,
+    SidecarRuntimeBridgeError, SidecarRuntimeConfiguration, SidecarRuntimeManifest,
+    SidecarRuntimeMessage, SidecarRuntimeReason, SidecarRuntimeState, SidecarRuntimeStatus,
 };

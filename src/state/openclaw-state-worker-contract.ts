@@ -1,6 +1,7 @@
 import type { NativeHookRelayStoreWorkerOperations } from "../agents/harness/native-hook-relay-store.worker-contract.js";
 import type { SubagentRunReadRecord } from "../agents/subagents/registry/subagent-registry-read.types.js";
 import type { ClawInstallSchemaVersionRow } from "../claws/provenance-runtime-read.kernel.js";
+import type { readSqliteDatabaseBloat } from "../commands/doctor-db-bloat.read.js";
 import type { ConfigHealthPatch } from "../config/io.health-state.kernel.js";
 import type {
   ConfigHealthSnapshot,
@@ -24,6 +25,10 @@ import type {
   ProjectRegistryInsert,
   ProjectRegistryRecord,
 } from "../projects/project-registry.kernel.js";
+import type {
+  SessionStateEventInput,
+  SessionStateNotice,
+} from "../sessions/session-state-events.kernel.js";
 import type { ManagedTaskInFlowInput } from "../tasks/task-flow-managed-run-task.kernel.js";
 import type { RunTaskInFlowResult } from "../tasks/task-flow-managed-run-task.types.js";
 import type {
@@ -67,6 +72,15 @@ export type OpenClawStateWorkerOperations = NativeHookRelayStoreWorkerOperations
   CronStoreSaveWorkerOperations &
   SessionDeliveryWorkerOperations &
   DeliveryQueueWorkerOperations & {
+    "sessionState.recordGoalChange": {
+      input: { event: SessionStateEventInput & { kind: "goal_changed" }; now: number };
+      output: SessionStateNotice[];
+    };
+    "sessionState.prune": { input: { now: number }; output: void };
+    "doctor.databaseBloat": {
+      input: undefined;
+      output: ReturnType<typeof readSqliteDatabaseBloat>;
+    };
     "subagents.sessionList": {
       input: undefined;
       output: Map<string, SubagentRunReadRecord> | undefined;
@@ -81,6 +95,10 @@ export type OpenClawStateWorkerOperations = NativeHookRelayStoreWorkerOperations
     "projects.remove": {
       input: { project: ProjectRegistryIdentity; lease: OpenClawStateLeaseIdentity };
       output: boolean;
+    };
+    "projects.resolveRefreshOwner": {
+      input: { project: ProjectRegistryIdentity; lease: OpenClawStateLeaseIdentity };
+      output: ProjectRegistryRecord | undefined;
     };
     "modelCatalog.remote.read": {
       input: { artifactPreservingReadOnly: boolean };

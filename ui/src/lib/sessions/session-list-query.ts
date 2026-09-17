@@ -111,6 +111,7 @@ export function sessionMutationRefreshOutcome(
 export type QueuedSessionRefresh = {
   options: SessionRefreshOptions;
   intent: "explicit" | "automatic" | "reconcile" | (() => string | null);
+  foreground?: boolean;
   bootstrap?: boolean;
   errorOwner: { options: SessionRefreshOptions; isCurrent?: () => boolean };
   completions: Array<{
@@ -138,6 +139,7 @@ export function coalesceSessionRefresh(
   ) {
     current.options = next.options;
     current.intent = next.intent;
+    current.foreground = next.foreground;
     current.bootstrap = next.bootstrap;
     current.errorOwner = next.errorOwner;
   } else if (
@@ -170,6 +172,8 @@ export type ObservedSessionList = {
 };
 
 export type ManagedSessionList = ObservedSessionList & {
+  /** A live primary window may be reused for selection until its next invalidation. */
+  warmPrimary?: boolean;
   key: string;
   query: ReturnType<typeof normalizeManagedSessionListQuery>;
   retainedLimit: number;

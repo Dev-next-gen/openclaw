@@ -16,6 +16,7 @@ export type SessionRowFieldSelector = (
 type FieldSource = Readonly<{
   revision: number;
   updatedAt: number | null;
+  snapshotAt?: number;
   event?: true;
   readCutoff?: number;
 }>;
@@ -41,6 +42,17 @@ export function createSessionWriteObservation(
 }
 
 function isNewerSource(candidate: FieldSource, current: FieldSource) {
+  // Cached list pages keep their original sampling time even when requested later.
+  // Persisted updatedAt cannot order runtime-only changes between those pages.
+  if (
+    !candidate.event &&
+    !current.event &&
+    candidate.snapshotAt !== undefined &&
+    current.snapshotAt !== undefined &&
+    candidate.snapshotAt !== current.snapshotAt
+  ) {
+    return candidate.snapshotAt > current.snapshotAt;
+  }
   if (
     (candidate.event || current.event) &&
     candidate.updatedAt !== null &&
@@ -176,7 +188,9 @@ export function createSessionRowProvenance() {
     }
     const readAgentId =
       parseAgentSessionKey(row.key)?.agentId ?? row.agentId?.trim() ?? agentId?.trim();
-    const read: FieldObservation = { source: { revision, updatedAt: row.updatedAt ?? null } };
+    const read: FieldObservation = {
+      source: { revision, updatedAt: row.updatedAt ?? null, snapshotAt: row.snapshotAt },
+    };
     for (const [name, writer] of writers) {
       const source = (fields.get(name) ?? read).source;
       if (isNewerSource(source, writer)) {
@@ -248,6 +262,8 @@ export function createSessionRowProvenance() {
       return current;
     }
     const offeredMetadata = metadata(offered, agentId);
+    // Keep the request high-water mark for late-descriptor admission even when
+    // individual fields retain facts from a newer-sampled, earlier-issued read.
     const offeredReadIsNewer =
       offeredMetadata.read.source.revision > currentMetadata.read.source.revision;
     const base = offeredReadIsNewer ? offered : current;

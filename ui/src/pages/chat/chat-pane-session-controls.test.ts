@@ -696,7 +696,7 @@ describe("chat pane composer controls", () => {
       recovery: "unrelated",
     },
   ] as const)(
-    "adopts the persisted mode from the $source after permission application fails",
+    "reconciles the permission picker after application fails ($source)",
     async ({ persistedMode, foregroundAgent, recovery }) => {
       const pending = createDeferred<Record<string, never>>();
       let permissionMode: GatewaySessionRow["permissionMode"] = "workspace";

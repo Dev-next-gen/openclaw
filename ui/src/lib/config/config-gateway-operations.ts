@@ -1,4 +1,4 @@
-import { ErrorCodes } from "@openclaw/gateway-client/browser";
+import { ErrorCodes, isGatewayProtocolResponseError } from "@openclaw/gateway-client/browser";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { err as failure, ok, type Result } from "@openclaw/normalization-core/result";
 import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gateway.ts";
@@ -170,8 +170,10 @@ export type ConfigWriteCoordinator = {
   removeFormValue: (path: Array<string | number>) => void;
   setRaw: (value: string) => void;
   discardDraft: (options?: { reloadOnly?: boolean }) => Promise<void>;
+  discardFormValue: (path: Array<string | number>) => Promise<boolean>;
   setWritesSuspended: (suspended: boolean, refreshAdmission?: () => Promise<void>) => void;
   waitForPendingWrites: () => Promise<void>;
+  flushFormChanges: () => Promise<boolean>;
   save: (options?: RuntimeConfigDispatchOptions) => Promise<boolean>;
   retry: () => Promise<boolean>;
   apply: () => Promise<boolean>;
@@ -434,7 +436,11 @@ function applyConfigSchema(state: RuntimeConfigState, res: ConfigSchemaResponse)
   state.configSchemaVersion = res.version ?? null;
 }
 
-export type ConfigSubmission = ConfigSubmittedDraft & { ack: ConfigWriteAck | null };
+export type ConfigSubmission = ConfigSubmittedDraft & {
+  ack: ConfigWriteAck | null;
+  /** A terminal Gateway refusal, excluding uncertain publication or transport failure. */
+  rejected?: true;
+};
 export type ConfigSubmissionObserver = (submission: ConfigSubmission) => void;
 
 export async function submitConfigDraft(
@@ -459,6 +465,7 @@ export async function submitConfigDraft(
     state.chatError = null;
   }
   let submittedFormRaw: string | null = null;
+  let submission: ConfigSubmission | null = null;
   try {
     if (state.configRawOriginalParsePending) {
       // JSON5 originals load lazily; capture the submitted bytes only afterward.
@@ -488,7 +495,8 @@ export async function submitConfigDraft(
       state.chatError = null;
     }
     // Dispatch bytes let reconnect recognize a committed write whose ack was lost.
-    onSubmitted?.({ ...submitted, ack: null });
+    submission = { ...submitted, ack: null };
+    onSubmitted?.(submission);
     const ack = await client.request<ConfigWriteAck>(
       mode === "apply" ? "config.apply" : "config.set",
       { raw, baseHash, ...(mode === "apply" ? { sessionKey: state.applySessionKey } : {}) },
@@ -515,6 +523,15 @@ export async function submitConfigDraft(
   } catch (err) {
     if (isCurrent()) {
       const outcome = configMutationFailure(state, err, submittedFormRaw);
+      // config.set reports post-publication uncertainty separately. A local
+      // timeout is not a refusal: the server can still commit after it fires.
+      if (
+        submission &&
+        state.configRecoveryError === null &&
+        (isGatewayProtocolResponseError(err) || isDefinitiveConfigMutationRejection(err))
+      ) {
+        onSubmitted?.({ ...submission, rejected: true });
+      }
       state.lastError = outcome.message;
       if (outcome.status === "conflict" || mode !== "apply") {
         state.configAutoSaveStatus = outcome.status;
