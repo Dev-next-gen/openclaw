@@ -463,6 +463,21 @@ it("keeps cross-agent inheritance and parent selection when main aliases collaps
           .select({ agentId: "main", parentSessionKey: "agent:work:main" })
           .map((row) => row.key),
       ).toEqual([key]);
+      replaceSessionEntrySync(
+        { agentId: "work", sessionKey: "global" },
+        {
+          sessionId: "work-parent",
+          updatedAt: 3,
+          providerOverride: "unit-test",
+          modelOverride: "updated-work-model",
+        },
+      );
+      await projection.ensureMaterialized();
+      expect(projection.snapshot({ agentId: "main", key }).row).toMatchObject({
+        parentSessionKey: "global",
+        model: "updated-work-model",
+        modelOverrideSource: "inherited",
+      });
     } finally {
       projection.dispose();
     }

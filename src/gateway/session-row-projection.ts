@@ -293,7 +293,7 @@ export async function createSessionRowProjection(params: {
       },
     });
     for (const [key, target] of loaded.targetsBySessionKey) {
-      const entry = loaded.store[key];
+      const entry = target.entry;
       if (!entry || entry.incognito || isIncognitoSessionKey(key)) {
         continue;
       }
@@ -433,7 +433,7 @@ export async function createSessionRowProjection(params: {
       modelCatalog,
       modelSource: {
         entry: row.storedEntry,
-        loadSessionEntry: source
+        readSourceEntry: source
           ? createGatewaySessionEntryReader({ cfg, ...source })
           : (key) =>
               referenced(parentReference(key, row.agentId, row.storeTarget.storePath))?.storedEntry,
