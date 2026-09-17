@@ -122,8 +122,17 @@ export async function createServiceChildRelayAdapter(
     env: process.env,
   });
   const extinctionCompletion = createDeferredCore();
-  void extinctionCompletion.promise.catch(() => {});
-  params.onSpawnCleanup?.(extinctionCompletion.promise);
+  let authorityClose: Promise<PromiseSettledResult<void>> | undefined;
+  const extinction = (async () => {
+    const [outcome] = await Promise.allSettled([extinctionCompletion.promise]);
+    const closed = await authorityClose;
+    const failure = closed?.status === "rejected" ? closed : outcome;
+    if (failure.status === "rejected") {
+      throw failure.reason;
+    }
+  })();
+  const extinctionOutcome = Promise.allSettled([extinction]);
+  params.onSpawnCleanup?.(extinction);
 
   // SAFETY: a defined controlFd was reserved as a pipe in this exact spawn stdio array.
   const control = controlFd === undefined ? null : (child.stdio[controlFd] as Duplex | null);
@@ -201,7 +210,7 @@ export async function createServiceChildRelayAdapter(
   let cleanupDeadline: number | undefined;
   let cleanupTimer: NodeJS.Timeout | undefined;
   let completionSettled = false;
-  void Promise.allSettled([resultCompletion.promise, extinctionCompletion.promise]).then(() => {
+  void Promise.allSettled([resultCompletion.promise, extinctionOutcome]).then(() => {
     completionSettled = true;
     clearTimeout(cleanupTimer);
   });
@@ -549,11 +558,24 @@ export async function createServiceChildRelayAdapter(
       }
     });
     control.once("close", () => {
-      void finishPosixAuthority(
-        childError?.message ??
-          controlError?.message ??
-          "anchor channel closed without a matching closing receipt",
-      );
+      authorityClose = Promise.allSettled([
+        finishPosixAuthority(
+          childError?.message ??
+            controlError?.message ??
+            "anchor channel closed without a matching closing receipt",
+        ),
+      ]).then(([outcome]) => {
+        if (outcome.status === "rejected") {
+          // A failed observer must not interrupt settlement or escape the cleanup owner.
+          state = "identity-lost";
+          waitError = toErrorObject(outcome.reason, "service child authority close failed");
+          startup.reject(outcome.reason);
+          settleWait();
+          extinctionCompletion.reject(outcome.reason);
+          lineage?.destroy();
+        }
+        return outcome;
+      });
     });
     control.on("error", (error) => {
       controlError ??= error;
@@ -719,7 +741,7 @@ export async function createServiceChildRelayAdapter(
         ? await joinProcessCompletionAndOutput(resultCompletion.promise, output)
         : await resultCompletion.promise;
     },
-    waitForExtinction: async () => await extinctionCompletion.promise,
+    waitForExtinction: () => extinction,
     kill,
     dispose: () => {
       if (unpipeStderr) {
