@@ -1270,6 +1270,21 @@ img.chat-avatar {
 }
 
 @media (max-width: 768px), (max-width: 932px) and (max-height: 500px) and (orientation: landscape) {
+  .chat-thread
+    .chat-group.assistant.chat-group--forwarded
+    .chat-bubble:not(.chat-bubble--tool-shell),
+  .chat-thread
+    .chat-group.assistant:not(.chat-group--forwarded)
+    .chat-bubble:not(.chat-bubble--tool-shell)
+    :is(
+      .chat-assistant-attachments,
+      .chat-message-images,
+      openclaw-chat-async-question,
+      openclaw-chat-clawhub-card
+    ) {
+    max-width: 90%;
+  }
+
   /* Peer names carry identity when narrow rows have no avatar column. */
   .chat-group.user.chat-group--peer {
     --chat-persistent-footer-opacity: 1;
