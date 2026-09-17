@@ -115,7 +115,9 @@ export async function loadModelAuthStatus(
       ? await client.request<ModelAuthStatusResult>("models.authStatus", params, { signal })
       : await client.request<ModelAuthStatusResult>("models.authStatus", params);
     const snapshot = result ?? EMPTY_AUTH_STATUS;
-    authRefreshDeadlines.set(snapshot, authStatusRefreshAt(snapshot, requestedAt));
+    if (Array.isArray(snapshot.providers)) {
+      authRefreshDeadlines.set(snapshot, authStatusRefreshAt(snapshot, requestedAt));
+    }
     return snapshot;
   };
   let state = authReads.get(client);
@@ -155,7 +157,7 @@ export async function loadModelAuthStatus(
       }
     };
     void shared.promise.then((result) => {
-      if (result.unavailable) {
+      if (result === EMPTY_AUTH_STATUS || result.unavailable || !Array.isArray(result.providers)) {
         finish();
       } else if (requests.get(agentId) === shared) {
         shared.refreshAt = nextModelAuthStatusRefreshAt(result);
