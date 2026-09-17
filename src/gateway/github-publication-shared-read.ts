@@ -1,6 +1,10 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { SessionEntry } from "../config/sessions/types.js";
-import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+  getNodeSqliteKysely,
+} from "../infra/kysely-sync.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import type { DB } from "../state/openclaw-state-db.generated.js";
 import { GitHubPublicationSessionChangedError } from "./github-publication-failure.js";
@@ -40,7 +44,10 @@ export function readSharedGitHubPublicationWorkspace(
   if (entry.archivedAt !== undefined) {
     return undefined;
   }
-  const query = getNodeSqliteKysely<Pick<DB, "worktrees" | "session_repository_workspaces">>(db);
+  const query =
+    getNodeSqliteKysely<
+      Pick<DB, "worktrees" | "worktree_session_bindings" | "session_repository_workspaces">
+    >(db);
   if (entry.repositoryWorkspaceId) {
     const workspace = tableExists(db, "session_repository_workspaces")
       ? executeSqliteQueryTakeFirstSync(
@@ -73,15 +80,40 @@ export function readSharedGitHubPublicationWorkspace(
         query
           .selectFrom("worktrees")
           .select(["id", "branch", "repo_root", "repo_fingerprint"])
-          .where("owner_kind", "=", "session")
-          .where("owner_id", "=", session.sessionKey)
+          .where("id", "=", entry.worktree.id)
           .where("removed_at", "is", null)
-          .orderBy("created_at", "desc")
           .limit(1),
       )
     : undefined;
+  const bindings = tableExists(db, "worktree_session_bindings")
+    ? executeSqliteQuerySync(
+        db,
+        query
+          .selectFrom("worktree_session_bindings")
+          .select(["session_key", "active"])
+          .where("worktree_id", "=", entry.worktree.id),
+      ).rows
+    : [];
+  const sessionIsBound =
+    bindings.length > 0
+      ? bindings.some(
+          (binding) => binding.session_key === session.sessionKey && binding.active === 1,
+        )
+      : tableExists(db, "worktrees") &&
+        Boolean(
+          executeSqliteQueryTakeFirstSync(
+            db,
+            query
+              .selectFrom("worktrees")
+              .select("id")
+              .where("id", "=", entry.worktree.id)
+              .where("owner_kind", "=", "session")
+              .where("owner_id", "=", session.sessionKey),
+          ),
+        );
   if (
     !worktree ||
+    !sessionIsBound ||
     worktree.id !== entry.worktree.id ||
     worktree.branch !== entry.worktree.branch ||
     worktree.repo_root !== entry.worktree.repoRoot

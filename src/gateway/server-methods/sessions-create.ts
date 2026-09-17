@@ -516,6 +516,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
               : undefined;
           const prepared = await prepareSessionWorktree({
             cfg,
+            client,
             target: lifecycleTarget,
             workspace,
             name: requestedWorktreeName,

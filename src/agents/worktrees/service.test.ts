@@ -421,7 +421,7 @@ describe("ManagedWorktreeService", () => {
     },
   );
 
-  it("rejects name reuse across owners instead of adopting a foreign worktree", async () => {
+  it("shares named session worktrees without adopting them as manual worktrees", async () => {
     await service.create({
       repoRoot: repo,
       name: "shared-name",
@@ -437,11 +437,10 @@ describe("ManagedWorktreeService", () => {
         ownerKind: "session",
         ownerId: "agent:main:dashboard:two",
       }),
-    ).rejects.toThrow(/already in use by session/);
+    ).resolves.toMatchObject({ ownerId: "agent:main:dashboard:one" });
     await expect(
       service.create({ repoRoot: repo, name: "shared-name", baseRef: "HEAD" }),
     ).rejects.toThrow(/already in use by session/);
-    // The rightful owner still reuses its record.
     const reused = await service.create({
       repoRoot: repo,
       name: "shared-name",

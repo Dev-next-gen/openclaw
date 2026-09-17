@@ -51,7 +51,7 @@ test("resolves consecutive placement workspaces without decoding unrelated sessi
             managedWorktrees: {
               findLiveByOwner: (_kind, ownerId) => ({
                 id: ownerId,
-                ownerId,
+                ownerId: "creator-session",
                 path: `/synthetic/${ownerId}`,
               }),
             },

@@ -31,8 +31,12 @@ function serviceFor(env?: NodeJS.ProcessEnv) {
   return env ? new ManagedWorktreeService({ env }) : managedWorktrees;
 }
 
-function belongsToSession(record: ManagedWorktreeRecord, sessionKey: string) {
-  return record.ownerKind === "session" && record.ownerId === sessionKey;
+function belongsToSession(
+  service: ManagedWorktreeService,
+  record: ManagedWorktreeRecord,
+  sessionKey: string,
+) {
+  return record.ownerKind === "session" && service.isSessionBound(record.id, sessionKey);
 }
 
 /** The session lifecycle fence remains held until this exact bound checkout finishes cleanup. */
@@ -47,6 +51,7 @@ export async function removeSessionWorktree(params: {
     return undefined;
   }
   const env = params.env ?? process.env;
+  const service = serviceFor(params.env);
   const record = getRegistryWorktree(env, params.id);
   if (!record || record.removedAt !== undefined) {
     return undefined;
@@ -63,7 +68,7 @@ export async function removeSessionWorktree(params: {
   const assertCurrent = () => {
     params.commitGuard?.();
     const current = getRegistryWorktree(env, record.id);
-    if (current && !belongsToSession(current, params.sessionKey)) {
+    if (current && !belongsToSession(service, current, params.sessionKey)) {
       throw new SessionWorktreeLifecycleError(
         "Session worktree ownership changed; retry cleanup.",
         "owner-mismatch",
@@ -72,18 +77,46 @@ export async function removeSessionWorktree(params: {
   };
   try {
     assertCurrent();
-    await serviceFor(params.env).remove({
+    const activeBindings = service.listSessionBindings(record.id, { activeOnly: true });
+    if (activeBindings.includes(params.sessionKey) && activeBindings.length > 1) {
+      if (params.reason === "session-delete") {
+        service.forgetSession(record.id, params.sessionKey);
+      } else {
+        service.deactivateSession(record.id, params.sessionKey);
+      }
+      return undefined;
+    }
+    if (!activeBindings.includes(params.sessionKey) && activeBindings.length > 0) {
+      return undefined;
+    }
+    await service.remove({
       id: record.id,
       reason: params.reason,
-      commitGuard: assertCurrent,
+      commitGuard: () => {
+        assertCurrent();
+        const currentBindings = service.listSessionBindings(record.id, { activeOnly: true });
+        if (
+          currentBindings.length > 1 ||
+          (currentBindings.length === 1 && currentBindings[0] !== params.sessionKey)
+        ) {
+          throw new SessionWorktreeLifecycleError(
+            "Another session attached to the worktree during cleanup; retry.",
+            "busy",
+          );
+        }
+      },
     });
+    if (params.reason === "session-delete") {
+      service.forgetSession(record.id, params.sessionKey);
+    }
   } catch (error) {
     // Authorization loss is a failed lifecycle action, not successful best-effort cleanup.
     params.commitGuard?.();
     const current = getRegistryWorktree(env, record.id);
     if (current && current.removedAt === undefined) {
       const reason =
-        error instanceof SessionWorktreeLifecycleError && error.reason === "owner-mismatch"
+        error instanceof SessionWorktreeLifecycleError &&
+        (error.reason === "owner-mismatch" || error.reason === "busy")
           ? error.reason
           : classifyWorktreeRemovalError(error);
       getChildLogger({ subsystem: "session-worktree" }).warn("Session worktree preserved", {
@@ -106,6 +139,7 @@ export async function synchronizeSessionWorktreeArchive(params: {
   assertRestoreAllowed?: () => void;
 }): Promise<() => void> {
   const { entry, scope } = params;
+  const service = serviceFor(scope.env);
   const id = entry.worktree?.id;
   if (!id) {
     return () => params.commitGuard?.();
@@ -125,7 +159,7 @@ export async function synchronizeSessionWorktreeArchive(params: {
       );
     }
     const record = getRegistryWorktree(scope.env ?? process.env, id);
-    if (record && !belongsToSession(record, scope.sessionKey)) {
+    if (record && !belongsToSession(service, record, scope.sessionKey)) {
       throw new SessionWorktreeLifecycleError(
         "Session worktree has a different owner; restore the correct binding before retrying.",
         "owner-mismatch",
@@ -158,7 +192,7 @@ export async function synchronizeSessionWorktreeArchive(params: {
     if (record.removedAt !== undefined) {
       params.assertRestoreAllowed?.();
       try {
-        await serviceFor(scope.env).restore({ id, commitGuard: assertCurrent });
+        await service.restore({ id, commitGuard: assertCurrent });
       } catch (error) {
         assertCurrent();
         if (error instanceof SessionWorktreeLifecycleError) {
@@ -188,6 +222,9 @@ export async function synchronizeSessionWorktreeArchive(params: {
           "restore-failed",
         );
       }
+    }
+    if (getRegistryWorktree(scope.env ?? process.env, id)?.removedAt === undefined) {
+      service.attachSession(id, scope.sessionKey);
     }
   }
   assertCurrent();

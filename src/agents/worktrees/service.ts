@@ -29,7 +29,11 @@ import {
   WORKTREE_TEMPLATE_DIRECTORY,
 } from "./checkout.js";
 import { ensureEmptyWorktreeSource, removeUnusedEmptyWorktreeSource } from "./empty-source.js";
-import { WorktreeRepositoryError } from "./errors.js";
+import {
+  WorktreeRemovalLockError,
+  WorktreeRepositoryError,
+  WorktreeSnapshotError,
+} from "./errors.js";
 import {
   createWorktreeLockPrefilter,
   lockState,
@@ -54,7 +58,10 @@ import {
   SNAPSHOT_CHUNK_BYTES,
 } from "./provisioned-files.js";
 import {
+  bindRegistryWorktreeSession,
   clearRegistryWorktreeProvisionedChunks,
+  deactivateRegistryWorktreeSession,
+  deleteRegistryWorktreeSessionBinding,
   deleteRegistryWorktree,
   findLiveRegistryWorktreeByOwner,
   findLiveRegistryWorktreeByPath,
@@ -62,6 +69,8 @@ import {
   getRegistryWorktreeProvisionedPaths,
   getRegistryWorktreeProvisionedState,
   insertRegistryWorktree,
+  isRegistryWorktreeSessionBound,
+  listRegistryWorktreeSessionBindings,
   listRegistryWorktrees,
   updateRegistryWorktree,
   WorktreeRemovalContentionError,
@@ -74,6 +83,11 @@ import {
   finalizeWorktreeRemoval,
   hasLiveWorktreeRunLease,
 } from "./run-lease.js";
+import {
+  findWorktreeByName,
+  generateAvailableWorktreeName,
+  validateWorktreeName,
+} from "./service-name-allocation.js";
 import { hasTemplates } from "./template-registry.js";
 import type {
   CreateEmptyManagedWorktreeParams,
@@ -92,47 +106,13 @@ export const IDLE_GC_MS = 7 * 24 * 60 * 60 * 1000; // Idle worktrees remain rest
 export const SNAPSHOT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // Snapshot refs expire with their registry affordance.
 export const WORKTREE_GC_INTERVAL_MS = 60 * 60 * 1000;
 
-const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
-
-/** Removal aborted because snapshot loss was not permitted. */
-export class WorktreeSnapshotError extends Error {
-  readonly snapshotError: string;
-  constructor(snapshotError: string, options?: ErrorOptions) {
-    super(`worktree snapshot failed; removal aborted: ${snapshotError}`, options);
-    this.snapshotError = snapshotError;
-  }
-}
-
-export type WorktreeRemovalFailureReason =
-  | "busy"
-  | "foreign-lock"
-  | "snapshot-failed"
-  | "cleanup-failed";
-
-export class WorktreeRemovalLockError extends Error {
-  constructor(
-    readonly kind: "busy" | "foreign-lock",
-    message: string,
-  ) {
-    super(message);
-    this.name = "WorktreeRemovalLockError";
-  }
-}
-
-export function classifyWorktreeRemovalError(error: unknown): WorktreeRemovalFailureReason {
-  if (error instanceof WorktreeRemovalContentionError) {
-    return "busy";
-  }
-  if (error instanceof WorktreeRemovalLockError) {
-    return error.kind;
-  }
-  if (error instanceof WorktreeSnapshotError) {
-    return "snapshot-failed";
-  }
-  return "cleanup-failed";
-}
-
-export { WorktreeRepositoryError } from "./errors.js";
+export {
+  classifyWorktreeRemovalError,
+  WorktreeRemovalLockError,
+  WorktreeRepositoryError,
+  WorktreeSnapshotError,
+  type WorktreeRemovalFailureReason,
+} from "./errors.js";
 const log = createSubsystemLogger("agents/worktrees");
 
 type ServiceOptions = {
@@ -167,85 +147,6 @@ const WORKTREE_CLEANUP_TARGET = 100;
 /** A bounded default; manual and actively used worktrees remain protected. */
 export function resolveWorktreeCleanupLimits(): WorktreeCleanupLimits {
   return { maxCount: WORKTREE_CLEANUP_TARGET };
-}
-
-function validateName(name: string): string {
-  if (!NAME_PATTERN.test(name)) {
-    throw new Error("worktree name must match [a-z0-9][a-z0-9-]{0,63}");
-  }
-  return name;
-}
-
-function findWorktreeByName(env: NodeJS.ProcessEnv, fingerprint: string, name: string) {
-  return listRegistryWorktrees(env).find(
-    (record) => record.repoFingerprint === fingerprint && record.name === name,
-  );
-}
-
-async function nameIsUnavailable(
-  env: NodeJS.ProcessEnv,
-  repoRoot: string,
-  fingerprint: string,
-  root: string,
-  name: string,
-  owner: Pick<CreateManagedWorktreeParams, "ownerKind" | "ownerId">,
-): Promise<boolean> {
-  const worktreePath = path.join(root, name);
-  const registered = findWorktreeByName(env, fingerprint, name);
-  if (
-    owner.ownerId &&
-    registered &&
-    registered.removedAt === undefined &&
-    worktreeOwnerMatches(registered, owner)
-  ) {
-    // Let createForRepository reuse the caller's live checkout; a collision here
-    // could mint a second checkout for one owner. Removed records stay collisions:
-    // restore is explicit-name/id only, so a generated name (title slug or random
-    // crustacean) must never silently resurrect a retired checkout.
-    return false;
-  }
-  if (registered || (await worktreePathExists(worktreePath))) {
-    return true;
-  }
-  const branch = `openclaw/${name}`;
-  const branchExists = await runGit(repoRoot, [
-    "show-ref",
-    "--quiet",
-    "--verify",
-    `refs/heads/${branch}`,
-  ]);
-  if (branchExists.code === 0) {
-    return true;
-  }
-  if (branchExists.code !== 1) {
-    throw commandError("git show-ref --verify", branchExists);
-  }
-  return (await listGitWorktrees(repoRoot)).some(
-    (entry) => path.resolve(entry.path) === path.resolve(worktreePath),
-  );
-}
-
-function appendNameOrdinal(name: string, ordinal: number): string {
-  const suffix = `-${ordinal}`;
-  return `${name.slice(0, 64 - suffix.length).replace(/-+$/g, "")}${suffix}`;
-}
-
-async function generateName(
-  env: NodeJS.ProcessEnv,
-  repoRoot: string,
-  fingerprint: string,
-  root: string,
-  owner: Pick<CreateManagedWorktreeParams, "ownerKind" | "ownerId">,
-  suggestedName: string,
-): Promise<string> {
-  validateName(suggestedName);
-  for (let ordinal = 1; ordinal <= 1_000; ordinal += 1) {
-    const candidate = ordinal === 1 ? suggestedName : appendNameOrdinal(suggestedName, ordinal);
-    if (!(await nameIsUnavailable(env, repoRoot, fingerprint, root, candidate, owner))) {
-      return candidate;
-    }
-  }
-  throw new Error(`no available worktree name for ${suggestedName}`);
 }
 
 type ResolvedRepository = {
@@ -517,6 +418,9 @@ export class ManagedWorktreeService {
           );
         }
         params.commitGuard?.();
+        if (params.ownerKind === "session" && params.ownerId) {
+          bindRegistryWorktreeSession(this.env, validated.id, params.ownerId, this.now());
+        }
         return { record: validated, materialized: false };
       }
       if (existing) {
@@ -557,7 +461,7 @@ export class ManagedWorktreeService {
   ): Promise<ManagedWorktreeCreationOutcome> {
     params.signal?.throwIfAborted();
     params.onProgress?.("checkout");
-    const suppliedName = params.name === undefined ? undefined : validateName(params.name);
+    const suppliedName = params.name === undefined ? undefined : validateWorktreeName(params.name);
     // Names belong to the repository across storage roots. Reuse and restore must
     // keep their recorded paths even when the new allocation volume is unavailable.
     const existing = suppliedName
@@ -566,43 +470,61 @@ export class ManagedWorktreeService {
     if (existing && params.profiles?.length) {
       throw new Error("Source profiles require a new worktree; choose an unused --name.");
     }
-    // Name reuse only ever adopts the caller's own record. Without this guard a
-    // caller-chosen name could bind a new owner to another session's or a
-    // manual checkout and run inside it.
-    if (existing && !existing.removedAt && !worktreeOwnerMatches(existing, params)) {
+    const sharesSessionWorktree =
+      existing?.ownerKind === "session" &&
+      params.ownerKind === "session" &&
+      Boolean(params.ownerId);
+    // Manual and Workboard worktrees retain exclusive lifecycle ownership.
+    // Session worktrees instead admit authorized callers through durable bindings.
+    if (
+      existing &&
+      !existing.removedAt &&
+      !worktreeOwnerMatches(existing, params) &&
+      !sharesSessionWorktree
+    ) {
       throw new Error(
         `worktree name is already in use by ${existing.ownerKind}${existing.ownerId ? ` ${existing.ownerId}` : ""}: ${suppliedName}`,
       );
     }
     if (existing && existing.removedAt === undefined) {
       if (await worktreePathExists(existing.path)) {
+        const record = await this.rebindLiveRepository(existing, params);
+        if (params.ownerKind === "session" && params.ownerId) {
+          params.commitGuard?.();
+          bindRegistryWorktreeSession(this.env, record.id, params.ownerId, this.now());
+        }
         return {
-          record: await this.rebindLiveRepository(existing, params),
+          record,
           materialized: false,
         };
       }
       updateRegistryWorktree(this.env, existing.id, { removedAt: this.now() });
     }
     if (existing && existing.removedAt !== undefined && existing.snapshotRef) {
-      if (!worktreeOwnerMatches(existing, params)) {
+      if (!worktreeOwnerMatches(existing, params) && !sharesSessionWorktree) {
         throw new Error(
           `worktree name is already in use by ${existing.ownerKind}${existing.ownerId ? ` ${existing.ownerId}` : ""}: ${suppliedName}`,
         );
       }
+      const record = await this.restoreWithAllocation({
+        id: existing.id,
+        signal: params.signal,
+        commitGuard: params.commitGuard,
+        rollbackGuard: params.rollbackGuard,
+      });
+      if (params.ownerKind === "session" && params.ownerId) {
+        params.commitGuard?.();
+        bindRegistryWorktreeSession(this.env, record.id, params.ownerId, this.now());
+      }
       return {
-        record: await this.restoreWithAllocation({
-          id: existing.id,
-          signal: params.signal,
-          commitGuard: params.commitGuard,
-          rollbackGuard: params.rollbackGuard,
-        }),
+        record,
         materialized: true,
       };
     }
     const root = path.join(await this.worktreesRoot(), repository.fingerprint);
     const name =
       suppliedName ??
-      (await generateName(
+      (await generateAvailableWorktreeName(
         this.env,
         repository.repoRoot,
         repository.fingerprint,
@@ -779,6 +701,34 @@ export class ManagedWorktreeService {
       }
     }
     return records.filter((record) => record.removedAt === undefined || record.snapshotRef);
+  }
+
+  async findByNameForRepository(
+    repoRoot: string,
+    name: string,
+  ): Promise<ManagedWorktreeRecord | undefined> {
+    const repository = await resolveRepository(repoRoot);
+    return findWorktreeByName(this.env, repository.fingerprint, validateWorktreeName(name));
+  }
+
+  listSessionBindings(id: string, options: { activeOnly?: boolean } = {}): string[] {
+    return listRegistryWorktreeSessionBindings(this.env, id, options);
+  }
+
+  isSessionBound(id: string, sessionKey: string, options: { activeOnly?: boolean } = {}): boolean {
+    return isRegistryWorktreeSessionBound(this.env, id, sessionKey, options);
+  }
+
+  attachSession(id: string, sessionKey: string): void {
+    bindRegistryWorktreeSession(this.env, id, sessionKey, this.now());
+  }
+
+  deactivateSession(id: string, sessionKey: string): number {
+    return deactivateRegistryWorktreeSession(this.env, id, sessionKey);
+  }
+
+  forgetSession(id: string, sessionKey: string): void {
+    deleteRegistryWorktreeSessionBinding(this.env, id, sessionKey);
   }
 
   /** Returns persisted worktree facts without probing paths or mutating lifecycle state. */
@@ -1400,7 +1350,19 @@ export class ManagedWorktreeService {
     owner: Pick<CreateManagedWorktreeParams, "ownerKind" | "ownerId">,
   ): Promise<boolean> {
     const record = findLiveRegistryWorktreeByPath(this.env, worktreePath);
-    if (!record || !worktreeOwnerMatches(record, owner)) {
+    if (!record) {
+      return false;
+    }
+    if (owner.ownerKind === "session" && owner.ownerId) {
+      if (!this.isSessionBound(record.id, owner.ownerId, { activeOnly: true })) {
+        return false;
+      }
+      // Run-end cleanup must not retire a checkout still attached to another
+      // live session, even when every active run lease has drained.
+      if (this.listSessionBindings(record.id, { activeOnly: true }).length > 1) {
+        return false;
+      }
+    } else if (!worktreeOwnerMatches(record, owner)) {
       return false;
     }
     return await this.removeIfLossless(record.id);
@@ -1429,9 +1391,15 @@ export class ManagedWorktreeService {
         if (record.removedAt !== undefined || !expiresWhenIdle) {
           continue;
         }
+        const ownerIds = this.cleanupOwnerIds(record);
         const retiredOwner =
-          record.ownerId !== undefined &&
-          params.shouldRemoveOwner?.(record.ownerKind, record.ownerId) === true;
+          record.ownerKind === "session"
+            ? this.listSessionBindings(record.id).length > 0 &&
+              ownerIds.every((ownerId) => params.shouldRemoveOwner?.("session", ownerId) === true)
+            : ownerIds.length > 0 &&
+              ownerIds.every(
+                (ownerId) => params.shouldRemoveOwner?.(record.ownerKind, ownerId) === true,
+              );
         if (retiredOwner || now - record.lastActiveAt > IDLE_GC_MS) {
           if (await this.isProtectedFromAutoRemoval(record, isLocked, params.shouldProtectOwner)) {
             continue;
@@ -1540,8 +1508,9 @@ export class ManagedWorktreeService {
     shouldProtectOwner?: (ownerKind: ManagedWorktreeOwnerKind, ownerId: string) => boolean,
   ): Promise<boolean> {
     if (
-      record.ownerId !== undefined &&
-      shouldProtectOwner?.(record.ownerKind, record.ownerId) === true
+      this.cleanupOwnerIds(record).some(
+        (ownerId) => shouldProtectOwner?.(record.ownerKind, ownerId) === true,
+      )
     ) {
       return true;
     }
@@ -1677,13 +1646,21 @@ export class ManagedWorktreeService {
     if (getRegistryWorktree(this.env, record.id)?.lastActiveAt !== record.lastActiveAt) {
       throw new WorktreeRemovalLockError("busy", "worktree activity changed during cleanup");
     }
+    const ownerIds = this.cleanupOwnerIds(record);
     if (
-      record.ownerId !== undefined &&
-      (params.shouldProtectOwner?.(record.ownerKind, record.ownerId) === true ||
-        (retiredOwner && params.shouldRemoveOwner?.(record.ownerKind, record.ownerId) !== true))
+      ownerIds.some((ownerId) => params.shouldProtectOwner?.(record.ownerKind, ownerId) === true) ||
+      (retiredOwner &&
+        ownerIds.some((ownerId) => params.shouldRemoveOwner?.(record.ownerKind, ownerId) !== true))
     ) {
       throw new WorktreeRemovalLockError("busy", "worktree owner became active during cleanup");
     }
+  }
+
+  private cleanupOwnerIds(record: ManagedWorktreeRecord): string[] {
+    if (record.ownerKind === "session") {
+      return listRegistryWorktreeSessionBindings(this.env, record.id, { activeOnly: true });
+    }
+    return record.ownerId ? [record.ownerId] : [];
   }
 
   private requireLiveRecord(id: string): ManagedWorktreeRecord {

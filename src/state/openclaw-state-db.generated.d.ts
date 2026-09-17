@@ -1701,6 +1701,13 @@ export interface WorktreeProvisionedFileChunks {
   worktree_id: string;
 }
 
+export interface WorktreeSessionBindings {
+  active: number;
+  attached_at: number;
+  session_key: string;
+  worktree_id: string;
+}
+
 export interface WorktreeTemplates {
   backend: string;
   cache_key: string;
@@ -1860,6 +1867,7 @@ export interface DB {
   workspace_path_aliases: WorkspacePathAliases;
   workspace_setup_state: WorkspaceSetupState;
   worktree_provisioned_file_chunks: WorktreeProvisionedFileChunks;
+  worktree_session_bindings: WorktreeSessionBindings;
   worktree_templates: WorktreeTemplates;
   worktrees: Worktrees;
 }

@@ -1,17 +1,25 @@
 import type { DatabaseSync } from "node:sqlite";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Insertable, Selectable } from "kysely";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import {
   withExistingOpenClawStateDatabaseArtifactPreservingReadOnly,
   withExistingOpenClawStateDatabaseReadOnly,
 } from "../../state/openclaw-state-db-readonly.js";
+import { ensureWorktreeSessionBindingsSchema } from "../../state/openclaw-state-db-schema-additive.js";
 import { tableExists, tableHasColumn } from "../../state/openclaw-state-db-schema-helpers.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
+import { parseWorktreeRunEndCleanup } from "./registry-run-end-cleanup.js";
+import {
+  deactivateBindingRows,
+  deleteBindingRows,
+  findActiveSessionWorktreeBinding,
+  hasExplicitWorktreeSessionBindings,
+  insertInitialBindingRow,
+} from "./registry-session-bindings.js";
 import {
   collectLiveRunLeases,
   WORKTREE_REMOVING_LEASE_KEY,
@@ -20,9 +28,16 @@ import {
 import type {
   ManagedWorktreeOwnerKind,
   ManagedWorktreeRecord,
-  ManagedWorktreeRunEndCleanup,
   ProvisionedFileState,
 } from "./types.js";
+
+export {
+  bindRegistryWorktreeSession,
+  deactivateRegistryWorktreeSession,
+  deleteRegistryWorktreeSessionBinding,
+  isRegistryWorktreeSessionBound,
+  listRegistryWorktreeSessionBindings,
+} from "./registry-session-bindings.js";
 
 type WorktreesTable = OpenClawStateKyselyDatabase["worktrees"];
 type WorktreeRow = Selectable<WorktreesTable>;
@@ -65,41 +80,8 @@ function kyselyLeaseFor(db: DatabaseSync) {
   return getNodeSqliteKysely<WorktreeLeaseDatabase>(db);
 }
 
-function parseRunEndCleanup(
-  raw: string | null | undefined,
-): ManagedWorktreeRunEndCleanup | undefined {
-  if (raw == null) {
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!isRecord(parsed) || !Number.isInteger(parsed.at) || (parsed.at as number) < 0) {
-      return undefined;
-    }
-    const at = parsed.at as number;
-    switch (parsed.outcome) {
-      case "failed":
-        return typeof parsed.reason === "string" &&
-          parsed.reason.length > 0 &&
-          parsed.reason.length <= 500
-          ? { outcome: parsed.outcome, at, reason: parsed.reason }
-          : undefined;
-      case "removed-lossless":
-      case "retained-busy":
-      case "retained-dirty":
-      case "retained-unpushed":
-      case "retained-provisioned-drift":
-        return parsed.reason === undefined ? { outcome: parsed.outcome, at } : undefined;
-      default:
-        return undefined;
-    }
-  } catch {
-    return undefined;
-  }
-}
-
 function rowToRecord(row: WorktreeRecordRow): ManagedWorktreeRecord {
-  const runEndCleanup = parseRunEndCleanup(row.run_end_cleanup_json);
+  const runEndCleanup = parseWorktreeRunEndCleanup(row.run_end_cleanup_json);
   return {
     id: row.id,
     name: row.path.split(/[\\/]/).at(-1) ?? row.id,
@@ -404,6 +386,13 @@ export function findLiveRegistryWorktreeByOwner(
   ownerId: string,
 ): ManagedWorktreeRecord | undefined {
   const db = dbFor(env);
+  if (ownerKind === "session") {
+    const binding = findActiveSessionWorktreeBinding(env, ownerId);
+    if (binding) {
+      const bound = getRegistryWorktree(env, binding);
+      return bound?.removedAt === undefined ? bound : undefined;
+    }
+  }
   const query = kyselyFor(db)
     .selectFrom("worktrees")
     .select(WORKTREE_RECORD_COLUMNS)
@@ -413,7 +402,15 @@ export function findLiveRegistryWorktreeByOwner(
     .orderBy("created_at", "desc")
     .limit(1);
   const row = executeSqliteQuerySync(db, query).rows[0];
-  return row ? rowToRecord(row) : undefined;
+  if (!row) {
+    return undefined;
+  }
+  const record = rowToRecord(row);
+  // Owner columns are the compatibility source only until a worktree receives
+  // explicit session bindings. Thereafter the binding set is authoritative.
+  return ownerKind !== "session" || !hasExplicitWorktreeSessionBindings(env, record.id)
+    ? record
+    : undefined;
 }
 
 export function insertRegistryWorktree(
@@ -421,12 +418,15 @@ export function insertRegistryWorktree(
   record: ManagedWorktreeRecord,
   options: { provisionedPaths?: readonly string[] } = {},
 ): void {
+  const db = dbFor(env);
+  ensureWorktreeSessionBindingsSchema(db);
   runOpenClawStateWriteTransaction(
-    ({ db }) => {
+    () => {
       executeSqliteQuerySync(
         db,
         kyselyFor(db).insertInto("worktrees").values(recordToRow(record, options.provisionedPaths)),
       );
+      insertInitialBindingRow(db, record);
     },
     { env },
   );
@@ -489,6 +489,7 @@ export function updateRegistryWorktree(
 export function deleteRegistryWorktree(env: NodeJS.ProcessEnv, id: string): void {
   runOpenClawStateWriteTransaction(
     ({ db }) => {
+      deleteBindingRows(db, id);
       executeSqliteQuerySync(
         db,
         kyselyProvisionedFor(db)
@@ -677,6 +678,7 @@ export function finalizeWorktreeRemovalRows(env: NodeJS.ProcessEnv, worktreeId: 
   const db = dbFor(env);
   runOpenClawStateWriteTransaction(
     () => {
+      deactivateBindingRows(db, worktreeId);
       executeSqliteQuerySync(
         db,
         kyselyLeaseFor(db)

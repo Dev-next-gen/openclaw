@@ -85,6 +85,15 @@ export function ensureSessionRepositoryWorkspaceSchema(database: DatabaseSync): 
   ); // sqlite-allow-raw -- Canonical first-use DDL; workspace rows use Kysely.
 }
 
+export function ensureWorktreeSessionBindingsSchema(database: DatabaseSync): void {
+  database.exec(
+    extractSqliteTableSchema(OPENCLAW_STATE_SCHEMA_SQL, "worktree_session_bindings", {
+      endMarker: "ON worktree_session_bindings(session_key) WHERE active = 1;",
+      errorMessage: "Worktree session bindings schema marker is missing.",
+    }),
+  ); // sqlite-allow-raw -- Canonical additive DDL only.
+}
+
 export function ensureRepositoryGitHubPublicationSchema(database: DatabaseSync): void {
   database.exec(
     extractSqliteTableSchema(OPENCLAW_STATE_SCHEMA_SQL, "github_repository_publication_requests", {

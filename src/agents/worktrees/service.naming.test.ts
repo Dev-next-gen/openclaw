@@ -101,6 +101,39 @@ describe("ManagedWorktreeService naming", () => {
     ).toHaveLength(1);
   });
 
+  it("shares an explicit session name without giving manual callers ownership", async () => {
+    const created = await service.create({
+      repoRoot: repo,
+      name: "shared-name",
+      ownerKind: "session",
+      ownerId: "agent:main:session-1",
+    });
+    const shared = await service.create({
+      repoRoot: repo,
+      name: "shared-name",
+      ownerKind: "session",
+      ownerId: "agent:main:session-2",
+    });
+
+    expect(shared.id).toBe(created.id);
+    expect(service.listSessionBindings(created.id, { activeOnly: true })).toEqual([
+      "agent:main:session-1",
+      "agent:main:session-2",
+    ]);
+    expect(service.findLiveByOwner("session", "agent:main:session-2")?.id).toBe(created.id);
+    await expect(service.create({ repoRoot: repo, name: "shared-name" })).rejects.toThrow(
+      /already in use by session/,
+    );
+
+    await expect(
+      service.removeIfLosslessByPath(created.path, {
+        ownerKind: "session",
+        ownerId: "agent:main:session-1",
+      }),
+    ).resolves.toBe(false);
+    await expect(fs.stat(created.path)).resolves.toBeDefined();
+  });
+
   it("numbers a generated name colliding with the owner's removed record", async () => {
     const owner = {
       repoRoot: repo,

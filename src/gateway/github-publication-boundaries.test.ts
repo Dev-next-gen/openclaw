@@ -680,7 +680,7 @@ describe("Gateway GitHub publication boundaries", () => {
     expect(commands).toEqual([]);
   });
 
-  it("validates the live session owner before recovery can touch Git state", async () => {
+  it("accepts a binding-aware worktree lookup when another session created the checkout", async () => {
     const database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
     const coordinator = createTestGitHubPublicationCoordinator({
       placements: createWorkerSessionPlacementStore({ database }),
@@ -711,11 +711,8 @@ describe("Gateway GitHub publication boundaries", () => {
 
     await coordinator.resumeSessionRequests();
 
-    expect(coordinator.read(requestId)).toMatchObject({
-      status: "failed",
-      code: "session_changed",
-    });
-    expect(commands).toEqual([]);
+    expect(coordinator.read(requestId)).toMatchObject({ status: "published" });
+    expect(commands.length).toBeGreaterThan(0);
   });
 
   it("rejects unsafe Git configuration before starting recovery probes", async () => {

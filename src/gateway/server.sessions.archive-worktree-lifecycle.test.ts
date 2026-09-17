@@ -46,6 +46,61 @@ import { setupGatewaySessionsWorktreeTestHarness } from "./test/server-sessions.
 const { createArchiveWorktreeFixture } = setupGatewaySessionsWorktreeTestHarness();
 const execFileAsync = promisify(execFile);
 
+test("shared worktree checkout survives until its last session archives and restores per session", async () => {
+  const { key, sessionId, worktree } = await createArchiveWorktreeFixture();
+  const record = getRegistryWorktree(process.env, worktree.id);
+  expect(record).toBeDefined();
+  const peer = await directSessionReq<{
+    key: string;
+    sessionId: string;
+    worktree: { id: string; path: string };
+  }>(
+    "sessions.create",
+    { agentId: "main", worktree: true, worktreeName: record!.name },
+    { client: { connect: { scopes: ["operator.admin"] } } as never },
+  );
+  expect(peer).toMatchObject({
+    ok: true,
+    payload: { worktree: { id: worktree.id, path: worktree.path } },
+  });
+  await fs.writeFile(path.join(worktree.path, "shared-draft.txt"), "shared contents\n");
+
+  expect(
+    await directSessionReq("sessions.patch", {
+      key,
+      expectedSessionId: sessionId,
+      archived: true,
+    }),
+  ).toMatchObject({ ok: true });
+  await expect(fs.readFile(path.join(worktree.path, "shared-draft.txt"), "utf8")).resolves.toBe(
+    "shared contents\n",
+  );
+  expect(managedWorktrees.listSessionBindings(worktree.id, { activeOnly: true })).toEqual([
+    peer.payload!.key,
+  ]);
+
+  expect(
+    await directSessionReq("sessions.patch", {
+      key: peer.payload!.key,
+      expectedSessionId: peer.payload!.sessionId,
+      archived: true,
+    }),
+  ).toMatchObject({ ok: true });
+  await expect(fs.access(worktree.path)).rejects.toThrow();
+
+  expect(
+    await directSessionReq("sessions.patch", {
+      key,
+      expectedSessionId: sessionId,
+      archived: false,
+    }),
+  ).toMatchObject({ ok: true });
+  await expect(fs.readFile(path.join(worktree.path, "shared-draft.txt"), "utf8")).resolves.toBe(
+    "shared contents\n",
+  );
+  expect(managedWorktrees.listSessionBindings(worktree.id, { activeOnly: true })).toEqual([key]);
+});
+
 test.each([
   ["sessions.patch", true],
   ["sessions.patch", false],

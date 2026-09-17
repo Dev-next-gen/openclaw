@@ -114,12 +114,7 @@ function resolveSessionWorkspace(params: {
     return undefined;
   }
   const worktree = managedWorktrees.findLiveByOwner("session", params.sessionKey);
-  if (
-    params.entry.worktree?.id &&
-    worktree &&
-    worktree.id === params.entry.worktree.id &&
-    worktree.ownerId === params.sessionKey
-  ) {
+  if (params.entry.worktree?.id && worktree && worktree.id === params.entry.worktree.id) {
     return { kind: "local", path: worktree.path };
   }
   const article = params.method === "sessions.dispatch" ? "a" : "the";

@@ -118,7 +118,6 @@ function readPublicationWorktreeOwner(
     !worktree ||
     worktree.id !== entry.worktree.id ||
     worktree.ownerKind !== "session" ||
-    worktree.ownerId !== loaded.canonicalKey ||
     worktree.branch !== entry.worktree.branch ||
     worktree.repoRoot !== entry.worktree.repoRoot
   ) {

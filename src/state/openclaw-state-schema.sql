@@ -1841,6 +1841,17 @@ CREATE INDEX IF NOT EXISTS idx_worktrees_repo_fingerprint
 CREATE INDEX IF NOT EXISTS idx_worktrees_removed_at
   ON worktrees(removed_at);
 
+CREATE TABLE IF NOT EXISTS worktree_session_bindings (
+  worktree_id TEXT NOT NULL,
+  session_key TEXT NOT NULL,
+  active INTEGER NOT NULL CHECK (active IN (0, 1)),
+  attached_at INTEGER NOT NULL,
+  PRIMARY KEY (worktree_id, session_key)
+) STRICT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_session_bindings_active_session
+  ON worktree_session_bindings(session_key) WHERE active = 1;
+
 CREATE TABLE IF NOT EXISTS worktree_provisioned_file_chunks (
   worktree_id TEXT NOT NULL,
   path TEXT NOT NULL,

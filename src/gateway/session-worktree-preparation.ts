@@ -17,7 +17,13 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { resolveProjectRegistry } from "../projects/project-registry.js";
 import { prepareSessionCreateFilesystemRoot } from "./server-methods/session-create-root.js";
+import type { GatewayClient } from "./server-methods/types.js";
 import type { PrepareGatewaySessionLifecycle } from "./session-lifecycle-preparation.js";
+import {
+  authorizeResolvedSessionMutation,
+  resolveSessionSharingTarget,
+  SessionMutationAuthorizationChangedError,
+} from "./session-sharing.js";
 import { loadGatewaySessionEntryReadOnly } from "./session-utils-store.js";
 
 export function validateSessionWorktreeSelection(
@@ -147,6 +153,7 @@ export async function resolveSessionWorktreeBase(
 /** One worktree preparation owner for synchronous creation and admitted first turns. */
 export async function prepareSessionWorktree(params: {
   cfg: OpenClawConfig;
+  client?: GatewayClient | null;
   target: Parameters<PrepareGatewaySessionLifecycle>[0];
   workspace: string | { kind: "empty" };
   name?: string;
@@ -181,10 +188,86 @@ export async function prepareSessionWorktree(params: {
     const repository = workspace
       ? await managedWorktrees.resolveRepositoryPaths(workspace)
       : undefined;
+    const namedWorktree =
+      workspace && params.name
+        ? await managedWorktrees.findByNameForRepository(workspace, params.name)
+        : undefined;
+    const alreadyBound = namedWorktree
+      ? managedWorktrees.isSessionBound(namedWorktree.id, target.key, { activeOnly: true })
+      : false;
+    let attachmentGuard = commitGuard;
+    if (namedWorktree?.ownerKind === "session" && !alreadyBound) {
+      const authoritySessionKeys = managedWorktrees.listSessionBindings(namedWorktree.id);
+      if (authoritySessionKeys.length === 0 && namedWorktree.ownerId) {
+        authoritySessionKeys.push(namedWorktree.ownerId);
+      }
+      const authorities = authoritySessionKeys.map((sessionKey) => ({
+        sessionKey,
+        target: resolveSessionSharingTarget({ cfg: params.cfg, sessionKey }),
+      }));
+      if (
+        authorities.length === 0 ||
+        authorities.some(({ target: resolvedTarget }) => !resolvedTarget)
+      ) {
+        return err(
+          errorShape(
+            ErrorCodes.FORBIDDEN,
+            "The existing worktree is not available to this session.",
+          ),
+        );
+      }
+      for (const authority of authorities) {
+        const authorizationError = authorizeResolvedSessionMutation({
+          cfg: params.cfg,
+          client: params.client ?? null,
+          sessionKey: authority.sessionKey,
+          agentId: authority.target!.agentId,
+        });
+        if (authorizationError) {
+          return err(authorizationError);
+        }
+      }
+      attachmentGuard = () => {
+        commitGuard?.();
+        for (const authority of authorities) {
+          const current = resolveSessionSharingTarget({
+            cfg: params.cfg,
+            sessionKey: authority.sessionKey,
+            agentId: authority.target!.agentId,
+          });
+          const currentError = authorizeResolvedSessionMutation({
+            cfg: params.cfg,
+            client: params.client ?? null,
+            sessionKey: authority.sessionKey,
+            agentId: authority.target!.agentId,
+          });
+          if (
+            !current ||
+            current.entry.sessionId !== authority.target!.entry.sessionId ||
+            current.entry.lifecycleRevision !== authority.target!.entry.lifecycleRevision ||
+            currentError
+          ) {
+            throw new SessionMutationAuthorizationChangedError(
+              currentError ??
+                errorShape(
+                  ErrorCodes.FORBIDDEN,
+                  "Worktree sharing permission changed; retry the request.",
+                ),
+            );
+          }
+        }
+      };
+    }
     commitGuard?.();
     const boundId = normalizeOptionalString(target.entry?.worktree?.id);
     let existing = boundId ? managedWorktrees.findLiveById(boundId) : undefined;
-    if (existing && (existing.ownerKind !== "session" || existing.ownerId !== target.key)) {
+    const existingBindings = existing ? managedWorktrees.listSessionBindings(existing.id) : [];
+    if (
+      existing &&
+      (existing.ownerKind !== "session" ||
+        (!managedWorktrees.isSessionBound(existing.id, target.key, { activeOnly: true }) &&
+          !(existingBindings.length === 0 && existing.ownerId === target.key)))
+    ) {
       return err(
         errorShape(ErrorCodes.UNAVAILABLE, "session worktree binding has a different owner"),
       );
@@ -227,7 +310,7 @@ export async function prepareSessionWorktree(params: {
       name: params.name,
       suggestedName: slugifyWorktreeTitle(params.label ?? ""),
       signal: params.signal,
-      commitGuard,
+      commitGuard: attachmentGuard,
       onProgress: params.onProgress,
     };
     const { record: worktree, materialized } = workspace
@@ -239,15 +322,27 @@ export async function prepareSessionWorktree(params: {
           runSetupScript: params.runSetupScript,
         })
       : await managedWorktrees.createEmptyWithOutcome(createParams);
-    const rollback = materialized
-      ? async () => {
-          await managedWorktrees.remove({
-            id: worktree.id,
-            reason: "session-create-failed",
-            allowSnapshotLoss: true,
-          });
-        }
-      : undefined;
+    const attachedExisting = Boolean(namedWorktree && !alreadyBound);
+    const rollback =
+      materialized || attachedExisting
+        ? async () => {
+            if (attachedExisting) {
+              managedWorktrees.deactivateSession(worktree.id, target.key);
+            }
+            if (
+              materialized &&
+              (!attachedExisting ||
+                managedWorktrees.listSessionBindings(worktree.id, { activeOnly: true }).length ===
+                  0)
+            ) {
+              await managedWorktrees.remove({
+                id: worktree.id,
+                reason: "session-create-failed",
+                allowSnapshotLoss: true,
+              });
+            }
+          }
+        : undefined;
     try {
       commitGuard?.();
       // A nested source workspace keeps its relative cwd inside the new checkout.

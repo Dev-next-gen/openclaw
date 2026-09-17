@@ -150,12 +150,13 @@ describe("shared worktree receipt observation", () => {
         stop();
       }
       const db = openOpenClawStateDatabase().db;
-      db.prepare("UPDATE worktrees SET owner_id = ? WHERE id = ?").run(
-        "retired-owner",
-        "worktree-1",
-      );
+      db.prepare(
+        "UPDATE worktree_session_bindings SET active = 0 WHERE worktree_id = ? AND session_key = ?",
+      ).run("worktree-1", SESSION_KEY);
       expect(coordinator.latestShared(session)).toBeNull();
-      db.prepare("UPDATE worktrees SET owner_id = ? WHERE id = ?").run(SESSION_KEY, "worktree-1");
+      db.prepare(
+        "UPDATE worktree_session_bindings SET active = 1 WHERE worktree_id = ? AND session_key = ?",
+      ).run("worktree-1", SESSION_KEY);
       insertSharedWorktreeReceipt("current", { createdAtMs: 1_000 });
       expect(coordinator.latestShared(session)?.result.requestId).toBe("current");
       expect(
@@ -309,7 +310,9 @@ describe("shared worktree receipt observation", () => {
   it("does not qualify an unavailable workspace until this session has a shared receipt", () => {
     const coordinator = sharedPublicationCoordinator();
     const db = openOpenClawStateDatabase().db;
-    db.prepare("UPDATE worktrees SET owner_id = ? WHERE id = ?").run("other-session", "worktree-1");
+    db.prepare(
+      "UPDATE worktree_session_bindings SET active = 0 WHERE worktree_id = ? AND session_key = ?",
+    ).run("worktree-1", SESSION_KEY);
     expect(coordinator.latestShared(session)).toBeNull();
     expect(coordinator.latestShared(session, "absent")).toBeNull();
     insertSharedWorktreeReceipt("accepted");
@@ -320,9 +323,24 @@ describe("shared worktree receipt observation", () => {
     const coordinator = sharedPublicationCoordinator();
     insertSharedWorktreeReceipt("current");
     openOpenClawStateDatabase()
-      .db.prepare("UPDATE worktrees SET owner_id = ? WHERE id = ?")
-      .run("other-session", "worktree-1");
+      .db.prepare(
+        "UPDATE worktree_session_bindings SET active = 0 WHERE worktree_id = ? AND session_key = ?",
+      )
+      .run("worktree-1", SESSION_KEY);
     expect(() => coordinator.latestShared(session)).toThrow(/owner.*unavailable/);
+  });
+
+  it("keeps publication receipts available when a bound session is not the creator", () => {
+    const coordinator = sharedPublicationCoordinator();
+    publishWorktree(insertSharedWorktreeReceipt("shared-member"));
+    openOpenClawStateDatabase()
+      .db.prepare("UPDATE worktrees SET owner_id = ? WHERE id = ?")
+      .run("creator-session", "worktree-1");
+
+    expect(coordinator.latestShared(session)?.result).toMatchObject({
+      requestId: "shared-member",
+      status: "published",
+    });
   });
   it("searches past a full page of valid stale receipts without choosing one as current", () => {
     const coordinator = sharedPublicationCoordinator();

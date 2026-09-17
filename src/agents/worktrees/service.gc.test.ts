@@ -616,6 +616,27 @@ describe("ManagedWorktreeService garbage collection", () => {
     );
   });
 
+  it("keeps a shared worktree until every active session owner is retired", async () => {
+    const shared = await materializeRunOwnedFixture(
+      "shared-session-owners",
+      "session",
+      "agent:main:dashboard:one",
+    );
+    service.attachSession(shared.id, "agent:main:dashboard:two");
+
+    const partlyRetired = vi.fn(
+      (_kind: string, ownerId: string) => ownerId === "agent:main:dashboard:one",
+    );
+    expect((await service.gc({ shouldRemoveOwner: partlyRetired })).removed).toEqual([]);
+    expect(partlyRetired.mock.calls.map(([, ownerId]) => ownerId)).toEqual([
+      "agent:main:dashboard:one",
+      "agent:main:dashboard:two",
+    ]);
+    expect(getRegistryWorktree(env, shared.id)?.removedAt).toBeUndefined();
+
+    expect((await service.gc({ shouldRemoveOwner: () => true })).removed).toEqual([shared.id]);
+  });
+
   it("checks owner retirement only for live worktrees while retaining fresh snapshots", async () => {
     const removed = await materializeRunOwnedFixture(
       "removed-owner",

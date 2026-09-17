@@ -179,12 +179,7 @@ export function resolveWorkerPlacementSessionTarget<
     "session",
     target.canonicalKey,
   );
-  if (
-    !entry.worktree?.id ||
-    !worktree ||
-    worktree.id !== entry.worktree.id ||
-    worktree.ownerId !== target.canonicalKey
-  ) {
+  if (!entry.worktree?.id || !worktree || worktree.id !== entry.worktree.id) {
     throw targetChangedError();
   }
   return {

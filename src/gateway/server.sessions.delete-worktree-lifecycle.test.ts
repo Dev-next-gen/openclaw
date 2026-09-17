@@ -43,6 +43,31 @@ const { createSessionStoreDir, createArchiveWorktreeFixture, initializeRemoteBac
   setupGatewaySessionsWorktreeTestHarness();
 const execFileAsync = promisify(execFile);
 
+test("deleting one shared-worktree session leaves the checkout attached to its peer", async () => {
+  const { key, worktree } = await createArchiveWorktreeFixture();
+  const record = getRegistryWorktree(process.env, worktree.id);
+  expect(record).toBeDefined();
+  const peer = await directSessionReq<{
+    key: string;
+    worktree: { id: string; path: string };
+  }>(
+    "sessions.create",
+    { agentId: "main", worktree: true, worktreeName: record!.name },
+    { client: { connect: { scopes: ["operator.admin"] } } as never },
+  );
+  expect(peer).toMatchObject({
+    ok: true,
+    payload: { worktree: { id: worktree.id, path: worktree.path } },
+  });
+
+  await expect(directSessionReq("sessions.delete", { key })).resolves.toMatchObject({
+    ok: true,
+    payload: { deleted: true },
+  });
+  await expect(fs.access(worktree.path)).resolves.toBeUndefined();
+  expect(managedWorktrees.listSessionBindings(worktree.id)).toEqual([peer.payload!.key]);
+});
+
 test("worktree fixtures keep committed changes and remote cleanup local to each case", async () => {
   const tempDirs = createTempDirTracker();
   onTestFinished(tempDirs.cleanup);
