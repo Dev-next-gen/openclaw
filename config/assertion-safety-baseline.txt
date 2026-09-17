@@ -2650,7 +2650,7 @@ src/gateway/node-command-policy.ts	2
 src/gateway/node-invoke-system-run-approval.ts	1
 src/gateway/node-pairing-ssh-verify.ts	1
 src/gateway/node-registry-private.ts	1
-src/gateway/node-registry.ts	4
+src/gateway/node-registry.ts	2
 src/gateway/openai-agent-run-usage.ts	1
 src/gateway/openai-http.ts	27
 src/gateway/openresponses-http.ts	3

@@ -19,7 +19,7 @@ export function isSerializedEventPayload(value: unknown): value is SerializedEve
   return (
     typeof value === "object" &&
     value !== null &&
-    (value as { [SERIALIZED_EVENT_PAYLOAD]?: unknown })[SERIALIZED_EVENT_PAYLOAD] === true &&
-    typeof (value as { json?: unknown }).json === "string"
+    Reflect.get(value, SERIALIZED_EVENT_PAYLOAD) === true &&
+    typeof Reflect.get(value, "json") === "string"
   );
 }
