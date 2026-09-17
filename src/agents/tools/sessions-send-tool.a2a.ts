@@ -107,6 +107,7 @@ export async function runSessionsSendA2AFlow(params: {
   roundOneReply?: string;
   waitRunId?: string;
   notifyRequesterOnWaitFailure?: boolean;
+  replyMode?: "peer" | "result";
 }) {
   const runContextId = params.waitRunId ?? "unknown";
   const gatewayCall = params.callGateway ?? callAgentToolGatewayRequest;
@@ -155,6 +156,26 @@ export async function runSessionsSendA2AFlow(params: {
       return;
     }
     if (isNonDeliverableSessionsReply(latestReply)) {
+      return;
+    }
+
+    // Parent/child sends hand the late result back once. Their response belongs
+    // to the existing task, not another peer turn or target-channel announcement.
+    if (params.replyMode === "result") {
+      if (params.requesterSessionKey) {
+        await runAgentStep({
+          agentId: params.requesterAgentId,
+          sessionKey: params.requesterSessionKey,
+          message: latestReply,
+          extraSystemPrompt:
+            "A previous sessions_send has completed. Use this result to continue your existing task. This is a one-way result handoff; no reply-back or announcement is scheduled.",
+          timeoutMs: params.announceTimeoutMs,
+          sourceAgentId: params.targetAgentId,
+          sourceSessionKey: params.targetSessionKey,
+          sourceTool: "sessions_send",
+          callGateway: gatewayCall,
+        });
+      }
       return;
     }
 

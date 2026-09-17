@@ -4,6 +4,24 @@ import { stripSuppressedControlReplyToken } from "./control-reply-text.js";
 import { projectLiveAssistantBufferedText } from "./live-chat-projector.js";
 
 describe("control reply display projection", () => {
+  it.each(["NO_REPLY", "ANNOUNCE_SKIP", "REPLY_SKIP"])(
+    "holds every partial %s after separate control replies without losing ordinary final text",
+    (token) => {
+      for (let length = 1; length < token.length; length += 1) {
+        const prefix = token.slice(0, length);
+        for (const text of [prefix, `${token}\n\n${token}\n\n${prefix}`]) {
+          expect(projectLiveAssistantBufferedText(text).suppress, text).toBe(true);
+        }
+        expect(
+          projectLiveAssistantBufferedText(prefix, { suppressLeadFragments: false }).text,
+        ).toBe(prefix);
+      }
+      expect(projectLiveAssistantBufferedText(`${token}\n\nReady to continue.`).suppress).toBe(
+        false,
+      );
+    },
+  );
+
   it.each(["NO_", "ANNOUNCE_", "REPLY_"])(
     "holds whitespace-padded %s prefixes while streaming",
     (prefix) => {

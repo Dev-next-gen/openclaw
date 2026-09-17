@@ -69,11 +69,7 @@ import {
 } from "../embedded-agent-runner/runs.js";
 import { resolveNestedAgentLaneForSession } from "../lanes.js";
 import { runOutsidePreparedModelRuntimePluginGenerationScope } from "../prepared-model-runtime-generation-scope.js";
-import {
-  type AgentWaitResult,
-  isTerminalAgentWaitTimeout,
-  waitForAgentRunReply,
-} from "../run-wait.js";
+import { isTerminalAgentWaitTimeout, waitForAgentRunReply } from "../run-wait.js";
 import { loadSessionEntryByKey } from "../subagents/announce/subagent-announce-delivery.js";
 import {
   describeSessionsSendTool,
@@ -327,29 +323,18 @@ function isRequesterParentOfNativeSubagentSession(params: {
   requesterSessionKey: string | null | undefined;
   targetSessionKey: string;
 }): boolean {
-  if (!params.entry || params.acpMeta || params.entry.acp) {
-    return false;
-  }
   const requester = normalizeOptionalString(params.requesterSessionKey);
-  if (!requester) {
+  if (!requester || !params.entry || params.acpMeta || params.entry.acp) {
     return false;
   }
   // spawnedBy is written only by the spawn policy, so it identifies a native
   // child regardless of key shape: visible children live under persistent
   // dashboard keys, not subagent keys. parentSessionKey also records ordinary
   // UI threading and forks, so it only counts for subagent-keyed targets.
-  if (requester === normalizeOptionalString(params.entry.spawnedBy)) {
-    return true;
-  }
   return (
-    isSubagentSessionKey(params.targetSessionKey) &&
-    requester === normalizeOptionalString(params.entry.parentSessionKey)
-  );
-}
-
-function isPendingErrorAgentWaitTimeout(result: AgentWaitResult): boolean {
-  return (
-    result.pendingError === true && typeof result.error === "string" && result.error.trim() !== ""
+    requester === normalizeOptionalString(params.entry.spawnedBy) ||
+    (isSubagentSessionKey(params.targetSessionKey) &&
+      requester === normalizeOptionalString(params.entry.parentSessionKey))
   );
 }
 
@@ -1170,22 +1155,9 @@ export function createSessionsSendTool(opts?: {
           }
           const maxPingPongTurns = resolvePingPongTurns();
 
-          // Skip the A2A ping-pong + announce flow when the current caller is the
-          // parent of a parent-owned child session it spawned itself and another
-          // parent-visible result path already exists.
-          //
-          // ACP background sessions report through the internal task completion
-          // path. Waited native subagent sends return the child reply inline. In
-          // both cases treating the child as a peer agent wakes the parent with
-          // the child's reply, can generate another user-facing response, and can
-          // forward that response back to the child as a new message — producing a
-          // ping-pong loop (bounded by maxPingPongTurns, but visible as duplicate
-          // conversation output).
-          //
-          // The skip is gated on requester ownership, not just target type: an
-          // unrelated sender that can see the same target (e.g. under
-          // `tools.sessions.visibility=all`) must still go through the normal A2A
-          // path so it actually receives a follow-up delivery.
+          // Spawn lineage distinguishes coordination from independent peers. ACP
+          // task completion owns its delivery; native sends return inline or hand
+          // off one late result without starting a peer conversation.
           const targetSessionEntry = loadSessionEntryByKey(resolvedKey, targetAgentId);
           const targetAcpMeta = readAcpSessionMeta({
             sessionKey: resolvedKey,
@@ -1200,21 +1172,29 @@ export function createSessionsSendTool(opts?: {
             targetSessionEntryWithAcp,
             effectiveRequesterKey,
           );
-          const skipNativeParentA2AFlow =
-            timeoutSeconds !== 0 &&
+          const nativeParentChild =
             isRequesterParentOfNativeSubagentSession({
               entry: targetSessionEntry,
               acpMeta: targetAcpMeta,
               requesterSessionKey: effectiveRequesterKey,
               targetSessionKey: resolvedKey,
-            });
-          // A scoped grant belongs to one exact session incarnation. Do not create
-          // post-return work or durable watches that could follow a reused key.
+            }) ||
+            (requesterSessionKey !== undefined &&
+              isRequesterParentOfNativeSubagentSession({
+                entry: loadSessionEntryByKey(requesterSessionKey, requesterAgentId),
+                acpMeta: readAcpSessionMeta({
+                  sessionKey: requesterSessionKey,
+                  agentId: requesterAgentId,
+                  cfg,
+                }),
+                requesterSessionKey: resolvedKey,
+                targetSessionKey: requesterSessionKey,
+              }));
+          // Exact-incarnation grants cannot authorize detached work against a reused key.
           const skipDelayedA2AFlow = skipAcpA2AFlow || Boolean(expectedSessionId);
-          // Native-parent suppression only covers a reply that already returned inline.
-          // A send is not a registered spawn run, so when the wait expires before the
-          // child finishes, nothing else delivers the late reply: keep that continuation.
-          const skipA2AFlow = skipDelayedA2AFlow || skipNativeParentA2AFlow;
+          // An ordinary send is not a registered spawn run. Preserve its late result
+          // even when the caller's wait ends; only an inline reply is already delivered.
+          const skipA2AFlow = skipDelayedA2AFlow || (timeoutSeconds !== 0 && nativeParentChild);
           const startA2AFlow = (
             reply?: Awaited<ReturnType<typeof waitForAgentRunReply>>,
             waitRunId?: string,
@@ -1250,6 +1230,9 @@ export function createSessionsSendTool(opts?: {
                         sourceReplyDelivered: reply?.sourceReplyDelivered,
                         waitRunId,
                         notifyRequesterOnWaitFailure,
+                        // Isolated jobs keep target-side announcement, never a requester wake.
+                        replyMode:
+                          nativeParentChild && !isIsolatedCronRequester ? "result" : "peer",
                       }),
                     ),
                   ),
@@ -1334,7 +1317,7 @@ export function createSessionsSendTool(opts?: {
           });
 
           if (result.status === "timeout") {
-            if (isPendingErrorAgentWaitTimeout(result)) {
+            if (result.pendingError === true && result.error?.trim()) {
               startA2AFlow(undefined, runId);
               return jsonResult({
                 runId,

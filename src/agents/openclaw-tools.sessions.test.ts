@@ -1892,17 +1892,36 @@ describe("sessions tools", () => {
   });
 
   it.each([
-    { targetKind: "peer", targetKey: "agent:director1:main", spawned: false },
-    { targetKind: "visible child", targetKey: "agent:director1:dashboard:child", spawned: true },
-    { targetKind: "hidden child", targetKey: "agent:director1:subagent:child", spawned: true },
+    {
+      targetKind: "peer",
+      childKey: "agent:director1:main",
+      spawned: false,
+      childRequester: false,
+      cronRequester: false,
+      timeoutSeconds: 1,
+    },
+    ...["dashboard", "subagent"].flatMap((kind) =>
+      ["parent", "child", "cron"].flatMap((requester) =>
+        [1, 0].map((timeoutSeconds) => ({
+          targetKind: `${kind}, ${requester} requester, timeout=${timeoutSeconds}`,
+          childKey: `agent:director1:${kind}:child`,
+          spawned: true,
+          childRequester: requester === "child",
+          cronRequester: requester === "cron",
+          timeoutSeconds,
+        })),
+      ),
+    ),
   ])(
     "sessions_send delivers the late reply from a $targetKind after the parent root releases",
-    async ({ targetKey, spawned }) => {
+    async ({ childKey, spawned, childRequester, cronRequester, timeoutSeconds }) => {
       const calls: Array<{ method?: string; params?: unknown }> = [];
-      const requesterKey = "agent:main:main";
+      const parentKey = cronRequester ? "agent:main:cron:job:run:once" : "agent:main:main";
+      const requesterKey = childRequester ? childKey : parentKey;
+      const targetKey = childRequester ? parentKey : childKey;
       loadSessionEntryByKeyMock.mockImplementation((sessionKey: string) =>
-        spawned && sessionKey === targetKey
-          ? { sessionId: "child-session", updatedAt: 1, spawnedBy: requesterKey, spawnDepth: 1 }
+        spawned && sessionKey === childKey
+          ? { sessionId: "child-session", updatedAt: 1, spawnedBy: parentKey, spawnDepth: 1 }
           : undefined,
       );
       let targetWaitCount = 0;
@@ -1935,7 +1954,7 @@ describe("sessions tools", () => {
           const params = request.params as { runId?: string } | undefined;
           if (params?.runId === "run-target") {
             targetWaitCount += 1;
-            if (targetWaitCount === 1) {
+            if (timeoutSeconds !== 0 && targetWaitCount === 1) {
               return { runId: "run-target", status: "timeout" };
             }
             await delayedWaitGate;
@@ -1979,7 +1998,7 @@ describe("sessions tools", () => {
         tool.execute("call-delayed", {
           sessionKey: targetKey,
           message: "ping",
-          timeoutSeconds: 1,
+          timeoutSeconds,
         }),
       );
       const details = sessionsSendDetails(result.details);
@@ -1992,38 +2011,35 @@ describe("sessions tools", () => {
       expect(requesterProviderStarts).toBe(0);
       releaseDelayedWait();
 
-      await vi.waitFor(
-        () => {
-          expect(requesterAdmissionClosed).toBe(false);
-        },
-        { timeout: 2_000, interval: 5 },
-      );
-      expect(requesterProviderStarts).toBe(3);
+      await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+      expect(requesterProviderStarts).toBe(cronRequester ? 0 : spawned ? 1 : 3);
+      expect(requesterAdmissionClosed).toBe(cronRequester ? undefined : false);
 
       const requesterReplyCall = calls.find(
         (call) =>
           call.method === "agent" &&
           (call.params as { sessionKey?: string } | undefined)?.sessionKey === requesterKey,
       );
-      const replyParams = requesterReplyCall?.params as
-        | {
-            extraSystemPrompt?: string;
-            inputProvenance?: { sourceSessionKey?: string };
-            message?: string;
-            sessionKey?: string;
-          }
-        | undefined;
-      expect(replyParams?.sessionKey).toBe(requesterKey);
-      expect(replyParams?.inputProvenance?.sourceSessionKey).toBe(targetKey);
-      expect(replyParams?.message).toContain("late director reply");
-      expect(replyParams?.extraSystemPrompt).toContain("Agent-to-agent reply step");
-      expect(replyParams?.extraSystemPrompt).toContain("Current agent: Agent 1 (requester)");
+      if (cronRequester) {
+        expect(requesterReplyCall).toBeUndefined();
+      } else {
+        const replyParams = agentParams(requesterReplyCall ?? {});
+        expect(replyParams.sessionKey).toBe(requesterKey);
+        expect(replyParams.inputProvenance?.sourceSessionKey).toBe(targetKey);
+        expect(replyParams.message).toContain("late director reply");
+        if (spawned) {
+          expect(replyParams.extraSystemPrompt).not.toContain("Agent-to-agent reply step");
+          expect(replyParams.extraSystemPrompt).not.toContain("REPLY_SKIP");
+          expect(calls.filter((call) => call.method === "agent")).toHaveLength(2);
+        } else {
+          expect(replyParams.extraSystemPrompt).toContain("Agent-to-agent reply step");
+          expect(replyParams.extraSystemPrompt).toContain("Current agent: Agent 1 (requester)");
+        }
+      }
       expect(calls.find((call) => call.method === "send")).toBeUndefined();
-      await vi.waitFor(() => {
-        expect(finalAnnounceAdmissionClosed).toBe(false);
-        expect(finalAnnounceProviderStarts).toBe(1);
-        expect(getActiveGatewayRootWorkCount()).toBe(0);
-      });
+      const announces = !spawned || cronRequester;
+      expect(finalAnnounceAdmissionClosed).toBe(announces ? false : undefined);
+      expect(finalAnnounceProviderStarts).toBe(announces ? 1 : 0);
     },
   );
 
@@ -2616,148 +2632,112 @@ describe("sessions tools", () => {
     expect(details.sessionKey).toBe(targetKey);
   });
 
-  it("sessions_send skips duplicate A2A delivery for waited parent-owned native subagents", async () => {
-    const calls: Array<{ method?: string; params?: unknown }> = [];
-    const requesterKey = "agent:main:discord:direct:parent";
-    const targetKey = "agent:main:subagent:child";
-    loadSessionEntryByKeyMock.mockImplementation((sessionKey: string) =>
-      sessionKey === targetKey
-        ? {
-            sessionId: "child-session",
-            updatedAt: 1,
-            spawnedBy: requesterKey,
-            deliveryContext: {
-              channel: "discord",
-              to: "direct:parent",
-            },
-          }
-        : undefined,
-    );
-    callGatewayMock.mockImplementation(async (opts: unknown) => {
-      const request = opts as { method?: string; params?: unknown };
-      calls.push(request);
-      if (request.method === "agent") {
-        return { runId: "run-child", status: "accepted", acceptedAt: 2000 };
-      }
-      if (request.method === "agent.wait") {
-        return {
-          runId: "run-child",
-          status: "ok",
-          terminalReply: { disposition: "visible", text: "child reply" },
-        };
-      }
-      return {};
-    });
+  it.each([
+    { kind: "subagent", childRequester: false, parentKey: "agent:main:discord:direct:parent" },
+    ...["dashboard", "subagent"].flatMap((kind) =>
+      [false, true].map((childRequester) => ({
+        kind,
+        childRequester,
+        parentKey: "agent:main:dashboard:parent-uuid",
+      })),
+    ),
+  ])(
+    "sessions_send returns one inline reply for $kind lineage from $parentKey, child requester=$childRequester",
+    async ({ kind, childRequester, parentKey }) => {
+      const calls: Array<{ method?: string; params?: unknown }> = [];
+      const childKey = `agent:penny:${kind}:child-uuid`;
+      const requesterKey = childRequester ? childKey : parentKey;
+      const targetKey = childRequester ? parentKey : childKey;
+      loadSessionEntryByKeyMock.mockImplementation((sessionKey: string) =>
+        sessionKey === childKey
+          ? {
+              sessionId: "child-session",
+              updatedAt: 1,
+              spawnedBy: parentKey,
+              parentSessionKey: parentKey,
+              spawnDepth: 1,
+            }
+          : undefined,
+      );
+      callGatewayMock.mockImplementation(async (opts: unknown) => {
+        const request = opts as { method?: string; params?: unknown };
+        calls.push(request);
+        if (request.method === "agent") {
+          return { runId: "run-child", status: "accepted", acceptedAt: 2000 };
+        }
+        if (request.method === "agent.wait") {
+          return {
+            runId: "run-child",
+            status: "ok",
+            terminalReply: { disposition: "visible", text: "child reply" },
+          };
+        }
+        return {};
+      });
 
-    const tool = getSessionTool("sessions_send", {
-      agentSessionKey: requesterKey,
-      agentChannel: "discord",
-    });
+      const tool = getSessionTool("sessions_send", {
+        agentSessionKey: requesterKey,
+        agentChannel: "discord",
+      });
 
-    const waited = await tool.execute("call-parent-owned-native-subagent", {
-      sessionKey: targetKey,
-      message: "ping",
-      timeoutSeconds: 1,
-    });
+      const waited = await tool.execute("call-parent-owned-dashboard-child", {
+        sessionKey: targetKey,
+        message: "ping",
+        timeoutSeconds: 1,
+      });
 
-    const waitedDetails = sessionsSendDetails(waited.details);
-    expect(waitedDetails.status).toBe("ok");
-    expect(waitedDetails.reply).toBe("child reply");
-    expect(waitedDetails.delivery?.status).toBe("skipped");
-    expect(waitedDetails.delivery?.mode).toBe("announce");
-    expect(countMatching(calls, (call) => call.method === "agent")).toBe(1);
-    const replyPromptAgentCalls = calls.filter(
-      (call) =>
-        call.method === "agent" &&
-        typeof (call.params as { extraSystemPrompt?: string })?.extraSystemPrompt === "string" &&
-        (call.params as { extraSystemPrompt?: string }).extraSystemPrompt?.includes(
-          "Agent-to-agent reply step",
-        ),
-    );
-    expect(replyPromptAgentCalls).toStrictEqual([]);
-    expect(calls.some((call) => call.method === "send")).toBe(false);
-  });
+      const waitedDetails = sessionsSendDetails(waited.details);
+      expect(waitedDetails.status).toBe("ok");
+      expect(waitedDetails.reply).toBe("child reply");
+      expect(waitedDetails.delivery?.status).toBe("skipped");
+      expect(countMatching(calls, (call) => call.method === "agent")).toBe(1);
+      expect(calls.some((call) => call.method === "send")).toBe(false);
+    },
+  );
 
-  it("sessions_send skips duplicate A2A delivery for waited visible spawn children on dashboard keys", async () => {
-    const calls: Array<{ method?: string; params?: unknown }> = [];
-    const requesterKey = "agent:main:dashboard:parent-uuid";
-    const targetKey = "agent:penny:dashboard:child-uuid";
-    loadSessionEntryByKeyMock.mockImplementation((sessionKey: string) =>
-      sessionKey === targetKey
-        ? {
-            sessionId: "child-session",
-            updatedAt: 1,
-            spawnedBy: requesterKey,
-            parentSessionKey: requesterKey,
-            spawnDepth: 1,
-          }
-        : undefined,
-    );
-    callGatewayMock.mockImplementation(async (opts: unknown) => {
-      const request = opts as { method?: string; params?: unknown };
-      calls.push(request);
-      if (request.method === "agent") {
-        return { runId: "run-child", status: "accepted", acceptedAt: 2000 };
-      }
-      if (request.method === "agent.wait") {
-        return {
-          runId: "run-child",
-          status: "ok",
-          terminalReply: { disposition: "visible", text: "child reply" },
-        };
-      }
-      return {};
-    });
+  it.each(["thread", "unrelated child"])(
+    "sessions_send keeps the A2A flow for a dashboard %s",
+    async (kind) => {
+      const requesterKey = "agent:main:dashboard:parent-uuid";
+      const targetKey = "agent:main:dashboard:thread-uuid";
+      loadSessionEntryByKeyMock.mockImplementation((sessionKey: string) =>
+        sessionKey === targetKey
+          ? {
+              sessionId: "thread-session",
+              updatedAt: 1,
+              ...(kind === "thread"
+                ? { parentSessionKey: requesterKey }
+                : { spawnedBy: "agent:main:dashboard:other-parent" }),
+            }
+          : undefined,
+      );
+      callGatewayMock.mockImplementation(async (opts: unknown) => {
+        const request = opts as { method?: string };
+        if (request.method === "agent") {
+          return { runId: "run-thread", status: "accepted", acceptedAt: 2000 };
+        }
+        if (request.method === "agent.wait") {
+          return {
+            runId: "run-thread",
+            status: "ok",
+            terminalReply: { disposition: "visible", text: "thread reply" },
+          };
+        }
+        return {};
+      });
 
-    const tool = getSessionTool("sessions_send", { agentSessionKey: requesterKey });
+      const tool = getSessionTool("sessions_send", { agentSessionKey: requesterKey });
+      const waited = await tool.execute("call-dashboard-thread", {
+        sessionKey: targetKey,
+        message: "ping",
+        timeoutSeconds: 1,
+      });
 
-    const waited = await tool.execute("call-parent-owned-dashboard-child", {
-      sessionKey: targetKey,
-      message: "ping",
-      timeoutSeconds: 1,
-    });
-
-    const waitedDetails = sessionsSendDetails(waited.details);
-    expect(waitedDetails.status).toBe("ok");
-    expect(waitedDetails.reply).toBe("child reply");
-    expect(waitedDetails.delivery?.status).toBe("skipped");
-    expect(countMatching(calls, (call) => call.method === "agent")).toBe(1);
-  });
-
-  it("sessions_send keeps the A2A flow for dashboard threads that were not spawned by the requester", async () => {
-    const requesterKey = "agent:main:dashboard:parent-uuid";
-    const targetKey = "agent:main:dashboard:thread-uuid";
-    loadSessionEntryByKeyMock.mockImplementation((sessionKey: string) =>
-      sessionKey === targetKey
-        ? { sessionId: "thread-session", updatedAt: 1, parentSessionKey: requesterKey }
-        : undefined,
-    );
-    callGatewayMock.mockImplementation(async (opts: unknown) => {
-      const request = opts as { method?: string };
-      if (request.method === "agent") {
-        return { runId: "run-thread", status: "accepted", acceptedAt: 2000 };
-      }
-      if (request.method === "agent.wait") {
-        return {
-          runId: "run-thread",
-          status: "ok",
-          terminalReply: { disposition: "visible", text: "thread reply" },
-        };
-      }
-      return {};
-    });
-
-    const tool = getSessionTool("sessions_send", { agentSessionKey: requesterKey });
-    const waited = await tool.execute("call-dashboard-thread", {
-      sessionKey: targetKey,
-      message: "ping",
-      timeoutSeconds: 1,
-    });
-
-    const waitedDetails = sessionsSendDetails(waited.details);
-    expect(waitedDetails.reply).toBe("thread reply");
-    expect(waitedDetails.delivery?.status).toBe("pending");
-  });
+      const waitedDetails = sessionsSendDetails(waited.details);
+      expect(waitedDetails.reply).toBe("thread reply");
+      expect(waitedDetails.delivery?.status).toBe("pending");
+    },
+  );
 
   it("sessions_send preserves threadId when announce target is hydrated via sessions.list", async () => {
     const calls: Array<{ method?: string; params?: unknown }> = [];
