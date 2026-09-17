@@ -6,7 +6,10 @@ import {
   deliverSubagentAnnouncement,
   isInternalAnnounceRequesterSession,
 } from "../agents/subagents/announce/subagent-announce-delivery.js";
-import { resolveSubagentCompletionOrigin } from "../agents/subagents/announce/subagent-announce-origin.js";
+import {
+  resolveAnnounceOrigin,
+  resolveSubagentCompletionOrigin,
+} from "../agents/subagents/announce/subagent-announce-origin.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createAgentHarnessTaskRuntimeScope } from "../tasks/agent-harness-task-runtime-scope.js";
@@ -36,16 +39,10 @@ vi.mock("../agents/subagents/announce/subagent-announce-delivery.js", async (imp
   };
 });
 
-vi.mock("../agents/subagents/announce/subagent-announce-origin.js", async (importOriginal) => {
-  const actual =
-    await importOriginal<
-      typeof import("../agents/subagents/announce/subagent-announce-origin.js")
-    >();
-  return {
-    ...actual,
-    resolveSubagentCompletionOrigin: vi.fn(actual.resolveSubagentCompletionOrigin),
-  };
-});
+vi.mock("../agents/subagents/announce/subagent-announce-origin.js", () => ({
+  resolveAnnounceOrigin: vi.fn(() => undefined),
+  resolveSubagentCompletionOrigin: vi.fn(async () => undefined),
+}));
 
 vi.mock("../tasks/detached-task-runtime.js", () => ({
   createRunningTaskRun: vi.fn((params) => ({ taskId: "task-1", ...params })),
@@ -66,6 +63,9 @@ describe("agent-harness-task-runtime", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(listTaskRecords).mockReturnValue([]);
+    vi.mocked(isInternalAnnounceRequesterSession).mockReturnValue(true);
+    vi.mocked(resolveAnnounceOrigin).mockReset();
+    vi.mocked(resolveSubagentCompletionOrigin).mockReset();
   });
 
   function createScope(requesterSessionKey = "agent:main:channel:C123") {
@@ -229,11 +229,13 @@ describe("agent-harness-task-runtime", () => {
     "delivers a generic harness completion with source admission %s",
     async (sourceAdmission) => {
       const gatewayContextResolver = vi.fn();
+      const requesterOrigin = { channel: "discord", to: "channel:C123" };
       const originEntered = createDeferredCore();
       const releaseOrigin = createDeferredCore();
       let admissionAllowed = true;
       if (sourceAdmission === "retired-during-origin") {
         vi.mocked(isInternalAnnounceRequesterSession).mockReturnValueOnce(false);
+        vi.mocked(resolveAnnounceOrigin).mockReturnValueOnce(requesterOrigin);
         vi.mocked(resolveSubagentCompletionOrigin).mockImplementationOnce(
           async ({ requesterOrigin }) => {
             originEntered.resolve();
@@ -259,9 +261,7 @@ describe("agent-harness-task-runtime", () => {
         scope: createAgentHarnessTaskRuntimeScope({
           requesterSessionKey: "agent:main:main",
           gatewayContextResolver,
-          ...(sourceAdmission === "retired-during-origin"
-            ? { requesterOrigin: { channel: "discord", to: "channel:C123" } }
-            : {}),
+          ...(sourceAdmission === "retired-during-origin" ? { requesterOrigin } : {}),
         }),
         childSessionKey: "harness-thread:child",
         childSessionId: "child",
@@ -309,6 +309,96 @@ describe("agent-harness-task-runtime", () => {
       } finally {
         releaseOrigin.resolve();
         await delivery;
+      }
+    },
+  );
+
+  it("rechecks the captured task during an asynchronous announcement", async () => {
+    const task = {
+      taskId: "native-task",
+      runtime: "subagent" as const,
+      taskKind: "example-harness",
+      requesterSessionKey: "agent:main:main",
+      ownerKey: "agent:main:main",
+      scopeKind: "session" as const,
+      runId: "example:child-1",
+      sourceId: "example:child-1",
+      task: "work",
+      status: "succeeded" as "succeeded" | "cancelled",
+      deliveryStatus: "pending" as const,
+      notifyPolicy: "silent" as const,
+      createdAt: 1,
+    };
+    vi.mocked(listTaskRecords).mockReturnValue([task]);
+    vi.mocked(deliverSubagentAnnouncement).mockImplementationOnce(async (params) => {
+      expect(params.isSourceSessionEffectsAllowed?.()).toBe(true);
+      await Promise.resolve();
+      task.status = "cancelled";
+      expect(params.isSourceSessionEffectsAllowed?.()).toBe(false);
+      return { delivered: false, path: "none" };
+    });
+    await expect(
+      deliverAgentHarnessTaskCompletion({
+        scope: createScope("agent:main:main"),
+        childSessionKey: task.runId,
+        childSessionId: "child-1",
+        announceId: "example:parent:child:succeeded",
+        status: "succeeded",
+        result: "result",
+      }),
+    ).resolves.toMatchObject({ delivered: false });
+  });
+
+  it.each(["replace", "remove", "insert", "unchanged"] as const)(
+    "binds completion task before origin lookup: %s",
+    async (change) => {
+      const task = {
+        taskId: "native-task",
+        runtime: "subagent" as const,
+        taskKind: "example-harness",
+        requesterSessionKey: "agent:main:channel:C123",
+        ownerKey: "agent:main:channel:C123",
+        scopeKind: "session" as const,
+        runId: "example:child-1",
+        task: "work",
+        status: "succeeded" as const,
+        deliveryStatus: "pending" as const,
+        notifyPolicy: "silent" as const,
+        createdAt: 1,
+      };
+      const origin = { channel: "discord", to: "channel:C123" };
+      vi.mocked(listTaskRecords).mockReturnValue(change === "insert" ? [] : [task]);
+      vi.mocked(isInternalAnnounceRequesterSession).mockReturnValue(false);
+      vi.mocked(resolveAnnounceOrigin).mockReturnValue(origin);
+      vi.mocked(resolveSubagentCompletionOrigin).mockImplementationOnce(async () => {
+        await Promise.resolve();
+        if (change !== "unchanged") {
+          vi.mocked(listTaskRecords).mockReturnValue(
+            change === "remove" ? [] : [{ ...task, taskId: "replacement-task" }],
+          );
+        }
+        return origin;
+      });
+      if (change === "unchanged") {
+        vi.mocked(deliverSubagentAnnouncement).mockImplementationOnce(async (params) => ({
+          delivered: params.isSourceSessionEffectsAllowed?.() === true,
+          path: "steered",
+        }));
+      }
+      const result = await deliverAgentHarnessTaskCompletion({
+        scope: createScope(),
+        childSessionKey: task.runId,
+        childSessionId: "child-1",
+        announceId: "example:parent:child:succeeded",
+        status: "succeeded",
+        result: "result",
+      });
+      expect(resolveSubagentCompletionOrigin).toHaveBeenCalledOnce();
+      if (change === "unchanged") {
+        expect(result.delivered).toBe(true);
+      } else {
+        expect(result).toMatchObject({ delivered: false, recoveryBlocked: true });
+        expect(deliverSubagentAnnouncement).not.toHaveBeenCalled();
       }
     },
   );

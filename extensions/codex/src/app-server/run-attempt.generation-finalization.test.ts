@@ -187,7 +187,11 @@ describe("Codex finalization generation ownership", () => {
         const nextRun = runCodexAppServerAttempt(nextParams, { bindingStore: baseStore });
         await nextHarness.waitForMethod("turn/start");
         await nextHarness.completeTurn({ threadId: "thread-existing", turnId: "turn-1" });
-        await nextRun;
+        expect(readAttemptTerminal(await nextRun)).toMatchObject({
+          promptError: null,
+          aborted: false,
+          timedOut: false,
+        });
         expect(
           nextHarness.requests.find(({ method }) => method === "turn/start")?.params,
         ).toMatchObject({

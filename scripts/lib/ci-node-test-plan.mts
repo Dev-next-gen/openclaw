@@ -1,5 +1,5 @@
 // Builds CI node/Vitest shard plans from the full suite configuration.
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { matchesGlob, relative } from "node:path";
 import {
   agentVitestProjectOwners,
@@ -140,6 +140,17 @@ type PolicyTestWatch = {
 // this inventory covers the remaining tests that changed targeting cannot
 // discover from imports alone.
 const policyTestWatches = [
+  {
+    testFile: "test/scripts/pr-worktree-provision.test.ts",
+    ownerGlobs: ["scripts/pr-lib/wrapper-components.txt"],
+    watchGlobs: [
+      "scripts/pr",
+      "scripts/pr-lib/**",
+      ...readFileSync(new URL("../pr-lib/wrapper-components.txt", import.meta.url), "utf8")
+        .trim()
+        .split("\n"),
+    ],
+  },
   {
     testFile: "ui/src/components/web-awesome-migration.node.test.ts",
     watchGlobs: ["ui/src/**/*.ts"],
@@ -693,10 +704,10 @@ const COMPACT_PUSH_EXCLUDED_SHARDS = new Set([
   ),
   "core-tooling-isolated",
 ]);
-// Serial or worker-pinned owners exceeded their intended job walls in run
-// 33676780376. Reuse file splitting on Blacksmith without raising worker counts.
 const COMPACT_BLACKSMITH_SPLIT_OWNERS = new Set([
   "agentic-control-plane-agent-chat",
+  "agentic-gateway-core-1",
+  "agentic-gateway-core-2",
   "agentic-gateway-core-3",
   "core-runtime-infra-storage-state",
 ]);
@@ -3465,12 +3476,5 @@ function createCompactNodeTestShardBundles(
     }
   }
 
-  // Preserve packing, rebalancing, check names and timing identities before
-  // requesting the available 16-vCPU class for former 32-vCPU placements.
-  for (const job of compactJobs) {
-    if (job.runner === EXTRA_LARGE_NODE_TEST_RUNNER) {
-      job.runner = CAPACITY_NODE_TEST_RUNNER;
-    }
-  }
   return compactJobs.toSorted((a, b) => a.checkName.localeCompare(b.checkName));
 }

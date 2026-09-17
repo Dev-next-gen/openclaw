@@ -14,6 +14,7 @@ import {
   childTurnCompletedNotification,
   threadRead,
   taskRecord,
+  nativeHistoryOwner,
 } from "./native-subagent-monitor.test-support.js";
 import type { CodexServerNotification } from "./protocol.js";
 
@@ -159,6 +160,7 @@ describe("CodexNativeSubagentMonitor", () => {
     "keeps a recorded $status outcome when its interrupted native thread starts a later assignment (live=$liveFollowup)",
     async ({ status, liveFollowup }) => {
       const client = createClient();
+      const historyOwner = nativeHistoryOwner();
       const task = {
         ...taskRecord({
           childThreadId: "child-thread:turn:turn-previous",
@@ -167,7 +169,7 @@ describe("CodexNativeSubagentMonitor", () => {
         }),
         runId: "codex-thread:child-thread:turn:turn-previous",
         terminalSummary: "recorded result",
-        detail: { nativeTurnId: "turn-previous" },
+        detail: { nativeHistory: historyOwner, nativeTurnId: "turn-previous" },
       };
       const records = new Map<string, AgentHarnessTaskRecord>([[task.runId, task]]);
       const runtime = createRecordedRuntime(records);
@@ -188,6 +190,7 @@ describe("CodexNativeSubagentMonitor", () => {
       onTestFinished(() => monitor.dispose());
       const owner = monitor.registerParent({
         parentThreadId: "parent-thread",
+        historyOwner,
         requesterSessionKey: task.requesterSessionKey,
         taskRuntimeScope: createTaskScope(),
         claimDirectChild,
@@ -233,7 +236,7 @@ describe("CodexNativeSubagentMonitor", () => {
         expect(records.get(task.runId)).toEqual(first);
         expect(records.get("codex-thread:child-thread:turn:turn-1")).toMatchObject({
           status: "running",
-          detail: { nativeTurnId: "turn-1" },
+          detail: { nativeHistory: historyOwner, nativeTurnId: "turn-1" },
         });
         expect(claimDirectChild).toHaveBeenCalledOnce();
         await client.notify(

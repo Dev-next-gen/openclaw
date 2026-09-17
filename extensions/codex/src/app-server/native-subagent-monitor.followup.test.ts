@@ -13,6 +13,7 @@ import {
   createRecordedRuntime,
   createTaskScope,
   registerParent,
+  nativeHistoryOwner,
   notifyChildStarted,
   nativeCompletionNotification,
   deliveredNativeCompletion,
@@ -529,7 +530,9 @@ describe("CodexNativeSubagentMonitor", () => {
   it("recovers a follow-up's exact turn without borrowing a newer result", async () => {
     const client = createClient();
     const runtime = createRuntime();
+    const historyOwner = nativeHistoryOwner();
     const task = taskRecord({
+      historyOwner,
       childThreadId: "child-thread:turn:turn-previous",
       status: "succeeded",
       deliveryStatus: "pending",
@@ -541,7 +544,7 @@ describe("CodexNativeSubagentMonitor", () => {
     );
     const monitor = new CodexNativeSubagentMonitor(client as never, runtime);
     onTestFinished(() => monitor.dispose());
-    const parent = registerParent(monitor);
+    const parent = registerParent(monitor, undefined, undefined, historyOwner);
     await vi.waitFor(() =>
       expect(runtime.finalizeTaskRunByRunId).toHaveBeenCalledWith(
         expect.objectContaining({ runId: task.runId, terminalSummary: "requested result" }),
@@ -560,15 +563,19 @@ describe("CodexNativeSubagentMonitor", () => {
     async (locator) => {
       const client = createClient();
       const runtime = createRuntime();
+      const historyOwner = nativeHistoryOwner();
       const result = locator ? "original\n  result" : "original result";
       const task = {
         ...taskRecord({
+          historyOwner,
           childThreadId: "child-thread",
           status: "succeeded",
           deliveryStatus: "pending",
         }),
         terminalSummary: "original result",
-        ...(locator ? { detail: { nativeTurnId: "turn-previous" } } : {}),
+        ...(locator
+          ? { detail: { nativeHistory: historyOwner, nativeTurnId: "turn-previous" } }
+          : {}),
       } satisfies AgentHarnessTaskRecord;
       runtime.listTaskRecords.mockReturnValue([task]);
       client.setThreadRead(
@@ -577,7 +584,7 @@ describe("CodexNativeSubagentMonitor", () => {
       );
       const monitor = new CodexNativeSubagentMonitor(client as never, runtime);
       onTestFinished(() => monitor.dispose());
-      await registerParent(monitor).unregister();
+      await registerParent(monitor, undefined, undefined, historyOwner).unregister();
       await vi.waitFor(() =>
         expect(runtime.deliverAgentHarnessTaskCompletion).toHaveBeenCalledExactlyOnceWith(
           expect.objectContaining({ result }),
@@ -597,12 +604,14 @@ describe("CodexNativeSubagentMonitor", () => {
     async ({ active, savedTurnId, initial }) => {
       const client = createClient();
       const runtime = createRuntime();
+      const historyOwner = nativeHistoryOwner();
       const task = {
         ...taskRecord({
+          historyOwner,
           childThreadId: initial ? "child-thread" : "child-thread:turn:turn-previous",
           status: "running",
         }),
-        detail: { nativeTurnId: savedTurnId },
+        detail: { nativeHistory: historyOwner, nativeTurnId: savedTurnId },
       };
       runtime.listTaskRecords.mockReturnValue([task]);
       const history = threadRead({
@@ -620,7 +629,7 @@ describe("CodexNativeSubagentMonitor", () => {
       const retainClient = vi.fn(() => () => undefined);
       const monitor = new CodexNativeSubagentMonitor(client as never, runtime, { retainClient });
       onTestFinished(() => monitor.dispose());
-      await registerParent(monitor).unregister();
+      await registerParent(monitor, undefined, undefined, historyOwner).unregister();
       if (active) {
         await vi.waitFor(() => expect(retainClient).toHaveBeenCalled());
         const completed = threadRead({ previousResult: "interrupted", result: "resumed result" });

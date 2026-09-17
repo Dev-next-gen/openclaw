@@ -15,6 +15,7 @@ import {
   childTurnCompletedNotification,
   threadRead,
   taskRecord,
+  nativeHistoryOwner,
 } from "./native-subagent-monitor.test-support.js";
 import { isJsonObject } from "./protocol.js";
 
@@ -141,6 +142,7 @@ describe("CodexNativeSubagentMonitor", () => {
           ...(savedTurn ? { nativeTurnId: "turn-a" } : {}),
         },
       };
+      const originalSnapshot = structuredClone(original);
       const records = new Map<string, AgentHarnessTaskRecord>([[original.runId, original]]);
       const runtime = createRecordedRuntime(records);
       const releaseClaim = vi.fn();
@@ -179,8 +181,11 @@ describe("CodexNativeSubagentMonitor", () => {
           },
         });
       }
-      if ((legacy || !savedTurn) && !metadataFirst) {
+      if (legacy || (!savedTurn && !metadataFirst)) {
         await vi.waitFor(() => expect(client.request).toHaveBeenCalled());
+        if (metadataFirst) {
+          client.setThreadReadFactory("child-thread", () => readGate);
+        }
       } else {
         await vi.waitFor(() => expect(retained).toHaveBeenCalled());
         client.setThreadReadFactory("child-thread", () => readGate);
@@ -282,6 +287,18 @@ describe("CodexNativeSubagentMonitor", () => {
         client.setThreadRead("child-thread", history);
         releaseRead(history);
         await recovery;
+        if (legacy) {
+          await (unregisterPromise ?? owner.unregister());
+          expect(records.size).toBe(1);
+          expect(records.get(original.runId)).toEqual(originalSnapshot);
+          expect(runtime.createRunningTaskRun).not.toHaveBeenCalled();
+          expect(runtime.finalizeTaskRunByRunId).not.toHaveBeenCalled();
+          expect(runtime.setDetachedTaskDeliveryStatusByRunId).not.toHaveBeenCalled();
+          expect(runtime.deliverAgentHarnessTaskCompletion).not.toHaveBeenCalled();
+          expect(claimDirectChild).not.toHaveBeenCalled();
+          expect(replacementClaim).not.toHaveBeenCalled();
+          return;
+        }
         if (!savedTurn && !observedPredecessorEnd) {
           await vi.waitFor(() =>
             expect(
@@ -413,6 +430,7 @@ describe("CodexNativeSubagentMonitor", () => {
         detail: { ...(legacy ? {} : { nativeHistory }), nativeTurnId: "turn-previous" },
         ...(status === "running" ? {} : { terminalSummary: "recorded result" }),
       };
+      const originalSnapshot = structuredClone(original);
       const records = new Map<string, AgentHarnessTaskRecord>([[original.runId, original]]);
       const runtime = createRecordedRuntime(records);
       let releaseRead!: (value: CodexThreadReadResponse) => void;
@@ -474,6 +492,17 @@ describe("CodexNativeSubagentMonitor", () => {
         }
         client.setThreadRead("child-thread", history);
         releaseRead(history);
+        if (legacy) {
+          await (unregisterPromise ?? owner.unregister());
+          expect(records.size).toBe(1);
+          expect(records.get(original.runId)).toEqual(originalSnapshot);
+          expect(runtime.createRunningTaskRun).not.toHaveBeenCalled();
+          expect(runtime.finalizeTaskRunByRunId).not.toHaveBeenCalled();
+          expect(runtime.setDetachedTaskDeliveryStatusByRunId).not.toHaveBeenCalled();
+          expect(runtime.deliverAgentHarnessTaskCompletion).not.toHaveBeenCalled();
+          expect(claimDirectChild).not.toHaveBeenCalled();
+          return;
+        }
         const resumed = status === "running" && previousEnd === "interrupted";
         if (resumed) {
           await vi.waitFor(() =>
@@ -648,6 +677,7 @@ describe("CodexNativeSubagentMonitor", () => {
 
   it("requires active native evidence before claiming a restored saved turn", async () => {
     const client = createClient();
+    const historyOwner = nativeHistoryOwner();
     const metadata = threadRead();
     metadata.thread.turns = [];
     client.setThreadRead("child-thread", metadata);
@@ -655,7 +685,7 @@ describe("CodexNativeSubagentMonitor", () => {
     runtime.listTaskRecords.mockReturnValue([
       {
         ...taskRecord({ childThreadId: "child-thread:turn:turn-1" }),
-        detail: { nativeTurnId: "turn-1" },
+        detail: { nativeHistory: historyOwner, nativeTurnId: "turn-1" },
       },
     ]);
     const retained = vi.fn(() => () => undefined);
@@ -669,6 +699,7 @@ describe("CodexNativeSubagentMonitor", () => {
       parentThreadId: "parent-thread",
       requesterSessionKey: "agent:main:discord:channel:C123",
       taskRuntimeScope: createTaskScope(),
+      historyOwner,
       claimDirectChild,
     });
     owner.bindTurn("parent-turn");

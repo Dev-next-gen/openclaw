@@ -140,6 +140,8 @@ describe("plugin compatibility registry", () => {
         "api.runtime.state.openSyncKeyedStore",
         "PluginStateSyncKeyedStore",
         "createPluginStateSyncKeyedStore",
+        "PluginStateKeyedStore.update",
+        "PluginStateKeyedStore.deleteIf",
       ],
     });
     expect(records.get("plugin-state-sync-keyed-store")?.removeAfter).toBeUndefined();

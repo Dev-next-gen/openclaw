@@ -134,7 +134,6 @@ const PRIVATE_QA_TOOLING_TEST = "test/e2e/qa-lab/runtime/gateway-codex-delivery-
 const DEFAULT_NODE_TEST_RUNNER = "blacksmith-8vcpu-ubuntu-2404";
 const BUNDLED_NODE_TEST_RUNNER = "blacksmith-4vcpu-ubuntu-2404";
 const EXTRA_LARGE_NODE_TEST_RUNNER = "blacksmith-32vcpu-ubuntu-2404";
-const CAPACITY_NODE_TEST_RUNNER = "blacksmith-16vcpu-ubuntu-2404";
 function isNumberedToolingGroup(group: { shard_name: string }) {
   return /^core-tooling-\d+(?:-hosted-\d+)?$/u.test(group.shard_name);
 }
@@ -548,6 +547,30 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     ]);
   });
 
+  it("selects provisioning for extracted sources without replacing their test owners", () => {
+    const provision = "test/scripts/pr-worktree-provision.test.ts";
+    const manifest = "scripts/pr-lib/wrapper-components.txt";
+    for (const changedPath of [
+      "scripts/pr",
+      "scripts/pr-lib/worktree.sh",
+      "src/plugins/discovery.ts",
+      "src/plugins/discovery-availability.ts",
+    ]) {
+      expect(resolvePolicyTestTargets([changedPath]), changedPath).toContain(provision);
+      expect(isPolicyTestOwnedPath(changedPath), changedPath).toBe(false);
+    }
+    expect(resolvePolicyTestTargets(["src/plugins/unrelated-new-plugin.ts"])).not.toContain(
+      provision,
+    );
+    expect(isPolicyTestOwnedPath(manifest)).toBe(true);
+    const shards = expectDefined(createChangedNodeTestShards([manifest]), "manifest test plan");
+    const owners = shards
+      .flatMap((shard) => shard.groups ?? [])
+      .filter((group) => group.includePatterns?.includes(provision));
+    expect(owners).toHaveLength(1);
+    expect(owners[0]?.configs).toEqual(["test/vitest/vitest.tooling.config.ts"]);
+  });
+
   it("matches policy owners only for exact changed paths", () => {
     const changedPath = "ui/src/styles/base.css";
     expect(isPolicyTestOwnedPath(changedPath)).toBe(true);
@@ -773,7 +796,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         );
         expect(packed[0]?.planConcurrency).toBe(profile === "github" ? 1 : 2);
         expect(packed[0]?.runner).toBe(
-          profile === "github" ? base[0]?.runner : CAPACITY_NODE_TEST_RUNNER,
+          profile === "github" ? base[0]?.runner : EXTRA_LARGE_NODE_TEST_RUNNER,
         );
         expect(packed[0]?.predictedSeconds).toBe(profile === "hybrid" ? 296 : groupSeconds * 2);
       } finally {
@@ -791,7 +814,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         expect(shard).toMatchObject({
           planConcurrency: 2,
           requiresDist: false,
-          runner: CAPACITY_NODE_TEST_RUNNER,
+          runner: EXTRA_LARGE_NODE_TEST_RUNNER,
         });
         expect(shard.pretestBuildMode).toBeUndefined();
         expect(shard.predictedSeconds).toBeLessThanOrEqual(360);
@@ -1339,7 +1362,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             checkName: "checks-node-compact-large32-1",
             shardName: "compact-large32-1",
             groups: supportGroups,
-            runner: CAPACITY_NODE_TEST_RUNNER,
+            runner: EXTRA_LARGE_NODE_TEST_RUNNER,
             planConcurrency: 1,
             timeoutMinutes: 120,
           });
@@ -1348,7 +1371,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             true,
           );
           if (profile.name === "GitHub-hosted") {
-            expect(plan.some((shard) => shard.runner === CAPACITY_NODE_TEST_RUNNER)).toBe(false);
+            expect(plan.some((shard) => shard.runner === EXTRA_LARGE_NODE_TEST_RUNNER)).toBe(false);
             expect(plan.every((shard) => shard.planConcurrency === 1)).toBe(true);
           }
         }
@@ -1523,7 +1546,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       }
       if (shard.planConcurrency === 2) {
         expect(githubPullRequestCompact).not.toContain(shard);
-        expect(shard.runner).toBe(CAPACITY_NODE_TEST_RUNNER);
+        expect(shard.runner).toBe(EXTRA_LARGE_NODE_TEST_RUNNER);
         expect(shard.groups.length).toBeGreaterThan(1);
         expect(shard.pretestBuildMode).toBeUndefined();
         expect(shard.requiresDist).toBe(false);
@@ -1541,7 +1564,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           originalHybridJob
             ? originalHybridJob.runner
             : blacksmithTooling || shard.groups[0]?.runner === EXTRA_LARGE_NODE_TEST_RUNNER
-              ? CAPACITY_NODE_TEST_RUNNER
+              ? EXTRA_LARGE_NODE_TEST_RUNNER
               : nativeFullCli
                 ? "blacksmith-16vcpu-ubuntu-2404"
                 : shard.groups[0]?.runner,
@@ -1765,7 +1788,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       shard.groups.some((group) => group.shard_name === "agentic-control-plane-startup-core"),
     );
     expect(startupCoreJob?.runner).toBe(
-      startupCoreJob?.planConcurrency === 2 ? CAPACITY_NODE_TEST_RUNNER : DEFAULT_NODE_TEST_RUNNER,
+      startupCoreJob?.planConcurrency === 2
+        ? EXTRA_LARGE_NODE_TEST_RUNNER
+        : DEFAULT_NODE_TEST_RUNNER,
     );
     expect(
       startupCoreJob?.groups.find(
@@ -1804,7 +1829,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         shard.groups.every((group) => group.runner === BUNDLED_NODE_TEST_RUNNER),
       ),
     ).toBe(true);
-    expect(extraLargeJobs[0]?.runner).toBe(CAPACITY_NODE_TEST_RUNNER);
+    expect(extraLargeJobs[0]?.runner).toBe(EXTRA_LARGE_NODE_TEST_RUNNER);
     for (const shard of [
       ...compact,
       ...pullRequestCompact,
@@ -2021,6 +2046,8 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "src/commands/doctor-session-sqlite.codex-binding.test.ts",
       "src/commands/doctor-session-sqlite.deferred-plugin.test.ts",
       "src/commands/doctor-session-sqlite.discovery.test.ts",
+      "src/commands/doctor-session-sqlite.retained-source-verification.test.ts",
+      "src/commands/doctor-session-sqlite.shared-orphan.test.ts",
       "src/commands/doctor-session-sqlite.shared-store.test.ts",
       "src/commands/doctor-session-state-providers.test.ts",
       "src/commands/doctor-session-transcript-headers.test.ts",
@@ -2028,6 +2055,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "src/commands/doctor-session-transcripts.incident.test.ts",
       "src/commands/doctor-session-transcripts.sqlite.test.ts",
       "src/commands/doctor-session-transcripts.test.ts",
+      "src/commands/doctor-session-worktree-workspace.test.ts",
     ]);
     const commandFiles = commandShards.flatMap((shard) => shard.includePatterns ?? []).toSorted();
     expect(commandFiles).toEqual(listMatchedTestFiles(createCommandsVitestConfig({})));
@@ -2350,7 +2378,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       // This fixture runs the real full-build guard, which needs more than the
       // available heap observed inside a small runner's retained tooling graph.
       expect(owner?.runner, runnerBackend).toBe(
-        runnerBackend === "blacksmith" ? CAPACITY_NODE_TEST_RUNNER : DEFAULT_NODE_TEST_RUNNER,
+        runnerBackend === "blacksmith" ? EXTRA_LARGE_NODE_TEST_RUNNER : DEFAULT_NODE_TEST_RUNNER,
       );
       const precise = createSelectedNodeTestShardBundles([compilerFixture], { runnerBackend });
       const preciseOwner = precise?.find((job) =>
@@ -3425,6 +3453,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         configs: ["test/vitest/vitest.agents-core.config.ts"],
         includePatterns: agentShards[7]?.includePatterns,
         requiresDist: false,
+        pretestBuildMode: "runtime",
         runner: DEFAULT_NODE_TEST_RUNNER,
         shardName: "agentic-agents-core-runner-commands",
       },
@@ -4051,7 +4080,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             (shard.planConcurrency === 1 ||
               (runnerBackend !== "github" &&
                 shard.planConcurrency === 2 &&
-                shard.runner === CAPACITY_NODE_TEST_RUNNER)),
+                shard.runner === EXTRA_LARGE_NODE_TEST_RUNNER)),
         ),
       ).toBe(true);
       expect(after.length).toBeLessThanOrEqual(80);

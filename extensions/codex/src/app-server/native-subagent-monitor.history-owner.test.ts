@@ -19,13 +19,19 @@ const original: CodexNativeSubagentHistoryOwner = {
 };
 const current = { ...original, parentThreadId: "current-parent" };
 const unstampedLifecycle = { ...original, lifecycleRevision: undefined };
-const cases = [
+const cases: Array<{
+  name: string;
+  stored: CodexNativeSubagentHistoryOwner | undefined;
+  current: CodexNativeSubagentHistoryOwner | undefined;
+  allow: boolean;
+  terminal?: boolean;
+}> = [
   { name: "native parent rotation", stored: original, current, allow: true },
   {
-    name: "physical adoption within explicit lifecycle",
+    name: "physical replacement within explicit lifecycle",
     stored: original,
     current: { ...current, sessionId: "adopted-session" },
-    allow: true,
+    allow: false,
   },
   {
     name: "in-place reset preserving session id",
@@ -55,7 +61,7 @@ const cases = [
     name: "unstamped task under unchanged native parent",
     stored: undefined,
     current: original,
-    allow: true,
+    allow: false,
   },
   { name: "unstamped task after native parent rotation", stored: undefined, current, allow: false },
   {
@@ -64,15 +70,38 @@ const cases = [
     current: undefined,
     allow: false,
   },
-] satisfies Array<{
-  name: string;
-  stored: CodexNativeSubagentHistoryOwner | undefined;
-  current: CodexNativeSubagentHistoryOwner | undefined;
-  allow: boolean;
-}>;
+  {
+    name: "unstamped task without current history authority",
+    stored: undefined,
+    current: undefined,
+    allow: false,
+  },
+  {
+    name: "pending terminal completion after native parent rotation",
+    stored: original,
+    current,
+    allow: true,
+    terminal: true,
+  },
+  {
+    name: "pending terminal completion after physical replacement",
+    stored: original,
+    current: { ...current, sessionId: "adopted-session" },
+    allow: false,
+    terminal: true,
+  },
+  {
+    name: "unstamped pending terminal completion under unchanged native parent",
+    stored: undefined,
+    current: original,
+    allow: false,
+    terminal: true,
+  },
+];
 
 describe("automatic native task history ownership", () => {
-  it.each(cases)("scopes recovery for $name", async ({ name, stored, current: owner, allow }) => {
+  it.each(cases)("scopes recovery for $name", async (scenario) => {
+    const { name, stored, current: owner, allow, terminal } = scenario;
     await withStateDirEnv("codex-history-owner-", async ({ stateDir }) => {
       const requesterSessionKey = "agent:main:history-owner";
       const host = await createAdmittedHostCapabilityTestFixture({
@@ -92,7 +121,7 @@ describe("automatic native task history ownership", () => {
         runIdPrefix: "codex-thread:",
       });
       const runId = "codex-thread:history-child";
-      const originalTask = tasks.createRunningTaskRun({
+      let originalTask = tasks.createRunningTaskRun({
         runId,
         sourceId: runId,
         task: "recover the original native result",
@@ -100,6 +129,16 @@ describe("automatic native task history ownership", () => {
         deliveryStatus: "not_applicable",
         detail: { nativeTurnId: "original-turn", ...(stored ? { nativeHistory: stored } : {}) },
       });
+      if (terminal) {
+        tasks.finalizeTaskRunByRunId({
+          runId,
+          status: "succeeded",
+          endedAt: Date.now(),
+          terminalSummary: "original native result",
+        });
+        tasks.setDetachedTaskDeliveryStatusByRunId({ runId, deliveryStatus: "pending" });
+        originalTask = tasks.listTaskRecords()[0]!;
+      }
       const fixture = createFakeCodexAppServerClient(async (method) => {
         if (method !== "thread/read") {
           throw new Error(`Unexpected native request: ${method}`);

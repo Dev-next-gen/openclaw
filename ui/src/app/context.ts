@@ -99,6 +99,7 @@ export type ApplicationChatAttachmentHandoff = {
     mentions?: readonly HumanMention[];
     newSessionDraft?: NewSessionDraftHandoff;
   } | null;
+  retainedAttachmentIds(attachments: readonly ChatAttachment[]): ReadonlySet<string>;
   retireScope(scopeKey: string, beforeRevision: number): void;
   clearPane(paneId: string): void;
   dispose(): void;
@@ -108,7 +109,10 @@ export type ApplicationContext<TRouteId extends string = string> = {
   readonly basePath: string;
   readonly resourceBasePath: string;
   readonly lifecycleAbortSignal?: AbortSignal;
-  readonly router: Pick<Router<RouteId, unknown, unknown, unknown>, "getState" | "subscribe">;
+  readonly router: Pick<
+    Router<RouteId, ApplicationContext<RouteId>, unknown, unknown>,
+    "getState" | "subscribe" | "navigate"
+  >;
   readonly gateway: ApplicationGateway;
   /** App-owned queue for automatic Gateway reconnect bootstrap work. */
   readonly connectionBootstrap: ConnectionBootstrapCoordinator;

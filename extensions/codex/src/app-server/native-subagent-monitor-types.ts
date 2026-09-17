@@ -101,6 +101,8 @@ export type ChildState = NativeSubagentAssignment & {
   pendingCompletion?: RecoveredCompletion;
   completionTaskPhase?: "finalize" | "delivery";
   completionTaskId?: string;
+  // Cold reconstruction requires its saved requester, not a later live registration.
+  requiresHistoryOwner?: true;
   subscriptionClosed?: true;
   nativeCompletionDelivered: boolean;
   completionDeliveryAttempt: number;
@@ -160,6 +162,7 @@ export type ThreadStatusRevision = {
 };
 
 export type TaskRecoveryCandidate = NativeSubagentAssignment & {
+  readonly taskId: string;
   terminal: boolean;
   observedTurns: NativeTurnObservation[];
   deliveryReceipts: CodexNativeSubagentDeliveryReceipts;

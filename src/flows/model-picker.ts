@@ -174,7 +174,7 @@ async function resolvePickerLogicalCatalog(params: {
   catalog: ModelCatalogEntry[];
   routeVariants: readonly ModelCatalogEntry[];
   defaultProvider: string;
-  defaultModel?: string;
+  defaultModel?: ReturnType<typeof resolveConfiguredModelRef>;
   agentId?: string;
   workspaceDir?: string;
   view?: "default" | "configured" | "all";
@@ -934,7 +934,7 @@ export async function promptDefaultModel(
     catalog,
     routeVariants: catalogSnapshot.routeVariants,
     defaultProvider: DEFAULT_PROVIDER,
-    defaultModel: resolved.model,
+    defaultModel: resolved,
     ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
     ...(ignoreAllowlist ? { view: "all" as const } : {}),
     hasAuth,
@@ -1264,7 +1264,7 @@ export async function promptModelAllowlist(params: {
     catalog,
     routeVariants: catalogSnapshot.routeVariants,
     defaultProvider: DEFAULT_PROVIDER,
-    defaultModel: resolved.model,
+    defaultModel: resolved,
     ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
     view: "all",
     hasAuth,

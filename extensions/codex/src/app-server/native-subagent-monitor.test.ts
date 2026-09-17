@@ -32,6 +32,7 @@ import {
   notifyChildStarted,
   registerDetachedChild,
   nativeCompletionNotification,
+  nativeHistoryOwner,
   closeAgentNotification,
   childTurnCompletedNotification,
   threadRead,
@@ -2434,7 +2435,9 @@ describe("CodexNativeSubagentMonitor", () => {
           }),
         );
         const runtime = createRuntime();
+        const historyOwner = nativeHistoryOwner();
         const task = taskRecord({
+          historyOwner,
           childThreadId: "child-thread",
           status,
           deliveryStatus: "pending",
@@ -2450,7 +2453,7 @@ describe("CodexNativeSubagentMonitor", () => {
           recoveryPollDelaysMs: [],
           completionDeliveryRetryDelaysMs: [10],
         });
-        const parent = registerParent(monitor);
+        const parent = registerParent(monitor, undefined, undefined, historyOwner);
         await vi.advanceTimersByTimeAsync(0);
         expect(runtime.finalizeTaskRunByRunId).toHaveBeenCalledTimes(1);
         expect(task.deliveryStatus).toBe("pending");
@@ -2789,12 +2792,17 @@ describe("CodexNativeSubagentMonitor", () => {
       threadRead({ childThreadId: "foreign-child", result: "foreign result" }),
     );
     const runtime = createRuntime();
+    const historyOwner = nativeHistoryOwner();
     runtime.listTaskRecords.mockReturnValue([
-      taskRecord({ childThreadId: "owned-child", status: "queued" }),
-      taskRecord({ childThreadId: "foreign-child", requesterSessionKey: "agent:main:other" }),
+      taskRecord({ historyOwner, childThreadId: "owned-child", status: "queued" }),
+      taskRecord({
+        historyOwner,
+        childThreadId: "foreign-child",
+        requesterSessionKey: "agent:main:other",
+      }),
     ]);
     const monitor = new CodexNativeSubagentMonitor(client as never, runtime);
-    const parent = registerParent(monitor);
+    const parent = registerParent(monitor, undefined, undefined, historyOwner);
     await vi.waitFor(() => expect(runtime.finalizeTaskRunByRunId).toHaveBeenCalledTimes(1));
     await parent.unregister();
     await vi.waitFor(() =>
@@ -2825,12 +2833,21 @@ describe("CodexNativeSubagentMonitor", () => {
     );
     const runtime = createRuntime();
     runtime.listTaskRecords.mockReturnValue([
-      taskRecord({ childThreadId: "child-a", requesterSessionKey: "requester-a" }),
-      taskRecord({ childThreadId: "child-b", requesterSessionKey: "requester-b" }),
+      taskRecord({
+        childThreadId: "child-a",
+        requesterSessionKey: "requester-a",
+        historyOwner: nativeHistoryOwner("parent-a"),
+      }),
+      taskRecord({
+        childThreadId: "child-b",
+        requesterSessionKey: "requester-b",
+        historyOwner: nativeHistoryOwner("parent-b"),
+      }),
     ]);
     const monitor = new CodexNativeSubagentMonitor(client as never, runtime);
     monitor.registerParent({
       parentThreadId: "parent-a",
+      historyOwner: nativeHistoryOwner("parent-a"),
       requesterSessionKey: "requester-a",
       taskRuntimeScope: createTaskScope("requester-a"),
       agentId: "main",
@@ -2848,17 +2865,18 @@ describe("CodexNativeSubagentMonitor", () => {
 
   it("retains a queued legacy child's follow-up while another child is restoring", async () => {
     const client = createClient();
+    const historyOwner = nativeHistoryOwner();
     const first = {
       ...taskRecord({ childThreadId: "child-thread" }),
       runId: "codex-thread:child-thread",
       createdAt: 1,
-      detail: { nativeTurnId: "turn-previous" },
+      detail: { nativeHistory: historyOwner, nativeTurnId: "turn-previous" },
     };
     const slow = {
       ...taskRecord({ childThreadId: "slow-child" }),
       runId: "codex-thread:slow-child",
       createdAt: 2,
-      detail: { nativeTurnId: "slow-turn" },
+      detail: { nativeHistory: historyOwner, nativeTurnId: "slow-turn" },
     };
     const records = new Map<string, AgentHarnessTaskRecord>([
       [first.runId, first],
@@ -2885,6 +2903,7 @@ describe("CodexNativeSubagentMonitor", () => {
     onTestFinished(() => monitor.dispose());
     const owner = monitor.registerParent({
       parentThreadId: "parent-thread",
+      historyOwner,
       requesterSessionKey: first.requesterSessionKey,
       taskRuntimeScope: createTaskScope(),
       claimDirectChild,
@@ -2931,13 +2950,13 @@ describe("CodexNativeSubagentMonitor", () => {
       await vi.waitFor(() =>
         expect(records.get(followupRunId)).toMatchObject({
           status: "running",
-          detail: { nativeTurnId: "turn-1" },
+          detail: { nativeHistory: historyOwner, nativeTurnId: "turn-1" },
         }),
       );
       expect(records.get(first.runId)).toMatchObject({
         status: "succeeded",
         terminalSummary: "first result",
-        detail: { nativeTurnId: "turn-previous" },
+        detail: { nativeHistory: historyOwner, nativeTurnId: "turn-previous" },
       });
       expect(claimDirectChild).toHaveBeenCalledOnce();
       await client.notify(
@@ -2972,10 +2991,13 @@ describe("CodexNativeSubagentMonitor", () => {
       return threadRead({ result: "single result" });
     });
     const runtime = createRuntime();
-    runtime.listTaskRecords.mockReturnValue([taskRecord({ childThreadId: "child-thread" })]);
+    const historyOwner = nativeHistoryOwner();
+    runtime.listTaskRecords.mockReturnValue([
+      taskRecord({ historyOwner, childThreadId: "child-thread" }),
+    ]);
     const monitor = new CodexNativeSubagentMonitor(client as never, runtime);
-    const first = registerParent(monitor);
-    const second = registerParent(monitor);
+    const first = registerParent(monitor, undefined, undefined, historyOwner);
+    const second = registerParent(monitor, undefined, undefined, historyOwner);
     expect(client.request).toHaveBeenCalledTimes(1);
     releaseRead();
     await vi.waitFor(() => expect(runtime.finalizeTaskRunByRunId).toHaveBeenCalledTimes(1));
@@ -2999,11 +3021,14 @@ describe("CodexNativeSubagentMonitor", () => {
       });
       client.setThreadReadFactory("child-thread", async () => await pendingRead);
       const runtime = createRuntime();
-      runtime.listTaskRecords.mockReturnValue([taskRecord({ childThreadId: "child-thread" })]);
+      const historyOwner = nativeHistoryOwner();
+      runtime.listTaskRecords.mockReturnValue([
+        taskRecord({ historyOwner, childThreadId: "child-thread" }),
+      ]);
       const monitor = new CodexNativeSubagentMonitor(client as never, runtime, {
         recoveryPollDelaysMs: [10],
       });
-      const parent = registerParent(monitor);
+      const parent = registerParent(monitor, undefined, undefined, historyOwner);
       await Promise.resolve();
       expect(client.request).toHaveBeenCalledTimes(1);
 
@@ -3048,11 +3073,14 @@ describe("CodexNativeSubagentMonitor", () => {
         return threadRead({ result: "eventual history result" });
       });
       const runtime = createRuntime();
-      runtime.listTaskRecords.mockReturnValue([taskRecord({ childThreadId: "child-thread" })]);
+      const historyOwner = nativeHistoryOwner();
+      runtime.listTaskRecords.mockReturnValue([
+        taskRecord({ historyOwner, childThreadId: "child-thread" }),
+      ]);
       const monitor = new CodexNativeSubagentMonitor(client as never, runtime, {
         recoveryPollDelaysMs: [10],
       });
-      const parent = registerParent(monitor);
+      const parent = registerParent(monitor, undefined, undefined, historyOwner);
       await vi.advanceTimersByTimeAsync(0);
       expect(runtime.deliverAgentHarnessTaskCompletion).not.toHaveBeenCalled();
       expect(client.request).toHaveBeenCalledWith(
@@ -3155,14 +3183,20 @@ describe("CodexNativeSubagentMonitor", () => {
       threadRead({ childThreadId: "recent-child", result: "recent result" }),
     );
     const runtime = createRuntime();
+    const historyOwner = nativeHistoryOwner();
     runtime.listTaskRecords.mockReturnValue([
-      taskRecord({ childThreadId: "old-child", status: "succeeded", endedAt: 1 }),
-      taskRecord({ childThreadId: "recent-child", status: "succeeded", endedAt: 100_000 }),
+      taskRecord({ historyOwner, childThreadId: "old-child", status: "succeeded", endedAt: 1 }),
+      taskRecord({
+        historyOwner,
+        childThreadId: "recent-child",
+        status: "succeeded",
+        endedAt: 100_000,
+      }),
     ]);
     const monitor = new CodexNativeSubagentMonitor(client as never, runtime, {
       now: () => 100_000,
     });
-    registerParent(monitor);
+    registerParent(monitor, undefined, undefined, historyOwner);
     await vi.waitFor(() => expect(client.request).toHaveBeenCalledTimes(1));
 
     expect(client.request).toHaveBeenCalledTimes(1);

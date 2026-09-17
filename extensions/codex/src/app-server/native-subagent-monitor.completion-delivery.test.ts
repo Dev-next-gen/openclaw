@@ -18,6 +18,7 @@ import {
   notifyChildStarted,
   successfulSendInputOutput,
   nativeCompletionNotification,
+  nativeHistoryOwner,
   deliveredNativeCompletion,
   childTurnCompletedNotification,
   threadRead,
@@ -309,9 +310,12 @@ describe("CodexNativeSubagentMonitor", () => {
             }),
         );
         const runtime = createRuntime();
-        runtime.listTaskRecords.mockReturnValue([taskRecord({ childThreadId: "child-thread" })]);
+        const historyOwner = nativeHistoryOwner();
+        runtime.listTaskRecords.mockReturnValue([
+          taskRecord({ historyOwner, childThreadId: "child-thread" }),
+        ]);
         const monitor = new CodexNativeSubagentMonitor(client as never, runtime);
-        const owner = registerParent(monitor);
+        const owner = registerParent(monitor, undefined, undefined, historyOwner);
         owner.bindTurn("parent-turn");
         expect(client.request).toHaveBeenCalledOnce();
         await client.notify(deliveredNativeCompletion());
@@ -343,7 +347,8 @@ describe("CodexNativeSubagentMonitor", () => {
             }),
         );
         const runtime = createRuntime();
-        const task = taskRecord({ childThreadId: "child-thread" });
+        const historyOwner = nativeHistoryOwner();
+        const task = taskRecord({ historyOwner, childThreadId: "child-thread" });
         if (source === "pending-registration") {
           runtime.listTaskRecords.mockReturnValue([task]);
         }
@@ -351,14 +356,14 @@ describe("CodexNativeSubagentMonitor", () => {
           recoveryPollDelaysMs: [],
         });
         onTestFinished(() => monitor.dispose());
-        const first = registerParent(monitor);
+        const first = registerParent(monitor, undefined, undefined, historyOwner);
         first.bindTurn("parent-turn");
         if (source === "known-child") {
           await notifyChildStarted(client);
         }
         await first.unregister();
         runtime.listTaskRecords.mockReturnValue([task]);
-        const second = registerParent(monitor);
+        const second = registerParent(monitor, undefined, undefined, historyOwner);
         second.bindTurn("new-parent-turn");
         try {
           const receipt = deliveredNativeCompletion();
@@ -546,7 +551,24 @@ describe("CodexNativeSubagentMonitor", () => {
           }
           await client.notify(receipt);
           releaseRead();
-          await vi.waitFor(() => expect(runtime.finalizeTaskRunByRunId).toHaveBeenCalledTimes(2));
+          if (lineage === "history" || lineage === "metadata") {
+            await owner.unregister();
+            expect(runtime.finalizeTaskRunByRunId).not.toHaveBeenCalled();
+            expect(runtime.setDetachedTaskDeliveryStatusByRunId).not.toHaveBeenCalled();
+            expect(runtime.deliverAgentHarnessTaskCompletion).not.toHaveBeenCalled();
+            expect(claimDirectChild).not.toHaveBeenCalled();
+            return;
+          }
+          await vi.waitFor(() =>
+            expect(runtime.finalizeTaskRunByRunId).toHaveBeenCalledTimes(
+              lineage === "stored" ? 2 : 1,
+            ),
+          );
+          if (lineage === "legacy-predecessor") {
+            expect(runtime.finalizeTaskRunByRunId).not.toHaveBeenCalledWith(
+              expect.objectContaining({ runId: first.runId }),
+            );
+          }
           expect(runtime.setDetachedTaskDeliveryStatusByRunId).not.toHaveBeenCalledWith({
             runId: second.runId,
             deliveryStatus: "delivered",
@@ -659,9 +681,12 @@ describe("CodexNativeSubagentMonitor", () => {
         };
         const task = {
           ...taskRecord({ childThreadId: "child-thread" }),
-          ...(source === "other-lineage"
-            ? { detail: { nativeHistory: { ...historyOwner, parentThreadId: "old-parent" } } }
-            : {}),
+          detail: {
+            nativeHistory: {
+              ...historyOwner,
+              parentThreadId: source === "other-lineage" ? "old-parent" : "parent-thread",
+            },
+          },
         };
         runtime.listTaskRecords.mockReturnValue([task]);
         const monitor = new CodexNativeSubagentMonitor(client as never, runtime);

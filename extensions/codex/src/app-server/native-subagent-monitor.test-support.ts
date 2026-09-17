@@ -1,5 +1,6 @@
 import type {
   deliverAgentHarnessTaskCompletion,
+  AgentHarnessCompletionDelivery,
   AgentHarnessScopedSetDeliveryStatusParams,
   AgentHarnessTaskRecord,
   AgentHarnessTaskRuntime,
@@ -7,6 +8,10 @@ import type {
 } from "openclaw/plugin-sdk/agent-harness-task-runtime";
 import { onTestFinished, vi } from "vitest";
 import { createFakeCodexAppServerClient } from "./codex-app-server.test-fixtures.js";
+import {
+  createCodexNativeSubagentHistoryOwner,
+  type CodexNativeSubagentHistoryOwner,
+} from "./native-subagent-history-owner.js";
 import { codexNativeSubagentMonitorRuntime } from "./native-subagent-monitor.js";
 import type {
   CodexAppServerRequestResult,
@@ -140,11 +145,6 @@ export function createClient() {
 }
 
 export function createRuntime() {
-  type DeliveryResult = {
-    delivered: boolean;
-    path: "direct" | "steered" | "none";
-    error?: string;
-  };
   const createRunningTaskRun = vi.fn((params): AgentHarnessTaskRecord => ({
     taskId: params.sourceId ?? params.runId,
     runtime: "subagent",
@@ -198,7 +198,7 @@ export function createRuntime() {
     deliverAgentHarnessTaskCompletion: vi.fn(
       async (
         _params: Parameters<typeof deliverAgentHarnessTaskCompletion>[0],
-      ): Promise<DeliveryResult> => ({
+      ): Promise<AgentHarnessCompletionDelivery> => ({
         delivered: true,
         path: "direct",
       }),
@@ -247,16 +247,35 @@ export function createTaskScope(requesterSessionKey = "agent:main:discord:channe
   return { requesterSessionKey } as AgentHarnessTaskRuntimeScope;
 }
 
+export function nativeHistoryOwner(parentThreadId = "parent-thread") {
+  const owner = createCodexNativeSubagentHistoryOwner({
+    parentThreadId,
+    sessionId: "physical-1",
+    lifecycleRevision: "revision-1",
+    binding: {
+      threadId: parentThreadId,
+      cwd: "/workspace",
+      appServerRuntimeFingerprint: "connection-A",
+    },
+  });
+  if (!owner) {
+    throw new Error("expected a production native history owner");
+  }
+  return owner;
+}
+
 export function registerParent(
   monitor: CodexNativeSubagentMonitorInstance,
   parentThreadId = "parent-thread",
   requesterSessionKey = "agent:main:discord:channel:C123",
+  historyOwner?: CodexNativeSubagentHistoryOwner,
 ) {
   return monitor.registerParent({
     parentThreadId,
     requesterSessionKey,
     taskRuntimeScope: createTaskScope(requesterSessionKey),
     agentId: "main",
+    ...(historyOwner ? { historyOwner } : {}),
   });
 }
 
@@ -496,6 +515,7 @@ export function threadRead(
 
 export function taskRecord(params: {
   childThreadId: string;
+  historyOwner?: CodexNativeSubagentHistoryOwner;
   requesterSessionKey?: string;
   status?: AgentHarnessTaskRecord["status"];
   deliveryStatus?: AgentHarnessTaskRecord["deliveryStatus"];
@@ -516,5 +536,6 @@ export function taskRecord(params: {
     notifyPolicy: "silent",
     createdAt: Date.now(),
     endedAt: params.endedAt,
+    ...(params.historyOwner ? { detail: { nativeHistory: params.historyOwner } } : {}),
   };
 }

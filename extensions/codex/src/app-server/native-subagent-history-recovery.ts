@@ -6,6 +6,7 @@ import {
   readStringField as readString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
+  assertHistoryOwnerMatchesRegistration,
   type CodexNativeSubagentHistoryOwner,
   matchesCodexNativeSubagentHistoryOwner,
   readCodexNativeSubagentHistoryOwner,
@@ -151,9 +152,30 @@ export class CodexNativeSubagentHistoryRecovery {
     parentThreadId: string,
     now: number,
   ): boolean {
-    const current = candidate.taskRuntime
+    const currentTasks = candidate.taskRuntime
       .listTaskRecords()
-      .find((record) => record.runId === candidate.runId);
+      .filter((record) => record.runId === candidate.runId);
+    const current = currentTasks[0];
+    if (
+      currentTasks.length !== 1 ||
+      !current ||
+      current.taskId !== candidate.taskId ||
+      task.taskId !== candidate.taskId
+    ) {
+      return false;
+    }
+    try {
+      // History access can follow compaction; automatic completion cannot acquire
+      // a different physical requester's authority from that readable lineage.
+      assertHistoryOwnerMatchesRegistration(
+        readCodexNativeSubagentHistoryOwner(current.detail),
+        candidate.parentState.historyOwner,
+        parentThreadId,
+        true,
+      );
+    } catch {
+      return false;
+    }
     return Boolean(
       current &&
       current.taskId === task.taskId &&
