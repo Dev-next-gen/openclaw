@@ -1,19 +1,9 @@
 // Slack type declarations define plugin contracts.
 import type { ChannelRuntimeSurface } from "openclaw/plugin-sdk/channel-contract";
-import type { ChannelIngressMonitorLifecycle } from "openclaw/plugin-sdk/channel-outbound";
 import type { OpenClawConfig, SlackSlashCommandConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import type { SlackAppContext } from "../agent-context.js";
 import type { SlackMessageEvent } from "../types.js";
-
-export type SlackIngressTurnLifecycle = Omit<
-  ChannelIngressMonitorLifecycle,
-  "onAdoptionFinalizing"
-> & {
-  onSessionRouted?: (sessionKey: string) => Promise<void>;
-  /** A logical duplicate awaits its existing owner before session routing. */
-  onDispatchWaiting?: () => void;
-};
 
 export type MonitorSlackOpts = {
   botToken?: string;

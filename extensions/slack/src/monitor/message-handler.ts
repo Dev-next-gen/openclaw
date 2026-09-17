@@ -15,6 +15,7 @@ import { hasSlackMessageTableBlock } from "./block-text.js";
 import { stripSlackMentionsForCommandDetection } from "./commands.js";
 import type { SlackMonitorContext } from "./context.js";
 import type { SlackEventScope } from "./event-scope.js";
+import type { SlackIngressTurnLifecycle } from "./ingress.types.js";
 import {
   buildSlackMessageDispatchReplayKey,
   claimSlackMessageDispatchReplay,
@@ -29,7 +30,6 @@ import {
 } from "./message-handler/debounce-key.js";
 import type { PreparedSlackMessage } from "./message-handler/types.js";
 import { createSlackThreadTsResolver } from "./thread-resolution.js";
-import type { SlackIngressTurnLifecycle } from "./types.js";
 
 const loadSlackMessagePipeline = createLazyRuntimeModule(
   () => import("./message-handler/pipeline.runtime.js"),
