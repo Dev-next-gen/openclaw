@@ -22,6 +22,7 @@ const COLD_SCRIPT_INPUTS = [
   "scripts/windows-cmd-helpers.mjs",
   "scripts/lib/bundled-plugin-build-entries.mjs",
   "scripts/lib/bundled-plugin-paths.mjs",
+  "scripts/lib/bundled-plugin-source-utils.mts",
   "scripts/lib/managed-child-process.mts",
   "scripts/lib/optional-bundled-clusters.mjs",
   "scripts/lib/output-root-guard.mjs",
