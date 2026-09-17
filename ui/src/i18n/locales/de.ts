@@ -449,7 +449,7 @@ export const de: TranslationMap = {
     pending: "{count} pending",
     allowOnce: "Allow once",
     alwaysAllow: "Always allow",
-    alwaysAllowHere: "Always allow here",
+    alwaysAllowHere: "Hier immer erlauben",
     allowAlwaysUnavailable:
       "Die wirksame Genehmigungsrichtlinie erfordert jedes Mal eine Genehmigung, daher ist Immer erlauben nicht verfügbar.",
     deny: "Deny",

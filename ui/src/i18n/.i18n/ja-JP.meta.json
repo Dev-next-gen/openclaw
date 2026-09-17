@@ -1,13 +1,11 @@
 {
-  "fallbackKeys": [
-    "execApproval.alwaysAllowHere"
-  ],
-  "generatedAt": "2026-09-17T00:22:48.299Z",
+  "fallbackKeys": [],
+  "generatedAt": "2026-09-17T01:54:48.427Z",
   "locale": "ja-JP",
   "model": "gpt-5.5",
   "provider": "openai",
   "sourceHash": "8f94c5cbcce46ab5fe41933cf0e41e3562b2959c053a56fe9a1cca2f31efc503",
   "totalKeys": 1670,
-  "translatedKeys": 1669,
+  "translatedKeys": 1670,
   "workflow": 1
 }

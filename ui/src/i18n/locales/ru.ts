@@ -449,7 +449,7 @@ export const ru: TranslationMap = {
     pending: "Ожидает: {count}",
     allowOnce: "Разрешить один раз",
     alwaysAllow: "Всегда разрешать",
-    alwaysAllowHere: "Always allow here",
+    alwaysAllowHere: "Всегда разрешать здесь",
     allowAlwaysUnavailable:
       "Действующая политика подтверждений требует подтверждения каждый раз, поэтому «Всегда разрешать» недоступно.",
     deny: "Запретить",

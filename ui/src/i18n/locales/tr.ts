@@ -448,7 +448,7 @@ export const tr: TranslationMap = {
     pending: "{count} pending",
     allowOnce: "Allow once",
     alwaysAllow: "Always allow",
-    alwaysAllowHere: "Always allow here",
+    alwaysAllowHere: "Burada her zaman izin ver",
     allowAlwaysUnavailable:
       "Geçerli onay ilkesi her seferinde onay gerektiriyor, bu nedenle Her Zaman İzin Ver kullanılamıyor.",
     deny: "Deny",

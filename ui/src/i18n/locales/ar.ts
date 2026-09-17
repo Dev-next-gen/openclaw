@@ -444,7 +444,7 @@ export const ar: TranslationMap = {
     pending: "{count} قيد الانتظار",
     allowOnce: "السماح مرة واحدة",
     alwaysAllow: "السماح دائمًا",
-    alwaysAllowHere: "Always allow here",
+    alwaysAllowHere: "السماح دائمًا هنا",
     allowAlwaysUnavailable:
       "تتطلب سياسة الموافقة السارية الحصول على الموافقة في كل مرة، لذا فإن خيار السماح دائمًا غير متاح.",
     deny: "رفض",

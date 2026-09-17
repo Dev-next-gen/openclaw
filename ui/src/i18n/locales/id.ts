@@ -446,7 +446,7 @@ export const id: TranslationMap = {
     pending: "{count} pending",
     allowOnce: "Allow once",
     alwaysAllow: "Always allow",
-    alwaysAllowHere: "Always allow here",
+    alwaysAllowHere: "Selalu izinkan di sini",
     allowAlwaysUnavailable:
       "Kebijakan persetujuan yang berlaku mengharuskan persetujuan setiap kali, sehingga Izinkan Selalu tidak tersedia.",
     deny: "Deny",

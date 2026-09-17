@@ -445,7 +445,7 @@ export const hi: TranslationMap = {
     pending: "{count} लंबित",
     allowOnce: "एक बार अनुमति दें",
     alwaysAllow: "हमेशा अनुमति दें",
-    alwaysAllowHere: "Always allow here",
+    alwaysAllowHere: "यहाँ हमेशा अनुमति दें",
     allowAlwaysUnavailable:
       "प्रभावी अनुमोदन नीति हर बार अनुमोदन की आवश्यकता रखती है, इसलिए हमेशा अनुमति दें उपलब्ध नहीं है।",
     deny: "अस्वीकार करें",

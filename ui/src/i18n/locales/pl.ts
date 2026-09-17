@@ -446,7 +446,7 @@ export const pl: TranslationMap = {
     pending: "{count} pending",
     allowOnce: "Allow once",
     alwaysAllow: "Always allow",
-    alwaysAllowHere: "Always allow here",
+    alwaysAllowHere: "Zawsze zezwalaj tutaj",
     allowAlwaysUnavailable:
       "Obowiązująca zasada zatwierdzania wymaga zatwierdzenia za każdym razem, więc opcja Zawsze zezwalaj jest niedostępna.",
     deny: "Deny",

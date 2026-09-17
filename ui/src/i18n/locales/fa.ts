@@ -446,7 +446,7 @@ export const fa: TranslationMap = {
     pending: "{count} در انتظار",
     allowOnce: "یک‌بار مجاز کن",
     alwaysAllow: "همیشه مجاز کن",
-    alwaysAllowHere: "Always allow here",
+    alwaysAllowHere: "اینجا همیشه اجازه داده شود",
     allowAlwaysUnavailable:
       "سیاست تأیید مؤثر هر بار به تأیید نیاز دارد، بنابراین «همیشه مجاز باشد» در دسترس نیست.",
     deny: "رد کردن",
