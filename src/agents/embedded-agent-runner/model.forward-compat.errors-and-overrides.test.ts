@@ -869,11 +869,13 @@ describe("resolveModel forward-compat errors and overrides", () => {
     expect(result.error).toContain("VLLM_API_KEY");
   });
 
-  it("does not add auth hint for non-local providers", async () => {
+  it("points unknown models to the requested provider catalog", async () => {
     const result = await resolveModelForTest("google-antigravity", "some-model", "/tmp/agent");
 
     expect(result.model).toBeUndefined();
-    expect(result.error).toBe("Unknown model: google-antigravity/some-model");
+    expect(result.error).toBe(
+      "Unknown model: google-antigravity/some-model. Run `openclaw models list --refresh --provider google-antigravity` to inspect this provider's model choices, then retry with a model supported by your account.",
+    );
   });
 
   it("applies provider baseUrl override to registry-found models", async () => {

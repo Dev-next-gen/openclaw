@@ -1845,7 +1845,9 @@ describe("resolveModel", () => {
     );
 
     expect(result.model).toBeUndefined();
-    expect(result.error).toBe("Unknown model: mistral/mistral-medium-3-5");
+    expect(result.error).toBe(
+      "Unknown model: mistral/mistral-medium-3-5. Run `openclaw models list --refresh --provider mistral` to inspect this provider's model choices, then retry with a model supported by your account.",
+    );
     expect(resolveBundledStaticCatalogModelMock).not.toHaveBeenCalled();
     expect(resolveBundledProviderStaticCatalogModelMock).not.toHaveBeenCalled();
     expect(discoverAuthStorage).not.toHaveBeenCalled();
@@ -2341,7 +2343,9 @@ describe("resolveModel", () => {
     const result = await resolveModelForTest("openai", "typo-model", state.agentDir(), cfg);
 
     expect(result.model).toBeUndefined();
-    expect(result.error).toBe("Unknown model: openai/typo-model");
+    expect(result.error).toBe(
+      "Unknown model: openai/typo-model. Run `openclaw models list --refresh --provider openai` to inspect this provider's model choices, then retry with a model supported by your account.",
+    );
   });
 
   it("does not create fallback models from provider overlays alone", async () => {
@@ -2363,7 +2367,9 @@ describe("resolveModel", () => {
     );
 
     expect(result.model).toBeUndefined();
-    expect(result.error).toBe("Unknown model: typoProvider/typoed-model");
+    expect(result.error).toBe(
+      "Unknown model: typoProvider/typoed-model. Run `openclaw models list --refresh --provider typoProvider` to inspect this provider's model choices, then retry with a model supported by your account.",
+    );
   });
 
   it("does not create fallback models from built-in provider api overlays", async () => {
@@ -2385,7 +2391,9 @@ describe("resolveModel", () => {
     );
 
     expect(result.model).toBeUndefined();
-    expect(result.error).toBe("Unknown model: openai/typoed-model");
+    expect(result.error).toBe(
+      "Unknown model: openai/typoed-model. Run `openclaw models list --refresh --provider openai` to inspect this provider's model choices, then retry with a model supported by your account.",
+    );
   });
 
   it("resolves per-model api and baseUrl override in fallback model", async () => {
@@ -3156,7 +3164,9 @@ describe("resolveModel", () => {
 
     const result = await resolveModelForTest("bytedance", "vision-model", state.agentDir(), cfg);
 
-    expect(result.error).toBe("Unknown model: bytedance/vision-model");
+    expect(result.error).toBe(
+      "Unknown model: bytedance/vision-model. Run `openclaw models list --refresh --provider bytedance` to inspect this provider's model choices, then retry with a model supported by your account.",
+    );
   });
 
   it("resolves direct moonshotai refs through manifest-owned provider aliases", async () => {
@@ -3450,7 +3460,9 @@ describe("resolveModel", () => {
             );
 
       expect(result.model).toBeUndefined();
-      expect(result.error).toBe("Unknown model: azure-openai-responses/gpt-5.5");
+      expect(result.error).toBe(
+        "Unknown model: azure-openai-responses/gpt-5.5. Run `openclaw models list --refresh --provider azure-openai-responses` to inspect this provider's model choices, then retry with a model supported by your account.",
+      );
       expect(resolveBundledStaticCatalogModelMock).not.toHaveBeenCalled();
       expect(resolveBundledProviderStaticCatalogModelMock).not.toHaveBeenCalled();
     },
@@ -3681,7 +3693,7 @@ describe("resolveModel", () => {
     });
 
     expect(result.error).toBe(
-      'Unknown model: openai/gpt-5.3-codex. Found agents.defaults.models["openai/gpt-5.3-codex"] bound to the "codex" agent runtime. Models served by an agent runtime come from that runtime and its linked account, not from models.providers["openai"].models[] — registering it there will not make it usable. Confirm "gpt-5.3-codex" is still offered by the "codex" runtime and switch agents.defaults.model.primary to a currently available model (run `openclaw models list --provider openai` to list them). See https://docs.openclaw.ai/concepts/model-providers.',
+      'Unknown model: openai/gpt-5.3-codex. Found agents.defaults.models["openai/gpt-5.3-codex"] bound to the "codex" agent runtime. Models served by an agent runtime come from that runtime and its linked account, not from models.providers["openai"].models[] — registering it there will not make it usable. Confirm "gpt-5.3-codex" is still offered by the "codex" runtime and switch agents.defaults.model.primary to a currently available model (run `openclaw models list --refresh --provider openai` to list them). See https://docs.openclaw.ai/concepts/model-providers.',
     );
   });
 
