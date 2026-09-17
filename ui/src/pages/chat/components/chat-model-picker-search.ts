@@ -161,6 +161,7 @@ export function resetModelSearch(details: HTMLDetailsElement): void {
 
 export function toggleModelProviderGroup(event: MouseEvent): void {
   event.stopPropagation();
+  // SAFETY: Bound only to provider group buttons.
   const toggle = event.currentTarget as HTMLButtonElement;
   toggle.setAttribute("aria-expanded", String(toggle.getAttribute("aria-expanded") !== "true"));
   const input = pickerMenu(toggle)?.querySelector<HTMLInputElement>("[data-chat-model-search]");
