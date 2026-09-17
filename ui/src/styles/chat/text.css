@@ -1268,6 +1268,10 @@
   margin-block-start: var(--chat-block-gap);
 }
 
+.chat-text > * + :where(h1, h2, h3, h4) {
+  margin-block-start: calc(var(--chat-block-gap) * 1.5);
+}
+
 /* Contain the preview's reserved toolbar space within its message block. */
 .chat-bubble > .chat-tool-card__widget-host {
   display: flow-root;
