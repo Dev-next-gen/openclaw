@@ -144,6 +144,7 @@ describe("Checkout chip state", () => {
         inputs[0]!.dispatchEvent(new Event("input"));
         expect(onBaseRefInput).toHaveBeenCalledWith("release/next");
         inputs[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+        container.querySelector("wa-popover")!.dispatchEvent(new CustomEvent("wa-after-hide"));
         expect(onConfirm).toHaveBeenCalledOnce();
         expect(container.textContent).toContain(
           "Clones OpenClaw on the selected runner. No Gateway checkout is created.",
@@ -186,16 +187,19 @@ describe("Checkout chip state", () => {
         name.dispatchEvent(new Event("input"));
         expect(onBaseRefInput).toHaveBeenCalledWith(" release ");
         expect(onWorktreeNameInput).toHaveBeenCalledWith(" checkout-proof ");
-        const suggestions = container.querySelectorAll<HTMLButtonElement>(
-          ".new-session-page__branch-suggestions button",
-        );
-        expect([...suggestions].map((button) => button.textContent?.trim())).toEqual([
+        const suggestions = container.querySelectorAll("wa-dropdown-item");
+        expect([...suggestions].map((item) => item.textContent?.trim())).toEqual([
           "main",
           "release/next",
         ]);
-        suggestions[1]!.click();
+        suggestions[1]!
+          .closest("wa-dropdown")!
+          .dispatchEvent(
+            new CustomEvent("wa-select", { detail: { item: { value: "release/next" } } }),
+          );
         expect(onBaseRefInput).toHaveBeenLastCalledWith("release/next");
         name.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+        container.querySelector("wa-popover")!.dispatchEvent(new CustomEvent("wa-after-hide"));
         expect(onConfirm).toHaveBeenCalledOnce();
         expect(container.textContent).toContain(
           "Creates a branch from the session title in a separate checkout.",
@@ -248,6 +252,7 @@ describe("Checkout chip state", () => {
     container
       .querySelectorAll("input")[1]!
       .dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    container.querySelector("wa-popover")!.dispatchEvent(new CustomEvent("wa-after-hide"));
     expect(onConfirm).toHaveBeenCalledOnce();
 
     renderNamed("Not Valid");

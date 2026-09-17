@@ -632,7 +632,6 @@ wa-popover.new-session-page__picker-popover
 }
 
 .new-session-page__menu-field {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -640,46 +639,6 @@ wa-popover.new-session-page__picker-popover
   padding: 2px 8px;
   font-size: 12px;
   color: var(--muted);
-}
-
-.new-session-page__branch-suggestions {
-  position: absolute;
-  z-index: 1;
-  top: calc(100% - 2px);
-  right: 8px;
-  left: 52px;
-  display: none;
-  max-height: 168px;
-  padding: 3px;
-  overflow-y: auto;
-  border: 1px solid var(--overlay-border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated);
-  box-shadow: var(--overlay-shadow);
-}
-
-.new-session-page__worktree-base-field:focus-within .new-session-page__branch-suggestions {
-  display: grid;
-}
-
-.new-session-page__branch-suggestions button {
-  min-width: 0;
-  padding: 5px 7px;
-  overflow: hidden;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.new-session-page__branch-suggestions button:hover,
-.new-session-page__branch-suggestions button[aria-selected="true"] {
-  background: var(--bg-hover);
 }
 
 .new-session-page__menu-field span {

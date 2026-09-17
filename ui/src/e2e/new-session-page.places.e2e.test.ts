@@ -471,7 +471,7 @@ suite.define(() => {
       await pollLocatorText(checkoutTrigger.locator(".new-session-page__trigger-label")).toBe(
         "New worktree from main",
       );
-      await checkoutSelect.getByLabel("From").waitFor();
+      await checkoutSelect.getByRole("textbox", { name: "From" }).waitFor();
       await checkoutSelect.getByLabel("Name", { exact: true }).waitFor();
       await checkoutSelect
         .getByText("Creates a branch from the session title in a separate checkout.", {
@@ -599,7 +599,7 @@ suite.define(() => {
       const checkout = page.locator("wa-popover.new-session-page__checkout-popover");
       await captureProjectUiProof(suite, page, "project-selected.png", {
         surface: checkout.locator('wa-popup [part="popup"]'),
-        content: [checkout.getByLabel("From")],
+        content: [checkout.getByRole("textbox", { name: "From" })],
       });
       await page.keyboard.press("Escape");
       await page.locator(".new-session-page__message").fill("inspect the project");

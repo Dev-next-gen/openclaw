@@ -259,7 +259,7 @@ export function renderNewSessionPlaceControls({
           onSelectWorktree: (value) => place.selectWorktree(value),
           onBaseRefInput: (baseRef) => place.setBaseRef(baseRef),
           onWorktreeNameInput: (worktreeName) => place.setWorktreeName(worktreeName),
-          onConfirm: () => browser.closePopover("checkout", onFocusComposer),
+          onConfirm: onFocusComposer,
         })
       : nothing
   }`;

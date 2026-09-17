@@ -141,9 +141,9 @@ suite.define(() => {
         .getByRole("button", { name: "New worktree Isolated copy of the repo", exact: true })
         .click();
 
-      const baseRef = checkout.getByLabel("From", { exact: true });
+      const baseRef = checkout.getByRole("textbox", { name: "From", exact: true });
       await baseRef.focus();
-      await checkout.getByRole("option", { name: "release/next", exact: true }).click();
+      await checkout.locator('wa-dropdown-item[value="release/next"]').click();
       await expect.poll(() => baseRef.inputValue()).toBe("release/next");
       const name = checkout.getByLabel("Name", { exact: true });
       await name.fill("picker-inputs");
@@ -203,11 +203,11 @@ suite.define(() => {
           .getByRole("button", { name: "New worktree Isolated copy of the repo", exact: true })
           .click();
         await expect.poll(() => checkout.getAttribute("data-worktree")).toBe("true");
-        const baseRef = page.getByLabel("From", { exact: true });
+        const baseRef = page.getByRole("textbox", { name: "From", exact: true });
         await baseRef.fill("origin/release-outside-suggestions");
         expect(
           await page
-            .locator(".new-session-page__branch-suggestions button", {
+            .locator("wa-dropdown-item", {
               hasText: "origin/release-outside-suggestions",
             })
             .count(),
@@ -457,7 +457,7 @@ suite.define(() => {
       await checkoutTrigger.click();
       const checkout = page.locator("wa-popover.new-session-page__checkout-popover");
       expect(await checkout.locator('[data-value="checkout"]').isDisabled()).toBe(true);
-      await checkout.getByLabel("From").waitFor();
+      await checkout.getByRole("textbox", { name: "From" }).waitFor();
       await checkout.getByLabel("Name", { exact: true }).waitFor();
       expect(await gateway.getRequests("sessions.create")).toHaveLength(0);
       await page.keyboard.press("Escape");
@@ -584,7 +584,9 @@ suite.define(() => {
       await page.keyboard.press("Escape");
       await page.locator("#new-session-checkout-trigger").click();
       const checkout = page.locator("wa-popover.new-session-page__checkout-popover");
-      await expect.poll(() => checkout.getByLabel("From").inputValue()).toBe("beta");
+      await expect
+        .poll(() => checkout.getByRole("textbox", { name: "From" }).inputValue())
+        .toBe("beta");
       await page.keyboard.press("Escape");
 
       await gateway.resolveDeferred("fs.listDir", {

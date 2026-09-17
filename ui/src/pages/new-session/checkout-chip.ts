@@ -12,28 +12,20 @@ type CheckoutChipState = Readonly<{
   label: string;
 }>;
 
-const activeFieldDrags = new WeakSet<HTMLInputElement>();
+let fieldDragging = false;
 
-function handleFieldPointerDown(event: PointerEvent) {
-  if (event.currentTarget instanceof HTMLInputElement) {
-    activeFieldDrags.add(event.currentTarget);
-  }
-}
-
-function handleFieldPointerEnd(event: PointerEvent) {
-  if (event.currentTarget instanceof HTMLInputElement) {
-    activeFieldDrags.delete(event.currentTarget);
-  }
+function handleFieldPointer(event: PointerEvent) {
+  fieldDragging = event.type === "pointerdown";
 }
 
 function handlePopoverHide(event: Event, onHide: () => void) {
   const active = document.activeElement;
   if (
     active instanceof HTMLInputElement &&
-    activeFieldDrags.has(active) &&
+    fieldDragging &&
     active.selectionStart !== active.selectionEnd
   ) {
-    activeFieldDrags.delete(active);
+    fieldDragging = false;
     event.preventDefault();
     return;
   }
@@ -91,60 +83,74 @@ function renderWorktreeFields(params: {
     if (
       event.key !== "Enter" ||
       event.isComposing ||
-      params.submitting ||
-      params.pendingPlacement ||
       (!params.repository && !isWorktreeNameValid(liveWorktreeName))
     ) {
       return;
     }
+    fieldDragging = false;
     event.preventDefault();
-    event.stopPropagation();
-    if (document.activeElement instanceof HTMLInputElement) {
-      activeFieldDrags.delete(document.activeElement);
+    const popover = (event.currentTarget as HTMLElement).closest("wa-popover") as
+      | (HTMLElement & { open: boolean })
+      | null;
+    if (popover) {
+      popover.addEventListener("wa-after-hide", params.onConfirm, { once: true });
+      popover.open = false;
     }
-    params.onConfirm();
   };
   const suggestions = (params.branches?.branches ?? []).slice(0, 8);
   const branchName = params.worktreeName.trim();
+  const baseRefInput = html`<input
+    slot=${suggestions.length ? "trigger" : nothing}
+    style="width: 100%"
+    type="text"
+    aria-label=${t("newSession.worktreeBaseRef")}
+    ?disabled=${params.submitting || params.pendingPlacement}
+    placeholder=${
+      params.branchesLoading
+        ? t("common.loading")
+        : (params.branches?.defaultBranch ?? t("newSession.worktreeBaseRef"))
+    }
+    .value=${params.baseRef}
+    @focus=${(event: FocusEvent) => {
+      const dropdown = (event.currentTarget as HTMLElement).closest("wa-dropdown") as
+        | (HTMLElement & { open: boolean })
+        | null;
+      if (dropdown) {
+        dropdown.open = true;
+      }
+    }}
+    @input=${(event: Event) => {
+      if (event.currentTarget instanceof HTMLInputElement) {
+        params.onBaseRefInput(event.currentTarget.value);
+      }
+    }}
+    @keydown=${confirmOnEnter}
+    @pointerdown=${handleFieldPointer}
+    @pointerup=${handleFieldPointer}
+    @pointercancel=${handleFieldPointer}
+  />`;
   return html`
-    <div class="new-session-page__menu-field new-session-page__worktree-base-field">
+    <div class="new-session-page__menu-field">
       <span>${t("newSession.worktreeBaseRef")}</span>
-      <input
-        type="text"
-        aria-label=${t("newSession.worktreeBaseRef")}
-        ?disabled=${params.submitting || params.pendingPlacement}
-        placeholder=${
-          params.branchesLoading
-            ? t("common.loading")
-            : (params.branches?.defaultBranch ?? t("newSession.worktreeBaseRef"))
-        }
-        .value=${params.baseRef}
-        @input=${(event: Event) => {
-          if (event.currentTarget instanceof HTMLInputElement) {
-            params.onBaseRefInput(event.currentTarget.value);
-          }
-        }}
-        @keydown=${confirmOnEnter}
-        @pointerdown=${handleFieldPointerDown}
-        @pointerup=${handleFieldPointerEnd}
-        @pointercancel=${handleFieldPointerEnd}
-      />
       ${
         suggestions.length
-          ? html`<div class="new-session-page__branch-suggestions" role="listbox">
+          ? html`<wa-dropdown
+              style="flex: 1 1 auto; min-width: 0"
+              placement="bottom-start"
+              @wa-select=${(event: CustomEvent<{ item: { value?: string } }>) => {
+                const value = event.detail.item.value;
+                if (value) {
+                  params.onBaseRefInput(value);
+                }
+              }}
+            >
+              ${baseRefInput}
               ${suggestions.map(
-                (branch) => html`<button
-                  type="button"
-                  role="option"
-                  aria-selected=${String(branch.name === params.baseRef)}
-                  @mousedown=${(event: MouseEvent) => event.preventDefault()}
-                  @click=${() => params.onBaseRefInput(branch.name)}
-                >
-                  ${branch.name}
-                </button>`,
+                (branch) =>
+                  html`<wa-dropdown-item value=${branch.name}>${branch.name}</wa-dropdown-item>`,
               )}
-            </div>`
-          : nothing
+            </wa-dropdown>`
+          : baseRefInput
       }
     </div>
     <div class="new-session-page__menu-note">
@@ -171,9 +177,9 @@ function renderWorktreeFields(params: {
                   }
                 }}
                 @keydown=${confirmOnEnter}
-                @pointerdown=${handleFieldPointerDown}
-                @pointerup=${handleFieldPointerEnd}
-                @pointercancel=${handleFieldPointerEnd}
+                @pointerdown=${handleFieldPointer}
+                @pointerup=${handleFieldPointer}
+                @pointercancel=${handleFieldPointer}
               />
             </label>
             <div class="new-session-page__menu-note">

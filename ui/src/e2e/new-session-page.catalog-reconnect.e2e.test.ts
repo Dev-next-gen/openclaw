@@ -362,7 +362,9 @@ suite.define(() => {
       await worktreeButton.waitFor({ state: "visible" });
       const initialBranchRequestCount = (await gateway.getRequests("worktrees.branches")).length;
       await worktreeButton.click();
-      await expect.poll(() => placePopover.getByLabel("From").inputValue()).toBe("main");
+      await expect
+        .poll(() => placePopover.getByRole("textbox", { name: "From" }).inputValue())
+        .toBe("main");
       await placePopover.getByLabel("Name", { exact: true }).fill("terminal-task");
       await page.locator("#new-session-checkout-trigger").click();
       await page.locator(".new-session-page__message").fill("  inspect the checkout  ");
@@ -868,7 +870,7 @@ suite.define(() => {
         exact: true,
       });
       await worktreeItem.click();
-      const baseInput = page.getByLabel("From", { exact: true });
+      const baseInput = page.getByRole("textbox", { name: "From", exact: true });
       await expect.poll(() => baseInput.inputValue()).toBe("main");
       await page.keyboard.press("Escape");
 

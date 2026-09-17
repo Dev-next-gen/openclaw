@@ -687,12 +687,8 @@ export class DraftPlaceState {
     this.repositoryState.setBaseRef(baseRef, this.read().submitting);
   }
 
-  setWorktreeName(worktreeName: string) {
-    this.repositoryState.setWorktreeName(worktreeName, this.read().submitting);
-  }
-
-  clearSubmittedWorktreeName() {
-    this.repositoryState.clearSubmittedWorktreeName();
+  setWorktreeName(worktreeName: string, submitting = this.read().submitting) {
+    this.repositoryState.setWorktreeName(worktreeName, submitting);
   }
 
   restorePreferenceSelections() {
