@@ -15,6 +15,7 @@ import {
   resolveOpenClawAgentSqlitePath,
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
+import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import { resolveStateDir } from "../paths.js";
 import type { ResetSessionEntryLifecycleMutation } from "./session-accessor.lifecycle-types.js";
 import { withSqliteTranscriptArchiveSession } from "./session-accessor.sqlite-archive-session.js";
@@ -83,7 +84,7 @@ import type { InternalSessionEntry as SessionEntry } from "./types.js";
 // Single-target lifecycle owner: cleanup, reset, guarded delete, and trusted rollback.
 
 function captureLifecycleDatabaseScope<T extends ResolvedSqliteReadScope>(scope: T): T {
-  const env = { ...(scope.env ?? process.env) };
+  const env = cloneEnvWithPlatformSemantics(scope.env ?? process.env);
   env.OPENCLAW_STATE_DIR = resolveStateDir(env);
   return {
     ...scope,
