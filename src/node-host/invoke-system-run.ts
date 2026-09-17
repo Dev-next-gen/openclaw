@@ -894,7 +894,9 @@ async function executeSystemRunPhase(
       phase.approvedCwdSnapshot,
     );
   } catch (error) {
-    if (!(error instanceof ApprovedCwdDriftError)) throw error;
+    if (!(error instanceof ApprovedCwdDriftError)) {
+      throw error;
+    }
     await sendSystemRunDenied(opts, phase.execution, {
       reason: "approval-required",
       message: error.message,

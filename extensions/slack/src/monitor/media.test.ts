@@ -72,7 +72,7 @@ const saveMediaBufferMock = vi.hoisted(() =>
       _subdir?: string,
       _maxBytes?: number,
       _originalFilename?: string,
-    ) => ({
+    ): Promise<SavedMedia> => ({
       id: "saved-media-id",
       path: "/tmp/test.bin",
       size: _buffer.byteLength,
@@ -134,7 +134,7 @@ beforeEach(() => {
       _subdir?: string,
       _maxBytes?: number,
       _originalFilename?: string,
-    ) => ({
+    ): Promise<SavedMedia> => ({
       id: "saved-media-id",
       path: "/tmp/test.bin",
       size: _buffer.byteLength,

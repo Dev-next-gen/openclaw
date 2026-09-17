@@ -260,6 +260,7 @@ describe("createSynologyChatPlugin", () => {
         token: "t",
         incomingUrl: "u",
         nasHost: "h",
+        webhookUrl: "",
         webhookPath: "/w",
         webhookPathSource: "default" as const,
         dangerouslyAllowNameMatching: false,

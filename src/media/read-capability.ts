@@ -162,7 +162,9 @@ function getManagedMediaLocalRoots(mediaSources?: readonly string[]): readonly s
   const roots = new Set([path.join(resolveConfigDir(), "media", "outbound")]);
   for (const source of mediaSources ?? []) {
     const root = resolveManagedMediaRoot(source);
-    if (root) roots.add(root);
+    if (root) {
+      roots.add(root);
+    }
   }
   return Array.from(roots);
 }

@@ -43,6 +43,8 @@ function removeObsoleteGeneratedExecApprovals(file: ExecApprovalsFile): {
 
 export function repairObsoleteGeneratedExecApprovals(): number {
   const result = removeObsoleteGeneratedExecApprovals(loadExecApprovals());
-  if (result.removed > 0) saveExecApprovals(result.file);
+  if (result.removed > 0) {
+    saveExecApprovals(result.file);
+  }
   return result.removed;
 }

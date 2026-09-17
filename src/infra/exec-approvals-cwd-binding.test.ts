@@ -27,7 +27,11 @@ describe("cwd-bound generated approvals", () => {
         segments: analysis.segments,
         cwd: first,
         env,
-      }).map((e) => ({ ...e, source: "allow-always" as const }));
+      }).map((e) => ({
+        pattern: e.pattern,
+        argPattern: e.argPattern,
+        source: "allow-always" as const,
+      }));
       expect(entries).toHaveLength(1);
       expect(entries[0]?.argPattern).toBe(buildCwdBoundHashedArgPattern(argv, first));
       for (const [cwd, command, allowed] of [
@@ -86,7 +90,9 @@ describe("cwd-bound generated approvals", () => {
       fs.mkdirSync(cwd);
       const captured = captureApprovedCwdSnapshotSync(cwd);
       expect(captured.ok).toBe(true);
-      if (!captured.ok) throw new Error(captured.message);
+      if (!captured.ok) {
+        throw new Error(captured.message);
+      }
       expect(revalidateApprovedCwdSnapshot(captured.snapshot)).toBe(true);
       fs.renameSync(cwd, path.join(root, "old"));
       fs.mkdirSync(cwd);

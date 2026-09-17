@@ -1,6 +1,13 @@
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 // Defines task registry records, statuses, delivery state, and parser helpers.
-import type { JsonValue } from "./task-flow-registry.types.js";
+/** JSON value shape persisted with task-flow state and wait metadata. */
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
 
 /** Runtime family that owns a task run lifecycle. */
 export type TaskRuntime = "subagent" | "acp" | "cli" | "cron";

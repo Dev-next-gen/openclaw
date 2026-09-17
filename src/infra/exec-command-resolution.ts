@@ -342,7 +342,9 @@ function matchArgPattern(
   if (argPattern.startsWith(CWD_BOUND_HASHED_ARG_PATTERN_PREFIX)) {
     return cwd !== undefined && argPattern === buildCwdBoundHashedArgPattern(argv, cwd, platform);
   }
-  if (argPattern.startsWith(LEGACY_HASHED_ARG_PATTERN_PREFIX)) return false;
+  if (argPattern.startsWith(LEGACY_HASHED_ARG_PATTERN_PREFIX)) {
+    return false;
+  }
 
   // Patterns built by buildArgPatternFromArgv use \x00 as the argument separator and
   // always include a trailing \x00 sentinel so that every auto-generated pattern
@@ -460,7 +462,9 @@ export function matchAllowlist(
     if (!patternMatches) {
       continue;
     }
-    if (entry.source === "allow-always" && !isCwdBoundHashedArgPattern(entry.argPattern)) continue;
+    if (entry.source === "allow-always" && !isCwdBoundHashedArgPattern(entry.argPattern)) {
+      continue;
+    }
     if (!entry.argPattern) {
       if (!pathOnlyMatch) {
         pathOnlyMatch = entry;

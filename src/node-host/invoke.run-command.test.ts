@@ -49,7 +49,9 @@ describe("runCommand", () => {
       const cwd = path.join(canonicalRoot, "work");
       await fs.mkdir(cwd);
       const captured = captureApprovedCwdSnapshotSync(cwd);
-      if (!captured.ok) throw new Error(captured.message);
+      if (!captured.ok) {
+        throw new Error(captured.message);
+      }
       await fs.rename(cwd, path.join(canonicalRoot, "original"));
       await fs.mkdir(cwd);
       await expect(

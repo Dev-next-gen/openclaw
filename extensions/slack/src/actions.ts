@@ -601,8 +601,12 @@ export async function downloadSlackFile(
       },
     ],
     client,
-    isRefreshedFileAllowed: (file) =>
-      !lacksSlackScopeProof({ file, channelId: opts.channelId, threadId: opts.threadId }),
+    isRefreshedFileAllowed: (refreshedFile) =>
+      !lacksSlackScopeProof({
+        file: refreshedFile,
+        channelId: opts.channelId,
+        threadId: opts.threadId,
+      }),
     token,
     maxBytes: opts.maxBytes,
   });

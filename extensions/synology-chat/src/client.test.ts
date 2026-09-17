@@ -24,7 +24,7 @@ vi.mock("node:http", async () => {
 });
 
 vi.mock("openclaw/plugin-sdk/ssrf-runtime", () => ({
-  formatErrorMessage: formatErrorMessage,
+  formatErrorMessage,
 }));
 
 const https = await import("node:https");

@@ -29,16 +29,17 @@ function readPluginConfig(config: unknown): Record<string, unknown> | null {
 function resolveMigrationBackupPath(
   prepared: Awaited<ReturnType<typeof readConfigFileSnapshotForWrite>>,
 ): string {
-  const ownership = prepared.snapshot.includeProvenance?.findLast(
-    (entry) => entry.path.length <= 1 && entry.path[0] === "plugins",
-  );
-  const configPath =
-    ownership?.path.length === 1 &&
-    ownership.kind === "single" &&
-    !ownership.hasSiblingOverrides &&
-    ownership.targetPath
-      ? ownership.targetPath
-      : prepared.snapshot.path;
+  // July's writer routes only a sole top-level $include to its pinned target.
+  // Mirror that destination for backup reporting, not for write authorization.
+  const plugins = asNullableRecord(asNullableRecord(prepared.snapshot.parsed)?.plugins);
+  const include = plugins?.$include;
+  const includePath =
+    plugins && Object.keys(plugins).length === 1 && typeof include === "string"
+      ? path.resolve(path.dirname(prepared.snapshot.path), include)
+      : undefined;
+  const configPath = includePath
+    ? (prepared.writeOptions.includeFileTargetsForWrite?.[includePath] ?? includePath)
+    : prepared.snapshot.path;
   return `${path.normalize(configPath)}.bak`;
 }
 

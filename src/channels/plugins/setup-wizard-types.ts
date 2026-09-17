@@ -124,6 +124,8 @@ export type ChannelSetupWizardCredential = {
 
 /** Declarative non-secret text step that can depend on resolved credentials. */
 export type ChannelSetupWizardTextInput = {
+  /** Mask input and omit configured values from presentation. */
+  sensitive?: boolean;
   inputKey: keyof ChannelSetupInput;
   message: string;
   placeholder?: string;

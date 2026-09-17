@@ -38,7 +38,9 @@ export function runCommandBuffered(
       code: number | null = null,
       outputLimitStream?: Stream,
     ) => {
-      if (settled) return;
+      if (settled) {
+        return;
+      }
       settled = true;
       clearTimeout(timer);
       if (termination !== "exit" && child.pid) {
@@ -58,12 +60,16 @@ export function runCommandBuffered(
     for (const stream of ["stdout", "stderr"] as const) {
       consumeChildOutput(child[stream], {
         onData: (chunk) => {
-          if (settled) return;
+          if (settled) {
+            return;
+          }
           if (options.onOutputChunk?.(chunk, stream) === false) {
             finish("output-limit", null, stream);
             return;
           }
-          if (options.discardOutput?.[stream]) return;
+          if (options.discardOutput?.[stream]) {
+            return;
+          }
           const limit =
             typeof options.maxOutputBytes === "number"
               ? options.maxOutputBytes

@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import { Command } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -37,24 +38,19 @@ function snapshot(
       valid: true,
       hash: "hash",
       path: "/tmp/openclaw.json",
-      ...(pluginsIncludePath
-        ? {
-            includeProvenance: [
-              {
-                path: ["plugins"],
-                kind: "single",
-                hasSiblingOverrides: false,
-                targetPath: pluginsIncludePath,
-              },
-            ],
-          }
-        : {}),
+      parsed: pluginsIncludePath ? { plugins: { $include: pluginsIncludePath } } : {},
       sourceConfig: {
         ...(gateway ? { gateway } : {}),
         plugins: { entries: { "file-transfer": { config: pluginConfig } } },
       },
     },
-    writeOptions: {},
+    writeOptions: pluginsIncludePath
+      ? {
+          includeFileTargetsForWrite: {
+            [path.resolve("/tmp", pluginsIncludePath)]: path.resolve("/tmp", pluginsIncludePath),
+          },
+        }
+      : {},
   };
 }
 
@@ -146,36 +142,41 @@ describe("file-transfer approvals migration CLI", () => {
     expect(mutateConfigMock).not.toHaveBeenCalled();
   });
 
-  it("reports the backup belonging to an included plugins config", async () => {
-    const pluginsPath = "/tmp/included-plugins.json";
-    readSnapshotMock.mockResolvedValue(
-      snapshot(
-        { nodes: { Shared: { allowReadPaths: ["/tmp/report.txt"] } } },
-        undefined,
-        pluginsPath,
-      ),
-    );
-    prompterMock.select.mockResolvedValue("exact");
-    prompterMock.confirm.mockResolvedValue(true);
-    mutateConfigMock.mockImplementation(
-      async ({ mutate }: { mutate: (draft: Record<string, unknown>) => void }) => {
-        mutate({});
-      },
-    );
-    const backupStat = { ino: 1, mtimeMs: 1, size: 1 } as Awaited<ReturnType<typeof fs.stat>>;
-    vi.spyOn(fs, "stat")
-      .mockRejectedValueOnce(new Error("missing"))
-      .mockResolvedValueOnce(backupStat);
-    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
-    const program = new Command();
-    registerFileTransferCli(program);
+  it.each(["/tmp/included-plugins.json", "included-plugins.json"])(
+    "reports the backup belonging to included plugins config %s",
+    async (authoredPath) => {
+      const pluginsPath = path.resolve("/tmp", authoredPath);
+      readSnapshotMock.mockResolvedValue(
+        snapshot(
+          { nodes: { Shared: { allowReadPaths: ["/tmp/report.txt"] } } },
+          undefined,
+          authoredPath,
+        ),
+      );
+      prompterMock.select.mockResolvedValue("exact");
+      prompterMock.confirm.mockResolvedValue(true);
+      mutateConfigMock.mockImplementation(
+        async ({ mutate }: { mutate: (draft: Record<string, unknown>) => void }) => {
+          mutate({});
+        },
+      );
+      const backupStat = { ino: 1, mtimeMs: 1, size: 1 } as Awaited<ReturnType<typeof fs.stat>>;
+      vi.spyOn(fs, "stat")
+        .mockRejectedValueOnce(new Error("missing"))
+        .mockResolvedValueOnce(backupStat);
+      Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+      const program = new Command();
+      registerFileTransferCli(program);
 
-    await program.parseAsync(["node", "openclaw", "file-transfer", "approvals", "migrate"]);
+      await program.parseAsync(["node", "openclaw", "file-transfer", "approvals", "migrate"]);
 
-    expect(fs.stat).toHaveBeenNthCalledWith(1, `${pluginsPath}.bak`);
-    expect(fs.stat).toHaveBeenNthCalledWith(2, `${pluginsPath}.bak`);
-    expect(prompterMock.outro).toHaveBeenCalledWith(expect.stringContaining(`${pluginsPath}.bak`));
-  });
+      expect(fs.stat).toHaveBeenNthCalledWith(1, `${pluginsPath}.bak`);
+      expect(fs.stat).toHaveBeenNthCalledWith(2, `${pluginsPath}.bak`);
+      expect(prompterMock.outro).toHaveBeenCalledWith(
+        expect.stringContaining(`${pluginsPath}.bak`),
+      );
+    },
+  );
 
   it("refuses to mutate local config in remote Gateway mode", async () => {
     readSnapshotMock.mockResolvedValue(
