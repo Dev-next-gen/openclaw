@@ -73,13 +73,13 @@ function renderWorktreeFields(params: {
   repository?: boolean;
 }) {
   const confirmOnEnter = (event: KeyboardEvent) => {
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
     const liveWorktreeName =
-      event.currentTarget instanceof HTMLElement
-        ? (event.currentTarget
-            .closest("wa-popover")
-            ?.querySelector<HTMLInputElement>("input[data-worktree-name]")?.value ??
-          params.worktreeName)
-        : params.worktreeName;
+      target.closest("wa-popover")?.querySelector<HTMLInputElement>("input[data-worktree-name]")
+        ?.value ?? params.worktreeName;
     if (
       event.key !== "Enter" ||
       event.isComposing ||
@@ -89,12 +89,10 @@ function renderWorktreeFields(params: {
     }
     fieldDragging = false;
     event.preventDefault();
-    const popover = (event.currentTarget as HTMLElement).closest("wa-popover") as
-      | (HTMLElement & { open: boolean })
-      | null;
+    const popover = target.closest("wa-popover");
     if (popover) {
       popover.addEventListener("wa-after-hide", params.onConfirm, { once: true });
-      popover.open = false;
+      popover.removeAttribute("open");
     }
   };
   const suggestions = (params.branches?.branches ?? []).slice(0, 8);
@@ -112,11 +110,8 @@ function renderWorktreeFields(params: {
     }
     .value=${params.baseRef}
     @focus=${(event: FocusEvent) => {
-      const dropdown = (event.currentTarget as HTMLElement).closest("wa-dropdown") as
-        | (HTMLElement & { open: boolean })
-        | null;
-      if (dropdown) {
-        dropdown.open = true;
+      if (event.currentTarget instanceof HTMLElement) {
+        event.currentTarget.closest("wa-dropdown")?.setAttribute("open", "");
       }
     }}
     @input=${(event: Event) => {
