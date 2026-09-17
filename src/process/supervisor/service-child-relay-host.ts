@@ -203,7 +203,6 @@ export async function createServiceChildRelayAdapter(
   }>();
   // Failures can arrive before either public wait is requested.
   void startup.promise.catch(() => {});
-  void resultCompletion.promise.catch(() => {});
   const constructionAbort = createDeferredCore<never>();
   void constructionAbort.promise.catch(() => {});
   let startupErrorAckDelivery: Promise<void> | undefined;
@@ -245,7 +244,12 @@ export async function createServiceChildRelayAdapter(
     }
     state = "identity-lost";
     waitError = new Error(`service child cleanup identity lost: ${message}`, options);
-    events.emitError(waitError, "process");
+    try {
+      events.emitError(waitError, "process");
+    } catch (error) {
+      // Observer failure cannot interrupt the authoritative cleanup settlement.
+      waitError = toErrorObject(error, "service child cleanup error observer failed");
+    }
     if (!commandPid) {
       startup.reject(waitError);
     }
@@ -566,7 +570,7 @@ export async function createServiceChildRelayAdapter(
         ),
       ]).then(([outcome]) => {
         if (outcome.status === "rejected") {
-          // A failed observer must not interrupt settlement or escape the cleanup owner.
+          // Unexpected finalization failures belong to the same cleanup outcome.
           state = "identity-lost";
           waitError = toErrorObject(outcome.reason, "service child authority close failed");
           startup.reject(outcome.reason);

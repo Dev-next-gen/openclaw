@@ -1,22 +1,34 @@
 import { Duplex, PassThrough } from "node:stream";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createStubChild, firstMockArg } from "./adapters/child.test-support.js";
 import { encodeServiceChildMessage } from "./service-child-protocol.js";
 import { createServiceChildRelayAdapter } from "./service-child-relay-host.js";
 
-const mocks = vi.hoisted(() => ({ spawn: vi.fn() }));
+const mocks = vi.hoisted(() => ({ spawn: vi.fn(), delay: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: mocks.spawn }));
+vi.mock("node:timers/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:timers/promises")>()),
+  setTimeout: mocks.delay,
+}));
+afterEach(() => vi.restoreAllMocks());
 
-it.skipIf(process.platform === "win32").each([false, true])(
-  "joins a failed authority close without an unhandled rejection (root observed=%s)",
-  async (rootObserved) => {
+it.skipIf(process.platform === "win32").each([
+  { rootObserved: false, fault: "close" },
+  { rootObserved: true, fault: "close" },
+  { rootObserved: false, fault: "cancel" },
+  { rootObserved: false, fault: "poll" },
+])(
+  "joins a failed authority close without an unhandled rejection ($fault, root observed=$rootObserved)",
+  async ({ rootObserved, fault }) => {
     const stub = createStubChild();
+    let failWrite = false;
     const control = new Duplex({
+      autoDestroy: false,
       read() {},
       write(_chunk, _encoding, callback) {
-        callback();
+        callback(failWrite ? new Error("synthetic control delivery failed") : undefined);
       },
     });
     const lineage = new PassThrough();
@@ -71,7 +83,28 @@ it.skipIf(process.platform === "win32").each([false, true])(
     const unhandled = vi.fn();
     process.on("unhandledRejection", unhandled);
     try {
-      control.destroy();
+      if (fault === "poll") {
+        vi.spyOn(process, "kill").mockReturnValue(true);
+        mocks.delay.mockRejectedValueOnce(failure);
+        control.push(
+          Buffer.from(
+            encodeServiceChildMessage({
+              type: "closing",
+              generation: start.generation,
+              sequence: 2,
+              reason: "cancel",
+            }),
+          ),
+        );
+        lineage.end();
+        stub.emitExit(0);
+      }
+      if (fault === "cancel") {
+        failWrite = true;
+        adapter.kill("SIGTERM");
+      } else {
+        control.destroy();
+      }
       await nextTurn();
       await nextTurn();
       expect(unhandled).not.toHaveBeenCalled();
@@ -90,6 +123,7 @@ it.skipIf(process.platform === "win32").each([false, true])(
     } finally {
       process.off("unhandledRejection", unhandled);
       adapter.dispose();
+      control.destroy();
       lineage.destroy();
       stub.emitExit(0);
     }
