@@ -6,7 +6,7 @@ import {
   createCoreGatewayMethodDescriptors,
   listCoreGatewayMethodNames,
   STARTUP_UNAVAILABLE_GATEWAY_METHODS,
-} from "./methods/core-descriptors.js";
+} from "./methods/core-method-policy.js";
 import { GATEWAY_EVENTS, listGatewayMethods } from "./server-methods-list.js";
 import { LEGACY_ADVERTISED_GATEWAY_METHODS } from "./server-methods-list.test-fixtures.js";
 import { coreGatewayHandlers } from "./server-methods.js";
@@ -213,6 +213,7 @@ describe("listGatewayMethods", () => {
       "controlUi.sessionPullRequests.checks",
       "diagnostics.cpuProfile",
       ...voiceSelectionMethods,
+      "plugins.credentials.inspect",
     ];
     expect(listGatewayMethods().slice(-expectedSuffix.length)).toEqual(expectedSuffix);
     const methods = listGatewayMethods();
@@ -252,6 +253,7 @@ describe("listGatewayMethods", () => {
       "controlUi.sessionPullRequests.checks",
       "diagnostics.cpuProfile",
       ...voiceSelectionMethods,
+      "plugins.credentials.inspect",
     ]);
   });
 
@@ -420,6 +422,7 @@ describe("listGatewayMethods", () => {
       "controlUi.sessionPullRequests.checks",
       "diagnostics.cpuProfile",
       ...voiceSelectionMethods,
+      "plugins.credentials.inspect",
     ];
     expect(coreMethods.slice(-expectedCoreSuffix.length)).toEqual(expectedCoreSuffix);
     expect(methods.indexOf("approval.get")).toBeGreaterThan(methods.indexOf("tts.speak"));
