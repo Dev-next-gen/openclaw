@@ -9,7 +9,7 @@ import {
 } from "../../packages/gateway-protocol/src/client-info.js";
 import { listSystemPresence } from "../infra/system-presence.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
-import * as userProfiles from "../state/user-profiles.js";
+import * as userProfileCatalog from "../state/user-profile-list.js";
 import {
   ensureProfileForEmail,
   getUserProfileDisplay,
@@ -290,7 +290,7 @@ describe("createGatewayRequestContext", () => {
         expect(frames.some((frame) => frame.event === "sessions.changed")).toBe(true);
         const authenticated = peers.map((peer) => peer.authenticatedUserProfile);
         const resolve = vi
-          .spyOn(userProfiles, "resolveUserProfileId")
+          .spyOn(userProfileCatalog, "readUserProfileIdentity")
           .mockImplementationOnce(() => {
             throw new Error("fixture storage unavailable");
           });
