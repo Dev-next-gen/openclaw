@@ -11,8 +11,12 @@ import {
   projectChatDisplayMessages,
   createCurrentUserProfileMessageProjector,
 } from "../chat-display-projection.core.js";
-import { dropPreSessionStartAnnouncePairs } from "../chat-display-projection.history.js";
+import {
+  dropPreSessionStartAnnouncePairs,
+  projectForwardedMessages,
+} from "../chat-display-projection.history.js";
 import { resolveCurrentUserProfileDisplay } from "../current-user-profile-display.js";
+import { createSessionHistorySubagentProjection } from "../session-history-subagent-projection.js";
 import { readChatHistoryMessageId } from "../session-history-tail.js";
 import * as sessionTranscriptReaders from "../session-transcript-readers.js";
 import { readChatHistoryPageKernel } from "./chat-history-page-kernel.js";
@@ -75,7 +79,8 @@ export async function readChatHistoryPage(
     isIncognitoSessionKey(params.canonicalKey) ||
     getCliSessionBinding(params.entry, "claude-cli")?.sessionId
   ) {
-    return readChatHistoryPageLocal(params);
+    const page = await readChatHistoryPageLocal(params);
+    return { ...page, messages: refreshForwardedLabels(page.messages) };
   }
   const { readSessionHistoryPageInWorker } =
     await import("../../config/sessions/session-history-worker-runtime.js");
@@ -100,20 +105,38 @@ export async function readChatHistoryPage(
   const project = createCurrentUserProfileMessageProjector(resolveCurrentUserProfileDisplay);
   return {
     ...page,
-    messages: page.messages.map((message) => {
+    messages: refreshForwardedLabels(page.messages).map((message) => {
       const record = asOptionalRecord(message);
       return record ? project(record) : message;
     }),
   };
 }
 
+function refreshForwardedLabels(messages: unknown[]): unknown[] {
+  return projectForwardedMessages(
+    messages.filter(
+      (message): message is Record<string, unknown> => asOptionalRecord(message) !== undefined,
+    ),
+  );
+}
+
 async function readChatHistoryPageLocal(params: ChatHistoryPageParams): Promise<ChatHistoryPage> {
-  const { entry, provider, effectiveMaxChars, offset, messageId } = params;
+  const { entry, provider, effectiveMaxChars, offset, messageId, sessionId, storePath } = params;
   const cliSessionId = params.ignoreCliSessionImports
     ? undefined
     : getCliSessionBinding(entry, "claude-cli")?.sessionId;
-  return readChatHistoryPageKernel(params, {
-    readers: sessionTranscriptReaders,
+  const subagentCoordination =
+    sessionId && storePath && !entry?.incognito && !isIncognitoSessionKey(params.canonicalKey)
+      ? createSessionHistorySubagentProjection({
+          agentId: params.sessionAgentId,
+          sessionId,
+          sessionKey: params.canonicalKey,
+          storePath,
+          sessionEntry: entry,
+        })
+      : undefined;
+  const page = await readChatHistoryPageKernel(params, {
+    readers: { ...sessionTranscriptReaders, subagentCoordination },
     resolveCurrentUserProfileDisplay,
     ...(cliSessionId
       ? {
@@ -168,6 +191,7 @@ async function readChatHistoryPageLocal(params: ChatHistoryPageParams): Promise<
                 typeof entry?.sessionStartedAt === "number" ? entry.sessionStartedAt : undefined,
               );
               const displayMessages = projectChatDisplayMessages(mergedMessages, {
+                subagentCoordination,
                 includeCommentaryFallbacks: true,
                 maxChars: effectiveMaxChars,
                 resolveCurrentUserProfileDisplay,
@@ -218,4 +242,6 @@ async function readChatHistoryPageLocal(params: ChatHistoryPageParams): Promise<
         }
       : {}),
   });
+  subagentCoordination?.assertCurrent?.();
+  return page;
 }

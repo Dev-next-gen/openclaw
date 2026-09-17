@@ -2003,7 +2003,6 @@ jobs:
             // Eligible hybrid preflight already runs on Blacksmith.
             hybridHostedBaseRows = Object.values({
               "ci-gate": 1,
-              "pnpm-store-warmup": count(manifest.run_node || manifest.run_check_docs),
               "control-ui-performance": count(manifest.run_control_ui_performance),
               "native-i18n": count(manifest.run_native_i18n),
               "control-ui-i18n": count(manifest.run_control_ui_i18n),
@@ -2253,33 +2252,6 @@ jobs:
       - name: Audit production dependencies
         run: node scripts/pre-commit/pnpm-audit-prod.mjs --audit-level=high
 
-  # Prime the lockfile- and pnpm-pinned store for fork PRs, manual runs, the
-  # GitHub backend, and docs-only same-repo PRs. This job restores only; the
-  # trusted cache warmer owns publication.
-  pnpm-store-warmup:
-    permissions:
-      contents: read
-    needs: [preflight]
-    if: ${{ (needs.preflight.outputs.run_node == 'true' || needs.preflight.outputs.run_check_docs == 'true') && (needs.preflight.outputs.runner_profile == 'github' || needs.preflight.outputs.runner_profile == 'hybrid' || (!(github.repository == 'openclaw/openclaw' && github.event_name == 'push' && github.ref == 'refs/heads/main') && !(github.repository == 'openclaw/openclaw' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.preflight.outputs.run_node == 'true'))) }}
-    runs-on: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid') && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
-    timeout-minutes: 20
-    steps:
-      - &linux_node_checkout_step
-        name: Checkout
-        shell: bash
-        env:
-          CHECKOUT_REPO: ${{ github.repository }}
-          CHECKOUT_TOKEN: ${{ github.token }}
-          CHECKOUT_SHA: ${{ needs.preflight.outputs.checkout_revision }}
-          WORKFLOW_SHA: ${{ github.workflow_sha }}
-        run: *owned_checkout_run
-
-      - name: Setup Node environment
-        uses: ./.ci-harness/.github/actions/setup-node-env
-        with:
-          cache-mode: ${{ needs.preflight.outputs.cache_mode }}
-          install-bun: "false"
-
   # Build dist once for Node-relevant changes and share it with downstream jobs.
   # Keep this overlapping with the fast correctness lanes so green PRs get heavy
   # test/build feedback sooner instead of waiting behind a full `check` pass.
@@ -2292,7 +2264,15 @@ jobs:
     runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 35 || 20 }}
     steps:
-      - *linux_node_checkout_step
+      - &linux_node_checkout_step
+        name: Checkout
+        shell: bash
+        env:
+          CHECKOUT_REPO: ${{ github.repository }}
+          CHECKOUT_TOKEN: ${{ github.token }}
+          CHECKOUT_SHA: ${{ needs.preflight.outputs.checkout_revision }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: *owned_checkout_run
       - name: Setup Node environment
         uses: ./.ci-harness/.github/actions/setup-node-env
         with:
@@ -3301,13 +3281,38 @@ jobs:
       - name: Check startup corpus
         # Main owns full coverage. PRs need an exact-tree coverage receipt from
         # their admitted Node plan; release gates retain their separate merge tree.
+        # State cases mutate process-global config and database state, so keep each
+        # process serial while distributing the corpus across four processes.
         if: matrix.task == 'baseline-ratchets' && !(github.repository == 'openclaw/openclaw' && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.preflight.outputs.run_check == 'true') && !(github.repository == 'openclaw/openclaw' && github.event_name == 'pull_request' && needs.preflight.outputs.startup_corpus_node_revision && needs.preflight.outputs.startup_corpus_node_revision == needs.preflight.outputs.checkout_revision)
         run: |
-          reporter_args=()
-          if [[ "${{ needs.preflight.outputs.frozen_target }}" != "true" ]]; then
-            reporter_args=(--reporter verbose --reporter github-actions --reporter ./scripts/lib/vitest-resource-reporter.mts)
-          fi
-          node scripts/run-vitest.mjs run --config test/vitest/vitest.runtime-config.config.ts "${reporter_args[@]}" src/config/config-startup-corpus.test.ts src/config/state-startup-corpus.test.ts
+          set -euo pipefail
+          run_startup_corpus() {
+            if [[ "${{ needs.preflight.outputs.frozen_target }}" == "true" ]]; then
+              node scripts/run-vitest.mjs run --config test/vitest/vitest.runtime-config.config.ts "$@"
+            else
+              node scripts/run-vitest.mjs run --config test/vitest/vitest.runtime-config.config.ts \
+                --reporter verbose --reporter github-actions --reporter ./scripts/lib/vitest-resource-reporter.mts "$@"
+            fi
+          }
+          pids=()
+          labels=()
+          run_startup_corpus src/config/config-startup-corpus.test.ts &
+          pids+=("$!")
+          labels+=("config corpus")
+          for shard in {1..4}; do
+            OPENCLAW_TEST_STARTUP_CORPUS_SHARD="${shard}/4" \
+              run_startup_corpus src/config/state-startup-corpus.test.ts &
+            pids+=("$!")
+            labels+=("state corpus ${shard}/4")
+          done
+          status=0
+          for index in "${!pids[@]}"; do
+            if ! wait "${pids[$index]}"; then
+              echo "::error::${labels[$index]} failed"
+              status=1
+            fi
+          done
+          exit "$status"
 
   qa-smoke-ci-profile:
     permissions:
@@ -4880,7 +4885,19 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache-mode: ${{ needs.preflight.outputs.cache_mode }}
           install-bun: "false"
-          install-deps: "true"
+          install-deps: "false"
+
+      - name: Install Mermaid renderer dependencies
+        if: hashFiles('scripts/prepare-apple-mermaid.mjs') != ''
+        env:
+          CI: "true"
+        run: >-
+          pnpm install --frozen-lockfile --prefer-offline --optional
+          --filter '@openclaw/mermaid-renderer...'
+          --config.ignore-scripts=false
+          --config.engine-strict=false
+          --config.enable-pre-post-scripts=true
+          --config.side-effects-cache=true
 
       - name: Setup Node.js for native test tooling
         if: hashFiles('scripts/prepare-apple-mermaid.mjs') == ''
@@ -6078,7 +6095,6 @@ jobs:
     needs:
       - preflight
       - security-fast
-      - pnpm-store-warmup
       - build-artifacts
       - control-ui-performance
       - native-i18n
@@ -6119,7 +6135,6 @@ jobs:
           JOB_RESULTS: |
             preflight=${{ needs.preflight.result }}|true
             security-fast=${{ needs.security-fast.result }}|true
-            pnpm-store-warmup=${{ needs.pnpm-store-warmup.result }}|${{ (needs.preflight.outputs.run_node == 'true' || needs.preflight.outputs.run_check_docs == 'true') && (needs.preflight.outputs.runner_profile == 'github' || needs.preflight.outputs.runner_profile == 'hybrid' || (!(github.repository == 'openclaw/openclaw' && github.event_name == 'push' && github.ref == 'refs/heads/main') && !(github.repository == 'openclaw/openclaw' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.preflight.outputs.run_node == 'true'))) }}
             build-artifacts=${{ needs.build-artifacts.result }}|${{ needs.preflight.outputs.run_build_artifacts }}
             control-ui-performance=${{ needs.control-ui-performance.result }}|${{ needs.preflight.outputs.run_control_ui_performance }}
             native-i18n=${{ needs.native-i18n.result }}|${{ needs.preflight.outputs.run_native_i18n }}

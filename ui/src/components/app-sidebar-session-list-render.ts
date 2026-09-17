@@ -5,6 +5,7 @@ import type { GatewaySessionRow } from "../api/types.ts";
 import type { CatalogOpenTarget } from "../app/settings.ts";
 import { readPresenceEntries, resolveCurrentSelfUser } from "../app/user-profile.ts";
 import { t } from "../i18n/index.ts";
+import { renderHoverMarquee } from "../lib/hover-marquee.ts";
 import {
   isPresenceViewerIdle,
   presenceViewerLabel,
@@ -193,9 +194,7 @@ export function renderSessionSection(params: {
         }
       </span>`
     : nothing;
-  const labelText = html`<span class="sidebar-recent-sessions__label-text hover-marquee"
-    >${label}</span
-  >`;
+  const labelText = renderHoverMarquee(label, "sidebar-recent-sessions__label-text");
   const headerStatus = html`${
     collapsed && totalRowCount > 0
       ? html`<span class="sidebar-session-group-count">${totalRowCount}</span>`
@@ -391,6 +390,7 @@ function renderRosterLoadMore(
   host: SidebarSessionListHost,
   sections: RenderableSessionSection[],
   hasMore: boolean | undefined,
+  loading: boolean,
 ) {
   if (!hasMore) {
     return nothing;
@@ -401,6 +401,8 @@ function renderRosterLoadMore(
         type="button"
         class="sidebar-session-pagination__button"
         aria-label=${t("chat.selectors.loadMoreRosterSessions")}
+        ?disabled=${loading}
+        aria-busy=${String(loading)}
         @click=${() => {
           void host.loadMoreSidebarSessions().then(() => {
             for (const section of sections) {
@@ -636,6 +638,7 @@ export function renderSessionList(params: {
   empty: boolean;
   sections: RenderableSessionSection[];
   nativeSessionsHaveMore: boolean;
+  nativeSessionsLoading: boolean;
   catalogs: SessionCatalogRenderSnapshot;
   catalogRenderer: SessionCatalogGroupsRenderer | null;
 }) {
@@ -651,7 +654,7 @@ export function renderSessionList(params: {
           catalogs: params.catalogs,
           catalogRenderer: params.catalogRenderer,
         })}
-        ${renderRosterLoadMore(host, params.sections, params.nativeSessionsHaveMore)}
+        ${renderRosterLoadMore(host, params.sections, params.nativeSessionsHaveMore, params.nativeSessionsLoading)}
         ${
           host.sessionsStatusFilter === "archived" && params.empty
             ? html`<span class="sidebar-session-empty-hint"

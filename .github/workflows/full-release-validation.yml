@@ -414,7 +414,8 @@ jobs:
             printf 'plugin_required=%s\n' "$plugin_required"
             printf 'release_artifact_required=%s\n' "$release_artifact_required"
             printf 'request_json=%s\n' "$(jq -c . "$output")"
-            printf 'request_sha256=%s\n' "$(jq -er '.requestSha256' <<< "$result")"
+            printf 'request_sha256=%s\n' \
+              "$(printf '%s\n' "$result" | jq -er '.requestSha256')"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout target package manifest
@@ -1673,7 +1674,7 @@ jobs:
   qualify_npm_package:
     name: Qualify release npm artifacts
     needs: [resolve_target, prepare_npm_package]
-    if: ${{ inputs.rerun_group == 'all' && needs.prepare_npm_package.result == 'success' }}
+    if: ${{ always() && needs.resolve_target.result == 'success' && inputs.rerun_group == 'all' && needs.prepare_npm_package.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     outputs:

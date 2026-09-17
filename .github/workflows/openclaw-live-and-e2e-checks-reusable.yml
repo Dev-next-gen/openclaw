@@ -950,16 +950,16 @@ jobs:
               add_profile_suite native-live-extensions-o-z-other "full"
               add_profile_suite native-live-extensions-xai "full"
 
-              docker_suites="$(node --input-type=module <<'NODE'
-          import { pathToFileURL } from 'node:url';
+              docker_suites_file="${RUNNER_TEMP}/focused-live-docker-suites.txt"
+              node --input-type=module -e '
+          import { pathToFileURL } from "node:url";
           const { createReleaseWorkflowMatrixPlan } = await import(pathToFileURL(`${process.env.ADMISSION_TOOLING_ROOT}/scripts/plan-release-workflow-matrix.mjs`));
           const rows = createReleaseWorkflowMatrixPlan({
             releaseProfile: process.env.RELEASE_TEST_PROFILE, includeLiveSuites: true,
           }).liveDocker.matrix.include;
-          console.log([...new Set(rows.flatMap(row => [row.suite_id, row.suite_group].filter(Boolean)))].join('\n'));
-          NODE
-              )"
-              while IFS= read -r suite; do [[ -z "$suite" ]] || add_suite "$suite"; done <<< "$docker_suites"
+          console.log([...new Set(rows.flatMap(row => [row.suite_id, row.suite_group].filter(Boolean)))].join("\n"));
+              ' > "$docker_suites_file"
+              while IFS= read -r suite; do [[ -z "$suite" ]] || add_suite "$suite"; done < "$docker_suites_file"
 
               add_profile_suite native-live-extensions-a-k "full"
               add_profile_suite native-live-extensions-media-audio "full"
@@ -2517,8 +2517,8 @@ jobs:
               --output "$request_dir/request.json"
           )"
           {
-            printf 'json=%s\n' "$(jq -er '.requestJson' <<< "$result")"
-            printf 'sha256=%s\n' "$(jq -er '.requestSha256' <<< "$result")"
+            printf 'json=%s\n' "$(printf '%s\n' "$result" | jq -er '.requestJson')"
+            printf 'sha256=%s\n' "$(printf '%s\n' "$result" | jq -er '.requestSha256')"
           } >> "$GITHUB_OUTPUT"
 
       - name: Validate Docker E2E package source metadata
@@ -4207,7 +4207,7 @@ jobs:
             profiles: stable full
           - suite_id: native-live-test
             label: Native live test harnesses
-            command: node .release-harness/scripts/test-live-shard.mjs native-live-test
+            command: OPENCLAW_LIVE_CODEX_NODE_EXEC_TIMEOUT=1 node .release-harness/scripts/test-live-shard.mjs native-live-test
             timeout_minutes: 60
             profile_env_only: false
             profiles: stable full

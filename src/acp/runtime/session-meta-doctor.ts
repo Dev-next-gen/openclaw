@@ -14,6 +14,7 @@ import type {
   PluginDoctorStateMigrationContext,
 } from "../../plugins/doctor-contract-module.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
   openExistingOpenClawStateDatabaseReadOnly,
@@ -26,8 +27,8 @@ import {
   parseAcpDatabaseSessionKeyCandidates,
   selectAcpSessionRow,
 } from "./session-meta-keys.js";
+import { rowToAcpSessionMeta } from "./session-meta-readonly.js";
 import { resolveSessionStorePathForAcp } from "./session-meta-store.js";
-import { rowToAcpSessionMeta } from "./session-meta.js";
 
 type DoctorAcpScope = { config: OpenClawConfig; env: NodeJS.ProcessEnv; pluginId: string };
 
@@ -170,6 +171,7 @@ export function updateAcpSessionIdentityForDoctor(
             })
             .where("session_key", "=", key),
         );
+        sessionChanges.emit({ agentId: claim.agentId, sessionKey: claim.sessionKey }, database.db);
       },
       { env: scope.env },
     );
