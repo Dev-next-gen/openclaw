@@ -2809,7 +2809,7 @@ describe("grouped chat rendering", () => {
     expect(container.querySelector(".chat-group--forwarded")).toBeNull();
   });
 
-  it("renders forwarded messages with a source-session chip, own avatar, and timestamp/actions", () => {
+  it("keeps the source-session chip and timestamp/actions without a known sender avatar", () => {
     const container = document.createElement("div");
     const message = createAssistantMessage("forwarded report", { timestamp: 1000 });
     const group = createMessageGroup(message, "assistant", {
@@ -2831,10 +2831,7 @@ describe("grouped chat rendering", () => {
     expect(link?.textContent).toBe("agent:main:main");
     expect(link?.tabIndex).toBe(0);
     expect(attribution?.nextElementSibling?.classList.contains("chat-bubble")).toBe(true);
-    expect(container.querySelector(".chat-avatar--forwarded svg path")?.namespaceURI).toBe(
-      "http://www.w3.org/2000/svg",
-    );
-    expect(container.querySelector(".chat-avatar.assistant")).toBeNull();
+    expect(container.querySelector(".chat-avatar, .chat-avatar-slot")).toBeNull();
     expect(container.querySelector(".chat-group-footer .chat-sender-name")).toBeNull();
     expect(container.querySelector(".chat-group-footer .chat-group-timestamp")).not.toBeNull();
     expect(container.querySelector(".chat-group-footer-actions")).not.toBeNull();
@@ -2845,8 +2842,8 @@ describe("grouped chat rendering", () => {
     { agentId: "research", avatar: null, expected: "face" },
     { agentId: "research", avatar: "https://example.test/avatar.png", expected: "face" },
     { agentId: "main", avatar: "blob:main-avatar", expected: "face" },
-    { agentId: "removed", avatar: "blob:stale-avatar", expected: "glyph" },
-    { agentId: undefined, avatar: null, expected: "glyph" },
+    { agentId: "removed", avatar: "blob:stale-avatar", expected: "empty" },
+    { agentId: undefined, avatar: null, expected: "empty" },
   ])(
     "renders $expected for forwarded agent $agentId with $avatar",
     async ({ agentId, avatar, expected }) => {
@@ -2863,9 +2860,9 @@ describe("grouped chat rendering", () => {
 
       const image = container.querySelector("img.chat-avatar.assistant");
       expect(image !== null).toBe(expected === "image");
-      expect(container.querySelector(".chat-avatar--forwarded") !== null).toBe(
-        expected === "glyph",
-      );
+      if (expected === "empty") {
+        expect(container.querySelector(".chat-avatar, .chat-avatar-slot")).toBeNull();
+      }
       if (expected === "image") {
         expect(image?.getAttribute("src")).toBe(avatar);
         expect(image?.getAttribute("alt")).toBe("Research Agent");
