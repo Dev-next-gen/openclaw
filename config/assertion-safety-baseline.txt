@@ -2477,7 +2477,7 @@ src/config/plugins-allowlist.ts	1
 src/config/redact-snapshot.ts	4
 src/config/runtime-overrides.ts	2
 src/config/runtime-snapshot.ts	1
-src/config/runtime-source-projection.ts	3
+src/config/runtime-source-projection.ts	4
 src/config/schema.ts	1
 src/config/sessions/archive-compression.ts	1
 src/config/sessions/cleanup-service.ts	3
@@ -3186,7 +3186,7 @@ src/plugins/bundle-mcp.ts	2
 src/plugins/bundled-channel-config-metadata.ts	4
 src/plugins/bundled-plugin-scan.ts	1
 src/plugins/candidate-install-owner.ts	2
-src/plugins/capability-provider-runtime.ts	12
+src/plugins/capability-provider-runtime.ts	13
 src/plugins/captured-registration.ts	2
 src/plugins/channel-presence-policy.ts	2
 src/plugins/channel-validation.ts	1
@@ -3495,7 +3495,6 @@ src/transcripts/store-export-ownership.ts	2
 src/transcripts/store-sqlite.ts	2
 src/tts/openai-compatible-speech-provider.ts	1
 src/tts/status-config.ts	1
-src/tts/tts-auto-mode.ts	2
 src/tts/tts-config.ts	5
 src/tts/tts-core.ts	1
 src/tts/tts-payload.ts	2
