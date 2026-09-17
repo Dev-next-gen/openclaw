@@ -8597,6 +8597,111 @@ describe("chat model controls", () => {
     expect(onModelSelect).not.toHaveBeenCalled();
   });
 
+  it("collapses provider groups by default and restores manual groups after search", async () => {
+    const { state } = createChatHeaderState({
+      model: "shared",
+      modelProvider: "openai",
+      models: [
+        { id: "shared", name: "Shared model", provider: "openai" },
+        { id: "shared", name: "Shared model", provider: "anthropic" },
+        {
+          id: "unavailable",
+          name: "Shared unavailable",
+          provider: "google",
+          available: false,
+          unavailableReason: "cooldown",
+        },
+      ],
+    });
+    const onModelSelect = vi.fn(async () => true);
+    const onTargetSelect = vi.fn();
+    const props: Partial<ChatModelControlsProps> = {
+      modelPickerOpen: true,
+      onModelSelect,
+      onModelPickerTargetSelect: onTargetSelect,
+      modelPickerTargetGroups: [
+        {
+          id: "remote",
+          label: "Remote",
+          status: "ready",
+          errorLabel: "Unavailable",
+          options: [{ value: "shared", label: "Shared remote" }],
+        },
+      ],
+    };
+    const container = renderModelControls(state, props);
+    document.body.append(container);
+    await Promise.resolve();
+    const details = container.querySelector<HTMLDetailsElement>(".chat-controls__model-picker")!;
+    const search = container.querySelector<HTMLInputElement>("[data-chat-model-search]")!;
+    const toggles = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("[data-chat-model-provider-toggle]"),
+    );
+    const visible = () =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>("[data-chat-model-option]")).filter(
+        (row) => !row.hidden,
+      );
+    expect(toggles).toHaveLength(3);
+    expect(toggles.every((toggle) => toggle.getAttribute("aria-expanded") === "false")).toBe(true);
+    expect(toggles[0]?.getAttribute("aria-label")).toBe("OpenAI models (1)");
+    expect(
+      toggles.every((toggle) =>
+        Boolean(document.getElementById(toggle.getAttribute("aria-controls")!)),
+      ),
+    ).toBe(true);
+    expect(visible().map((row) => row.dataset.chatModelTarget)).toEqual(["shared"]);
+    details.dispatchEvent(new KeyboardEvent("keydown", { key: "2", bubbles: true }));
+    expect(onModelSelect).not.toHaveBeenCalled();
+    expect(onTargetSelect).not.toHaveBeenCalled();
+
+    toggles[0]!.click();
+    expect(toggles[0]?.getAttribute("aria-expanded")).toBe("true");
+    expect(visible().map((row) => row.dataset.chatModelOption)).toEqual([
+      "openai/shared",
+      "target:remote:shared",
+    ]);
+    search.value = "shared";
+    search.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    expect(visible().map((row) => row.dataset.chatModelOption)).toEqual([
+      "openai/shared",
+      "anthropic/shared",
+      "google/unavailable",
+      "target:remote:shared",
+    ]);
+    expect(visible()[2]?.disabled).toBe(true);
+    expect(visible()[2]?.querySelector("[data-chat-model-shortcut-number]")).toBeNull();
+    expect(toggles[1]?.getAttribute("aria-expanded")).toBe("false");
+    state.chatModelCatalog = [
+      ...state.chatModelCatalog,
+      { id: "shared-new", name: "Shared new", provider: "anthropic" },
+    ];
+    renderModelControls(state, props, container);
+    await Promise.resolve();
+    expect(visible().some((row) => row.dataset.chatModelOption === "anthropic/shared-new")).toBe(
+      true,
+    );
+    expect(container.querySelector("[data-chat-model-provider-toggle]")).toBe(toggles[0]);
+    search.value = "";
+    search.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    expect(visible().map((row) => row.dataset.chatModelOption)).toEqual([
+      "openai/shared",
+      "target:remote:shared",
+    ]);
+    toggles[0]!.click();
+    expect(visible().map((row) => row.dataset.chatModelOption)).toEqual(["target:remote:shared"]);
+    toggles[0]!.click();
+    details.open = false;
+    details.dispatchEvent(new Event("toggle"));
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+    await Promise.resolve();
+    expect(toggles.every((toggle) => toggle.getAttribute("aria-expanded") === "false")).toBe(true);
+    expect(visible().map((row) => row.dataset.chatModelOption)).toEqual(["target:remote:shared"]);
+    details.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
+    expect(onTargetSelect).toHaveBeenCalledExactlyOnceWith("remote", "shared");
+    container.remove();
+  });
+
   it.each(["native", "aria"])(
     "groups models and preserves ranked keyboard selection through catalog replacement (%s disabled)",
     async (disabledMode) => {
@@ -8712,8 +8817,14 @@ describe("chat model controls", () => {
       expect(details?.open).toBe(false);
 
       onModelSelect.mockClear();
+      details!.dispatchEvent(new Event("toggle"));
       details!.open = true;
-      details!.dispatchEvent(new KeyboardEvent("keydown", { key: "3", bubbles: true }));
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-chat-model-provider-group="anthropic"] [data-chat-model-provider-toggle]',
+        )!
+        .click();
+      details!.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
       expect(onModelSelect).toHaveBeenCalledExactlyOnceWith(
         "anthropic/claude-sonnet-4-6",
         "main",
