@@ -1,5 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
+import { isFencedProviderReadAction } from "../../channels/plugins/message-action-dispatch.js";
 import type { InternalChannelThreadingToolContext } from "../../channels/threading-tool-context-internal.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
@@ -13,7 +14,38 @@ import {
   selectMessageActionRequesterIdentity,
   type MessageActionAuthorization,
 } from "../message-action-turn-capability.js";
+import { createAgentRuntimeAuthorityGuard } from "./agent-runtime-authority.js";
 import type { GatewayRequestHandlers } from "./types.js";
+
+/** Retain the caller and admitted read source before routing or replay. */
+export function createMessageActionRuntimeAuthority(
+  params: Pick<
+    Parameters<GatewayRequestHandlers["message.action"]>[0],
+    "client" | "context" | "respond" | "sessionMutationCommitGuard"
+  > & {
+    action: string;
+    authorization?: MessageActionAuthorization;
+  },
+) {
+  const assertReadCurrent = isFencedProviderReadAction(params.action)
+    ? (params.authorization?.scheduled?.assertCurrent ??
+      params.authorization?.assertDashboardReadCurrent)
+    : undefined;
+  return {
+    assertReadCurrent,
+    agentRuntimeAuthority: createAgentRuntimeAuthorityGuard(
+      params.client,
+      params.context,
+      params.respond,
+      assertReadCurrent
+        ? () => {
+            params.sessionMutationCommitGuard?.();
+            assertReadCurrent();
+          }
+        : params.sessionMutationCommitGuard,
+    ),
+  };
+}
 
 export function resolveTrustedMessageActionToolContext(params: {
   client: Parameters<GatewayRequestHandlers["message.action"]>[0]["client"];

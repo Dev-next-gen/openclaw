@@ -157,8 +157,6 @@ export function isDirectGatewayChatUserTurn(params: GatewayChatUserTurn): boolea
       !params.isDirectExternalUser ||
       params.hasExplicitOrigin ||
       params.hasRestoredCronContinuation ||
-      params.isIncognito ||
-      params.isReconnectResume ||
       params.isSystemGenerated ||
       params.turnKind !== "main",
   });
@@ -170,6 +168,7 @@ export function resolveGatewayChatCronCreatorAuthorityAdmission(
 ): GatewayCronCreatorAuthorityAdmission | undefined {
   return resolveDirectOperatorAuthority({
     ...params,
-    disallowed: !isDirectGatewayChatUserTurn(params),
+    disallowed:
+      params.isIncognito || params.isReconnectResume || !isDirectGatewayChatUserTurn(params),
   });
 }

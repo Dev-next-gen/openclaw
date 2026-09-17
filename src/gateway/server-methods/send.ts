@@ -16,10 +16,7 @@ import {
 import { sendDurableMessageBatchCore } from "../../channels/message/runtime.js";
 import type { ConversationReadInvocationOrigin } from "../../channels/plugins/conversation-read-origin.js";
 import { resolveChannelDefaultAccountId } from "../../channels/plugins/helpers.js";
-import {
-  dispatchChannelMessageAction,
-  isFencedProviderReadAction,
-} from "../../channels/plugins/message-action-dispatch.js";
+import { dispatchChannelMessageAction } from "../../channels/plugins/message-action-dispatch.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import { resolveChannelThreadAddressing } from "../../channels/thread-addressing.js";
 import { isChannelPartialDeliveryError } from "../../channels/turn/delivery-result.js";
@@ -93,7 +90,10 @@ import {
   runGatewayInflightWork,
   type GatewayInflightResult as InflightResult,
 } from "./inflight.js";
-import { resolveTrustedMessageActionToolContext } from "./message-action-context.js";
+import {
+  createMessageActionRuntimeAuthority,
+  resolveTrustedMessageActionToolContext,
+} from "./message-action-context.js";
 import type { GatewayRequestContext, GatewayRequestHandlers, RespondFn } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
@@ -903,21 +903,14 @@ export const sendHandlers: GatewayRequestHandlers = {
       client,
       requestedOrigin: request.conversationReadOrigin,
     });
-    const assertReadCurrent = isFencedProviderReadAction(request.action)
-      ? (trustedContext.messageActionAuthorization?.scheduled?.assertCurrent ??
-        trustedContext.messageActionAuthorization?.assertDashboardReadCurrent)
-      : undefined;
-    const agentRuntimeAuthority = createAgentRuntimeAuthorityGuard(
+    const { assertReadCurrent, agentRuntimeAuthority } = createMessageActionRuntimeAuthority({
       client,
       context,
       respond,
-      assertReadCurrent
-        ? () => {
-            sessionMutationCommitGuard?.();
-            assertReadCurrent();
-          }
-        : sessionMutationCommitGuard,
-    );
+      sessionMutationCommitGuard,
+      action: request.action,
+      authorization: trustedContext.messageActionAuthorization,
+    });
     const assertDirectAdapterHandoff = agentRuntimeAuthority.commitGuard;
     const onPlatformSendDispatch = assertDirectAdapterHandoff
       ? async () => assertDirectAdapterHandoff()
