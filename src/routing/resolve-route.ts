@@ -803,7 +803,7 @@ export function resolveAgentRoute(input: ResolveAgentRouteInput): ResolvedAgentR
     unboundAgentId ??
       resolveDefaultAgentId(input.cfg, {
         surface: `${channel} account ${accountId} routing`,
-        hint: `Add a channel-wide binding for ${channel}:${accountId} or configure a sole agent.`,
+        hint: `Add a channel-wide binding for ${channel}:${accountId}: ${JSON.stringify({ agentId: "<agentId>", match: { channel, accountId } })}. Replace <agentId> with a configured agent, then restart the Gateway.`,
       }),
     "default",
   );

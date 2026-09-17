@@ -124,7 +124,7 @@ function planConfigRepair(
     applyLegacyDoctorMigrations(
       projected,
       { authoredRaw: snapshot.parsed, resolvedRaw: snapshot.sourceConfig },
-      { pluginContracts },
+      { pluginContracts, sourceConfigBeforeMigrations: snapshot.sourceConfigBeforeMigrations },
     ),
   );
   const config = preserveDeferredPluginMigrationConfig({
@@ -166,6 +166,7 @@ function planConfigRepair(
     config,
     changes: [
       ...migration.changes,
+      ...(migration.warnings ?? []),
       ...(sourceRecords.status === "valid"
         ? ["Removed retired plugins.installs after preserving plugin install records."]
         : []),

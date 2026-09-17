@@ -9,6 +9,21 @@ read_when:
 Checks 0-2 cover config normalization and the legacy config key migrations,
 plus how doctor publishes shared-state schema during an update.
 
+## Channel ownership during an update
+
+When Doctor migrates a legacy `agents.list` roster to explicit ownership, it also
+preserves unbound channel accounts with an account-scoped binding to the first
+agent from the old list, which received their implicit traffic before the
+update. Existing account bindings and narrower conversation routes remain unchanged. Doctor
+reports each added binding and saves it with the roster migration through the
+normal config backup and validation flow.
+
+For an existing explicit fleet, `openclaw doctor --fix` repairs accounts whose
+narrower routes all name one configured agent. If no owner can be established,
+Doctor reports the exact binding to add. An unresolved account stays blocked
+with that reason while the Gateway and other accounts continue running; it does
+not enter a restart loop. Add the reported binding and restart the Gateway.
+
 ## Missing plugins during migration
 
 A configured plugin that is missing or cannot finish installation does not block

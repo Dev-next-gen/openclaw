@@ -3,6 +3,7 @@ import { inheritLegacyDefaultAgentId } from "../../../config/legacy.default-agen
 import type { LegacyConfigMigrationContext } from "../../../config/legacy.shared.js";
 import { cloneConfigWithResolutionFacts } from "../../../config/resolution-facts.js";
 import { applyChannelDoctorCompatibilityMigrations } from "./channel-legacy-config-migrate.js";
+import { repairUnownedChannelAccountBindings } from "./legacy-config-binding-repair.js";
 import { LEGACY_CONFIG_MIGRATIONS } from "./legacy-config-migrations.js";
 
 /** Apply all legacy doctor migrations to raw config, returning null when nothing changed. */
@@ -14,10 +15,12 @@ export function applyLegacyDoctorMigrations(
     // state database. Preview callers that must stay state-free pass false; the config they
     // produce is scaffolding only — the committed result always comes from a full run.
     pluginContracts?: boolean;
+    sourceConfigBeforeMigrations?: unknown;
   },
 ): {
   next: Record<string, unknown> | null;
   changes: string[];
+  warnings?: string[];
 } {
   if (!raw || typeof raw !== "object") {
     return { next: null, changes: [] };
@@ -32,10 +35,19 @@ export function applyLegacyDoctorMigrations(
     pluginContracts: options?.pluginContracts !== false,
   });
   changes.push(...compat.changes);
-  if (changes.length === 0) {
-    return { next: null, changes: [] };
-  }
+  const ownership: ReturnType<typeof repairUnownedChannelAccountBindings> =
+    options?.pluginContracts !== false
+      ? repairUnownedChannelAccountBindings(
+          compat.next,
+          options?.sourceConfigBeforeMigrations ?? context?.resolvedRaw ?? original,
+        )
+      : { config: compat.next, changes: [] };
+  changes.push(...ownership.changes);
   // The config reader keeps the retired default-agent marker outside the object.
   // Cloning must retain that owner so validation does not roll back a repairable roster.
-  return { next: inheritLegacyDefaultAgentId(original, compat.next), changes };
+  return {
+    next: changes.length > 0 ? inheritLegacyDefaultAgentId(original, ownership.config) : null,
+    changes,
+    ...(ownership.warnings?.length ? { warnings: ownership.warnings } : {}),
+  };
 }

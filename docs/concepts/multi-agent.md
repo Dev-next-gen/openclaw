@@ -325,6 +325,13 @@ all explicitly name one configured agent, Doctor adds an account-scoped binding 
 agent. It does not borrow ownership from another account or channel, choose
 between conflicting owners, or assign other unowned surfaces.
 
+During a legacy `agents.list` migration, unbound accounts keep
+their historical first-agent fallback as an explicit account binding, including
+when narrower conversation routes name other agents. Doctor
+records the binding alongside the ownership stamp. An account whose owner remains
+unresolved reports the required binding and stays blocked without automatic
+restart attempts; other accounts and the Gateway continue serving.
+
 When migrating a legacy `agents.list` roster without a default marker, Doctor
 also pins the first agent's inherited workspace to `agents.entries.<id>.workspace`. Its customized instructions
 and historical `memory/` notes remain in their original directory. Explicit
