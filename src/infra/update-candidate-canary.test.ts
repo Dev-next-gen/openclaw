@@ -112,7 +112,7 @@ afterEach(() => {
 });
 
 describe("update candidate canary", () => {
-  readiness.registerCanaryReadinessBudgetTests(() => root, mocks.spawn);
+  readiness.registerCanaryReadinessBudgetTests(() => root, mocks);
   it("records a typed capacity refusal before notifying the snapshot failure", async () => {
     const capacity = vi.spyOn(diskSpace, "tryReadDiskSpace").mockImplementation((targetPath) => ({
       targetPath,
@@ -511,20 +511,6 @@ describe("update candidate canary", () => {
       expect(result).not.toHaveProperty("checkpointContinuation");
     },
   );
-  it("reports a runtime inspection failure before preparing a snapshot", async () => {
-    const directory = path.join(root, "dist", "infra");
-    await fs.rm(directory, { recursive: true });
-    await fs.writeFile(directory, "not a directory");
-    const result = await validateUpdateCandidateCanary(canaryStateOptions(3_000));
-    expect(result).toMatchObject({ status: "error", phase: "runtime" });
-    expect(result.steps).toEqual([
-      expect.objectContaining({ name: "candidate runtime", exitCode: 1 }),
-    ]);
-    expect(result.steps[0]?.stderrTail).toContain("ENOTDIR");
-    expect(mocks.snapshot).not.toHaveBeenCalled();
-    expect(mocks.spawn).not.toHaveBeenCalled();
-  });
-
   it("reports unavailable validation when the candidate predates the migration-continuation contract", async () => {
     await fs.rm(path.join(root, "dist", "infra", "update-migrated-finalize.worker.js"));
     stubHealthyGateway();

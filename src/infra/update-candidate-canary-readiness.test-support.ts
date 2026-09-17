@@ -1,5 +1,7 @@
 import { once } from "node:events";
+import fs from "node:fs/promises";
 import { createServer } from "node:http";
+import path from "node:path";
 import { getGlobalDispatcher, setGlobalDispatcher } from "undici";
 import { expect, it, onTestFinished, vi, type Mock } from "vitest";
 import { startProxy, stopProxy, type ProxyHandle } from "./net/proxy/proxy-lifecycle.js";
@@ -31,9 +33,12 @@ export function expectCanaryReadinessWarning(
 
 export function registerCanaryReadinessBudgetTests(
   root: () => string,
-  spawnMock: Mock<
-    (command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => FakeChild
-  >,
+  mocks: {
+    spawn: Mock<
+      (command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => FakeChild
+    >;
+    snapshot: Mock;
+  },
 ) {
   it.each(["gateway-only", "proxy", "block"] as const)(
     "probes the canary with managed proxy mode %s",
@@ -178,8 +183,8 @@ export function registerCanaryReadinessBudgetTests(
     let now = 2_000_000;
     const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
     onTestFinished(() => clock.mockRestore());
-    const spawnNormally = spawnMock.getMockImplementation()!;
-    spawnMock.mockImplementation((command, args, options) => {
+    const spawnNormally = mocks.spawn.getMockImplementation()!;
+    mocks.spawn.mockImplementation((command, args, options) => {
       const fails = phase === "config" && args.includes("validate");
       if (!args.includes("--fix") && !fails) {
         return spawnNormally(command, args, options);
@@ -214,6 +219,26 @@ export function registerCanaryReadinessBudgetTests(
     );
     expect(failed?.stderrTail).not.toContain("Earlier check");
     expect(result.logTail.join("\n")).toContain("Earlier check completed successfully");
+  });
+
+  it("reports a runtime inspection failure before preparing a snapshot", async () => {
+    const directory = path.join(root(), "dist", "infra");
+    await fs.rm(directory, { recursive: true });
+    await fs.writeFile(directory, "not a directory");
+    const result = await validateUpdateCandidateCanary({
+      root: root(),
+      stateDir: root(),
+      config: {},
+      env: {},
+      timeoutMs: 3_000,
+    });
+    expect(result).toMatchObject({ status: "error", phase: "runtime" });
+    expect(result.steps).toEqual([
+      expect.objectContaining({ name: "candidate runtime", exitCode: 1 }),
+    ]);
+    expect(result.steps[0]?.stderrTail).toContain("ENOTDIR");
+    expect(mocks.snapshot).not.toHaveBeenCalled();
+    expect(mocks.spawn).not.toHaveBeenCalled();
   });
 
   it.each(
