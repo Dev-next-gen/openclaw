@@ -8,11 +8,11 @@ import {
 } from "@slack/web-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SlackMessageEvent } from "../types.js";
-import type { SlackIngressTurnLifecycle } from "./ingress.js";
 import {
   createSlackThreadTsResolver,
   isTransientSlackThreadLookupError,
 } from "./thread-resolution.js";
+import type { SlackIngressTurnLifecycle } from "./types.js";
 
 type SlackThreadClient = Parameters<typeof createSlackThreadTsResolver>[0]["client"];
 

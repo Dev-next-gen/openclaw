@@ -425,7 +425,7 @@ describe("complete plugin skill bundles", () => {
     __setFsSafeTestHooksForTest({
       beforeRootReadFinalFence: async (filePath, handle) => {
         if (growing.has(filePath)) {
-          // Grow after the pinned stat. The dependency must perform its real
+          // Grow after Root's pinned stat. The dependency must perform its real
           // bounded read and overflow probe, not an early stat-size rejection.
           await fs.truncate(filePath, SKILL_LIBRARY_MAX_FILE_BYTES + 1);
         }
