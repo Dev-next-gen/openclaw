@@ -24,13 +24,14 @@ export type SessionActorProfileIdentity = Extract<CurrentUserProfileDisplay, { k
 
 export type GatewaySessionModelSource = {
   entry: SessionEntry | undefined;
-  loadSessionEntry: (key: string) => SessionEntry | undefined;
+  readSourceEntry: (key: string) => SessionEntry | undefined;
 };
 
 export type SessionListRowContext = {
   workerPlacementEnvironment?: NodeJS.ProcessEnv;
   projectedAgentRuns?: ProjectedAgentRunIndex;
   subagentRuns: SubagentRunReadIndex<SubagentRunReadRecord>;
+  subagentRunsByChildSessionKey: ReadonlyMap<string, readonly SubagentRunReadRecord[]>;
   selectedModelByOverrideRef: Map<string, ReturnType<typeof resolveSessionModelRef>>;
   thinkingMetadataByModelRef: Map<string, GatewayModelThinkingProfile>;
   findModelCatalogEntry: typeof findModelCatalogEntry;

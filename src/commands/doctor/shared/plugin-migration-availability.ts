@@ -7,6 +7,7 @@ import type { DeferredPluginMigration } from "../../../infra/deferred-plugin-mig
 import { normalizePluginsConfig } from "../../../plugins/config-state.js";
 import { withPluginMetadataSnapshotScope } from "../../../plugins/current-plugin-metadata-snapshot.js";
 import { resolvePluginDoctorContractArtifact } from "../../../plugins/doctor-contract-artifact.js";
+import { createInstalledPluginIndexScopeLookup } from "../../../plugins/installed-plugin-index-scope-lookup.js";
 import { resolveInstalledPluginIndexStateDatabaseOptions } from "../../../plugins/installed-plugin-index-store-path.js";
 import { loadManifestMetadataSnapshot } from "../../../plugins/manifest-contract-eligibility.js";
 import {
@@ -19,6 +20,7 @@ import {
   isArtifactPreservingStateRead,
   withOpenClawStateDatabaseReadSnapshot,
 } from "../../../state/openclaw-state-db-readonly.js";
+import { collectConfiguredRuntimeIds } from "./configured-runtime-plugin-installs.js";
 import {
   collectUpdateDeferredPluginIds,
   resolveConfiguredPluginInstallContext,
@@ -33,6 +35,7 @@ export type PluginMigrationInspection = {
   requiredPluginIds: readonly string[];
   inspectionRequiredPluginIds: readonly string[];
   statelessPluginIds: readonly string[];
+  runtimePluginAliases: readonly string[];
 };
 
 export type PluginMigrationAvailability = PluginMigrationInspection & {
@@ -157,11 +160,27 @@ export async function inspectPluginMigrationAvailability(params: {
               },
             ];
           });
+          const lookup = createInstalledPluginIndexScopeLookup(metadata.index);
+          const statelessIds = new Set(statelessPluginIds);
+          const runtimePluginAliases = collectConfiguredRuntimeIds(params.cfg).filter((runtime) => {
+            if (
+              selected.has(runtime) ||
+              lookup.hasInstalledPluginIds([runtime]) ||
+              Object.hasOwn(context.records, runtime) ||
+              Object.hasOwn(params.cfg.plugins?.entries ?? {}, runtime)
+            ) {
+              return false;
+            }
+            const owners = new Set<string>();
+            lookup.addAgentHarnessOwners(owners, [runtime]);
+            return owners.size > 0 && [...owners].every((owner) => statelessIds.has(owner));
+          });
           return {
             pending,
             requiredPluginIds: requiredPluginIds.toSorted(),
             inspectionRequiredPluginIds: inspectionRequiredPluginIds.toSorted(),
             statelessPluginIds,
+            runtimePluginAliases,
           };
         },
         { config: params.cfg, env },

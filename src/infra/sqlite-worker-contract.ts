@@ -11,6 +11,8 @@ export type SqliteWorkerCommand<Operations extends SqliteWorkerOperations> = {
 
 export type SqliteWorkerBackend<Operations extends SqliteWorkerOperations> = {
   execute(command: SqliteWorkerCommand<Operations>): Operations[keyof Operations]["output"];
+  /** Synchronously reject native state that requires retirement before releasing the operation. */
+  assertSettled?(): void;
   close(): void | Promise<void>;
 };
 
@@ -53,6 +55,7 @@ export type SqliteWorkerReply = {
   | {
       ok: false;
       retire?: true;
+      openNotEntered?: true;
       error: {
         name: string;
         message: string;
@@ -67,6 +70,9 @@ export const SQLITE_WORKER_MAX_MESSAGE_BYTES = 32 * 1024 * 1024;
 export const SQLITE_WORKER_MAX_RESULT_BYTES = 64 * 1024 * 1024;
 export const SQLITE_WORKER_TRANSFER_FRAME_BYTES = 8 * 1024 * 1024;
 
+// The process-global broker can return errors to a different source/built module copy.
+const retainedWorkerErrorCode = Symbol.for("openclaw.sqliteWorkerErrorCode");
+
 export class SqliteWorkerError extends Error {
   constructor(
     message: string,
@@ -74,5 +80,27 @@ export class SqliteWorkerError extends Error {
   ) {
     super(message);
     this.name = "SqliteWorkerError";
+    Object.defineProperty(this, retainedWorkerErrorCode, { value: code });
   }
+}
+
+/** Carry only canonical worker classification through a local cleanup aggregate. */
+export function retainSqliteWorkerErrorCode(error: Error, source: unknown): Error {
+  let code: unknown;
+  try {
+    code = Object.getOwnPropertyDescriptor(source, retainedWorkerErrorCode)?.value;
+  } catch {
+    // Optional classification must not replace an error that refuses inspection.
+    return error;
+  }
+  if (
+    code === "closed" ||
+    code === "overloaded" ||
+    code === "unavailable" ||
+    code === "outcome-unknown"
+  ) {
+    Object.defineProperty(error, retainedWorkerErrorCode, { value: code });
+    Object.assign(error, { code });
+  }
+  return error;
 }

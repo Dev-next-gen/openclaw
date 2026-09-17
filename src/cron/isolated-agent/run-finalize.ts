@@ -35,7 +35,7 @@ import {
   setCronSessionAgentHarnessId,
   setCronSessionRuntimeModel,
 } from "./run-session-state.js";
-import { recordCronRunUsage, resolveCronRunUsage } from "./run-usage.js";
+import { resolveCronRunUsage } from "./run-usage.js";
 import {
   DEFAULT_CONTEXT_TOKENS,
   deriveSessionTotalTokens,
@@ -54,6 +54,7 @@ export async function finalizeCronRun(params: {
   execution: CronExecutionResult;
   abortReason: () => string;
   isAborted: () => boolean;
+  settleUsage: (contextTokens: number) => Promise<CronRunTelemetry["usage"]>;
   markCronRunSessionCleanupHandled: () => void;
   beforeSessionDelete: () => void;
 }): Promise<RunCronAgentTurnResult> {
@@ -96,17 +97,11 @@ export async function finalizeCronRun(params: {
       });
     }
   }
-  const usage = resolveCronRunUsage(execution);
+  const usage = resolveCronRunUsage(execution.completedPromptRuns);
   const lastCallUsage = finalRunResult.meta?.agentMeta?.lastCallUsage;
   const promptTokens = finalRunResult.meta?.agentMeta?.promptTokens;
-  const modelUsed =
-    finalRunResult.meta?.agentMeta?.model ??
-    execution.fallbackModel ??
-    execution.liveSelection.model;
-  const providerUsed =
-    finalRunResult.meta?.agentMeta?.provider ??
-    execution.fallbackProvider ??
-    execution.liveSelection.provider;
+  const modelUsed = finalRunResult.meta?.agentMeta?.model ?? execution.fallbackModel;
+  const providerUsed = finalRunResult.meta?.agentMeta?.provider ?? execution.fallbackProvider;
   const runtimeContextTokens = resolvePositiveContextTokens(
     finalRunResult.meta?.agentMeta?.contextTokens,
   );
@@ -161,35 +156,7 @@ export async function finalizeCronRun(params: {
     prepared.cronSession.sessionEntry.contextTokens = contextTokens;
     prepared.cronSession.sessionEntry.contextTokensSource = contextTokensSource;
   }
-  let telemetry: CronRunTelemetry = { model: modelUsed, provider: providerUsed };
   if (hasNonzeroUsage(usage) || hasNonzeroUsage(finalRunResult.meta?.agentMeta?.usage)) {
-    const input = usage?.input ?? 0;
-    const output = usage?.output ?? 0;
-    const cacheRead = usage?.cacheRead ?? 0;
-    const cacheWrite = usage?.cacheWrite ?? 0;
-    prepared.cronSession.sessionEntry.inputTokens = input;
-    prepared.cronSession.sessionEntry.outputTokens = output;
-    const bucketTotalTokens = input + output + cacheRead + cacheWrite;
-    // Keep telemetry totals consistent when a provider reports only a partial
-    // aggregate alongside the normalized billing buckets.
-    const aggregateTotalTokens =
-      typeof usage?.total === "number" && Number.isFinite(usage.total)
-        ? Math.max(bucketTotalTokens, usage.total)
-        : bucketTotalTokens;
-    const telemetryUsage: NonNullable<CronRunTelemetry["usage"]> = {
-      input_tokens: input,
-      output_tokens: output,
-      ...(aggregateTotalTokens > 0 ? { total_tokens: aggregateTotalTokens } : {}),
-      ...(cacheRead > 0 ? { cache_read_tokens: cacheRead } : {}),
-      ...(cacheWrite > 0 ? { cache_write_tokens: cacheWrite } : {}),
-    };
-    prepared.cronSession.sessionEntry.cacheRead = cacheRead;
-    prepared.cronSession.sessionEntry.cacheWrite = cacheWrite;
-    telemetry = {
-      model: modelUsed,
-      provider: providerUsed,
-      usage: telemetryUsage,
-    };
     const totalTokens = deriveSessionTotalTokens({
       usage: lastCallUsage,
       contextTokens,
@@ -205,9 +172,11 @@ export async function finalizeCronRun(params: {
       prepared.cronSession.sessionEntry.totalTokensVersion = undefined;
     }
   }
-  await recordCronRunUsage({ prepared, execution, contextTokens });
-  await prepared.persistSessionEntry();
-  await prepared.runContinuationSession?.seal({ basePersisted: true });
+  const telemetry: CronRunTelemetry = {
+    model: modelUsed,
+    provider: providerUsed,
+    usage: await params.settleUsage(contextTokens),
+  };
 
   if (params.isAborted()) {
     return prepared.withRunSession({

@@ -51,6 +51,7 @@ import {
   setActivePluginRegistry,
   stageActivePluginRegistry,
 } from "../plugins/runtime.js";
+import { createServiceRegistration } from "../plugins/services.test-support.js";
 import {
   enqueueCommandInLane,
   getCommandLaneSnapshot,
@@ -232,7 +233,6 @@ function startManagedGatewayConfigReloader(params: ManagedReloaderTestParams) {
     minimalTestGateway: false,
     initialPluginInstallRecords: {},
     initialCompareConfig: params.initialConfig,
-    initialInternalWriteHash: null,
     watchPath: "/tmp/openclaw.json",
     promoteSnapshot: vi.fn(async () => true) as never,
     deps: {} as never,
@@ -3119,12 +3119,12 @@ describe("gateway targeted service reload", () => {
   it("forwards the service owner through managed config publication", async () => {
     vi.useFakeTimers();
     const registry = createTestRegistry([]);
-    registry.services.push({
-      pluginId: "exporter",
-      source: "test",
-      origin: "workspace",
-      service: { id: "exporter", reload: { configPrefixes: ["diagnostics.otel"] }, start() {} },
-    });
+    registry.services.push(
+      createServiceRegistration(
+        { id: "exporter", reload: { configPrefixes: ["diagnostics.otel"] }, start() {} },
+        { pluginId: "exporter" },
+      ),
+    );
     setActivePluginRegistry(registry);
     const initialConfig: OpenClawConfig = { diagnostics: { otel: { enabled: true } } };
     const nextConfig: OpenClawConfig = { diagnostics: { otel: { enabled: false } } };
@@ -3165,12 +3165,7 @@ describe("gateway targeted service reload", () => {
       vi.useFakeTimers();
       const registry = createTestRegistry([]);
       for (const id of ["replaced", "retained"]) {
-        registry.services.push({
-          pluginId: id,
-          source: "test",
-          origin: "workspace",
-          service: { id, start() {} },
-        });
+        registry.services.push(createServiceRegistration({ id, start() {} }, { pluginId: id }));
       }
       const runtime = {
         operationId: "mixed-services",
@@ -3271,12 +3266,9 @@ describe("gateway targeted service reload", () => {
       const nextConfig: OpenClawConfig = { diagnostics: { otel: { enabled: false } } };
       const selected = new Set(["exporter"]);
       const registry = createTestRegistry([]);
-      registry.services.push({
-        pluginId: "exporter-plugin",
-        source: "test",
-        origin: "workspace",
-        service: { id: "exporter", start() {} },
-      });
+      registry.services.push(
+        createServiceRegistration({ id: "exporter", start() {} }, { pluginId: "exporter-plugin" }),
+      );
       const runtime = { ...makePluginReloadResult().runtime, pluginIds: ["exporter-plugin"] };
       const failure = new Error(mode);
       const requestRecoveryRestart = vi.fn(() => ({ status: "emitted" as const }));

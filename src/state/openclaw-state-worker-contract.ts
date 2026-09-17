@@ -1,5 +1,7 @@
+import type { NativeHookRelayStoreWorkerOperations } from "../agents/harness/native-hook-relay-store.worker-contract.js";
 import type { SubagentRunReadRecord } from "../agents/subagents/registry/subagent-registry-read.types.js";
 import type { ClawInstallSchemaVersionRow } from "../claws/provenance-runtime-read.kernel.js";
+import type { readSqliteDatabaseBloat } from "../commands/doctor-db-bloat.read.js";
 import type { ConfigHealthPatch } from "../config/io.health-state.kernel.js";
 import type {
   ConfigHealthSnapshot,
@@ -14,9 +16,19 @@ import type { PreparedSqliteAuditRecord } from "../infra/sqlite-audit-record.ker
 import type { SqliteFileGeneration } from "../infra/sqlite-file-generation.js";
 import type { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
 import type { PluginStateWorkerOperations } from "../plugin-state/plugin-state-worker-contract.js";
+import type { PluginBindingApprovalEntry } from "../plugins/conversation-binding-state.types.js";
 import type { PluginMetadataStateSelector } from "../plugins/installed-plugin-index-row.js";
+import type { HostedCatalogSnapshotWorkerOperations } from "../plugins/official-external-plugin-catalog-snapshot-store.worker-contract.js";
 import type { TaskFlowView } from "../plugins/runtime/task-domain-types.js";
-import type { ProjectRegistryIdentity } from "../projects/project-registry.kernel.js";
+import type {
+  ProjectRegistryIdentity,
+  ProjectRegistryInsert,
+  ProjectRegistryRecord,
+} from "../projects/project-registry.kernel.js";
+import type {
+  SessionStateEventInput,
+  SessionStateNotice,
+} from "../sessions/session-state-events.kernel.js";
 import type { ManagedTaskInFlowInput } from "../tasks/task-flow-managed-run-task.kernel.js";
 import type { RunTaskInFlowResult } from "../tasks/task-flow-managed-run-task.types.js";
 import type {
@@ -52,25 +64,53 @@ type TaskFlowReadQuery = {
 };
 
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
-export type OpenClawStateWorkerOperations = PluginStateWorkerOperations &
+export type OpenClawStateWorkerOperations = NativeHookRelayStoreWorkerOperations &
+  HostedCatalogSnapshotWorkerOperations &
+  PluginStateWorkerOperations &
   UserPreferenceWorkerOperations &
   CronStoreWorkerOperations &
   CronStoreSaveWorkerOperations &
   SessionDeliveryWorkerOperations &
   DeliveryQueueWorkerOperations & {
+    "sessionState.recordGoalChange": {
+      input: { event: SessionStateEventInput & { kind: "goal_changed" }; now: number };
+      output: SessionStateNotice[];
+    };
+    "sessionState.prune": { input: { now: number }; output: void };
+    "doctor.databaseBloat": {
+      input: undefined;
+      output: ReturnType<typeof readSqliteDatabaseBloat>;
+    };
     "subagents.sessionList": {
       input: undefined;
       output: Map<string, SubagentRunReadRecord> | undefined;
     };
     "backup.recordOutcome": { input: PreparedBackupRunRecord; output: void };
     "projects.findRoot": { input: { repoRoot: string }; output: string | undefined };
+    "projects.list": { input: undefined; output: ProjectRegistryRecord[] };
+    "projects.insert": {
+      input: { project: ProjectRegistryInsert; lease: OpenClawStateLeaseIdentity };
+      output: ProjectRegistryRecord;
+    };
     "projects.remove": {
       input: { project: ProjectRegistryIdentity; lease: OpenClawStateLeaseIdentity };
       output: boolean;
     };
+    "projects.resolveRefreshOwner": {
+      input: { project: ProjectRegistryIdentity; lease: OpenClawStateLeaseIdentity };
+      output: ProjectRegistryRecord | undefined;
+    };
     "modelCatalog.remote.read": {
       input: { artifactPreservingReadOnly: boolean };
       output: ReturnType<typeof readRemoteModelCatalog>;
+    };
+    "plugins.conversationBindingApprovals.read": {
+      input: undefined;
+      output: PluginBindingApprovalEntry[];
+    };
+    "plugins.conversationBindingApprovals.upsert": {
+      input: PluginBindingApprovalEntry;
+      output: void;
     };
     "plugins.metadata.read": {
       input: { selector: PluginMetadataStateSelector; artifactPreservingReadOnly?: boolean };

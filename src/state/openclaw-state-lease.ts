@@ -413,6 +413,14 @@ export async function withOpenClawStateLease<T>(
   const heartbeatMs = Math.max(250, Math.min(30_000, Math.floor(validated.leaseMs / 3)));
   let expiryTimer: ReturnType<typeof setTimeout> | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const stopTimers = () => {
+    // Canceled Node timers retain their async context until the handles are released.
+    // Escaped lease owners must not keep completed callers alive.
+    clearInterval(heartbeat);
+    clearTimeout(expiryTimer);
+    heartbeat = undefined;
+    expiryTimer = undefined;
+  };
   const abortLost = (cause?: unknown) => {
     if (!leaseLost.signal.aborted) {
       leaseLost.abort(
@@ -575,8 +583,7 @@ export async function withOpenClawStateLease<T>(
       return expiresAt;
     },
     pause: async () => {
-      clearInterval(heartbeat);
-      clearTimeout(expiryTimer);
+      stopTimers();
       await workerHeartbeat?.stop();
       workerHeartbeat = undefined;
     },
@@ -693,11 +700,9 @@ export async function withOpenClawStateLease<T>(
     workerOperations?.close();
     unregisterProcessExitCleanup();
     validated.signal?.removeEventListener("abort", stopWorker);
-    clearInterval(heartbeat);
-    if (expiryTimer) {
-      clearTimeout(expiryTimer);
-    }
+    stopTimers();
     await workerHeartbeat?.stop();
+    workerHeartbeat = undefined;
     if (fileExclusion.canRelease() && (!workerOperations || workerOperations.canRelease())) {
       await releaseBestEffort({
         ...identity,

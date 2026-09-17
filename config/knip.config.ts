@@ -176,6 +176,8 @@ const repositoryScriptEntries = [
   // worktree.sh invokes this journal-state validator by path before native replay.
   "scripts/pr-lib/review-transition-state.mjs!",
   "scripts/pr-lib/process-group-runner.mjs!",
+  // worktree.sh launches the locked cold-worktree adapter by path.
+  "scripts/pr-lib/worktree-provision.mts!",
   "scripts/pre-commit/filter-staged-files.mjs!",
   "scripts/print-live-docker-plugin-selection.mjs!",
   "scripts/qa-coverage-report.ts!",
@@ -190,6 +192,7 @@ const repositoryScriptEntries = [
   "scripts/test-built-bundled-channel-entry-smoke.mts!",
   // Native shell UI tests connect to this manually launched loopback Gateway fixture.
   "scripts/test-ios-shell-gateway.mjs!",
+  "scripts/test-ios-sidebar-attention-gateway.mjs!",
   "scripts/update-clawtributors.ts!",
   // The candidate binder invokes this trusted producer-identity verifier by path.
   "scripts/verify-full-release-producer-job.mjs!",

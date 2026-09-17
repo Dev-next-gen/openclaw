@@ -267,7 +267,12 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
 
     focusChatComposerFromPrintableKeydown(this, event);
 
-    if (event.defaultPrevented || event.key !== "Escape") {
+    if (
+      event.defaultPrevented ||
+      event.isComposing ||
+      event.keyCode === 229 ||
+      event.key !== "Escape"
+    ) {
       return;
     }
     const openDetails = this.querySelectorAll<HTMLDetailsElement>(CHAT_OPEN_DETAILS_SELECTOR);
@@ -461,6 +466,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     chatState.addCleanup(
       this.context.gateway.subscribe((next) => {
         this.applyGatewaySnapshot(next);
+        this.activateComposerPresentation();
         this.synchronizeForegroundTranscript();
       }),
     );
@@ -547,7 +553,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     chatState.addCleanup(subscribeChatPaneSnapshotInvalidation(() => this.state));
     this.applyGatewaySnapshot(this.context.gateway.snapshot);
     this.synchronizeForegroundTranscript();
-    this.composerPresentation = new ChatPaneComposerHandoff(this.context, {
+    const composerPresentation = new ChatPaneComposerHandoff(this.context, {
       state: () => this.state,
       owner: () => this.stagedAttachmentGatewayOwner,
       region: () => this.inputRegion,
@@ -560,6 +566,8 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
         this.chatState.startComposerPersistence();
       },
     });
+    this.composerPresentation = composerPresentation;
+    pageState.captureComposerRecoveryOwner = () => composerPresentation.captureOwner();
     this.activateComposerPresentation();
   }
 

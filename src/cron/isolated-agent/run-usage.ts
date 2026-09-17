@@ -14,18 +14,19 @@ import {
   freezeDiagnosticTraceContext,
 } from "../../infra/diagnostic-trace-context.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
-import type { CronExecutionResult } from "./run-executor.js";
+import type { CronRunTelemetry } from "../types.js";
+import type { CronCompletedPromptRun } from "./run-executor.js";
 import type { PreparedCronRunContext } from "./run-prepare.js";
-import { DEFAULT_CONTEXT_TOKENS } from "./run.runtime.js";
+import { DEFAULT_CONTEXT_TOKENS, hasNonzeroUsage } from "./run.runtime.js";
 
 const cronContextRuntimeLoader = createLazyImportLoader(() => import("./run-context.runtime.js"));
 
-export function resolveCronRunUsage(execution: CronExecutionResult) {
-  if (!execution.completedPromptRuns) {
-    return execution.runResult.meta?.agentMeta?.usage;
+export function resolveCronRunUsage(runs: readonly CronCompletedPromptRun[]) {
+  if (runs.length === 1) {
+    return runs[0]?.runResult.meta?.agentMeta?.usage;
   }
   const accumulated = createUsageAccumulator();
-  for (const { runResult } of execution.completedPromptRuns) {
+  for (const { runResult } of runs) {
     const usage = runResult.meta?.agentMeta?.usage;
     if (!usage) {
       continue;
@@ -40,14 +41,43 @@ export function resolveCronRunUsage(execution: CronExecutionResult) {
   return toNormalizedUsage(accumulated);
 }
 
+export function applyCronRunUsage(
+  prepared: PreparedCronRunContext,
+  runs: readonly CronCompletedPromptRun[],
+): CronRunTelemetry["usage"] {
+  const usage = resolveCronRunUsage(runs);
+  if (!hasNonzeroUsage(usage) && !hasNonzeroUsage(runs.at(-1)?.runResult.meta?.agentMeta?.usage)) {
+    return undefined;
+  }
+  const input = usage?.input ?? 0;
+  const output = usage?.output ?? 0;
+  const cacheRead = usage?.cacheRead ?? 0;
+  const cacheWrite = usage?.cacheWrite ?? 0;
+  prepared.cronSession.sessionEntry.inputTokens = input;
+  prepared.cronSession.sessionEntry.outputTokens = output;
+  prepared.cronSession.sessionEntry.cacheRead = cacheRead;
+  prepared.cronSession.sessionEntry.cacheWrite = cacheWrite;
+  const bucketTotalTokens = input + output + cacheRead + cacheWrite;
+  const totalTokens =
+    typeof usage?.total === "number" && Number.isFinite(usage.total)
+      ? Math.max(bucketTotalTokens, usage.total)
+      : bucketTotalTokens;
+  return {
+    input_tokens: input,
+    output_tokens: output,
+    ...(totalTokens > 0 ? { total_tokens: totalTokens } : {}),
+    ...(cacheRead > 0 ? { cache_read_tokens: cacheRead } : {}),
+    ...(cacheWrite > 0 ? { cache_write_tokens: cacheWrite } : {}),
+  };
+}
+
 /** Preserve each completed prompt's prices and diagnostics across a continuation. */
 export async function recordCronRunUsage(params: {
   prepared: PreparedCronRunContext;
-  execution: CronExecutionResult;
-  contextTokens: number;
+  runs: readonly CronCompletedPromptRun[];
+  contextTokens?: number;
 }): Promise<void> {
-  const { prepared, execution } = params;
-  const runs = execution.completedPromptRuns ?? [execution];
+  const { prepared, runs } = params;
   const billableRuns = runs.filter(({ runResult }) => {
     const meta = runResult.meta?.agentMeta;
     return hasBillableUsage(meta?.usage) || hasBillableUsage(meta?.diagnosticUsage);
@@ -64,8 +94,8 @@ export async function recordCronRunUsage(params: {
     const meta = result.meta?.agentMeta;
     const usage = meta?.usage;
     const diagnosticUsage = meta?.diagnosticUsage ?? usage;
-    const provider = meta?.provider ?? run.fallbackProvider ?? execution.liveSelection.provider;
-    const model = meta?.model ?? run.fallbackModel ?? execution.liveSelection.model;
+    const provider = meta?.provider ?? run.fallbackProvider;
+    const model = meta?.model ?? run.fallbackModel;
     const costConfig = resolveModelCostConfig({
       provider,
       model,
@@ -105,16 +135,15 @@ export async function recordCronRunUsage(params: {
       usage,
     });
     const contextTokens =
-      result === execution.runResult
-        ? params.contextTokens
-        : (asPositiveFiniteNumber(meta?.contextTokens) ??
-          (await cronContextRuntimeLoader.load()).resolveModelContextTokenProjection({
-            cfg: prepared.cfgWithAgentDefaults,
-            provider,
-            model,
-            allowAsyncLoad: false,
-          }).contextTokens ??
-          DEFAULT_CONTEXT_TOKENS);
+      (result === runs.at(-1)?.runResult ? params.contextTokens : undefined) ??
+      asPositiveFiniteNumber(meta?.contextTokens) ??
+      (await cronContextRuntimeLoader.load()).resolveModelContextTokenProjection({
+        cfg: prepared.cfgWithAgentDefaults,
+        provider,
+        model,
+        allowAsyncLoad: false,
+      }).contextTokens ??
+      DEFAULT_CONTEXT_TOKENS;
     emitTrustedDiagnosticEvent({
       type: "model.usage",
       ...(result.diagnosticTrace

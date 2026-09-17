@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { createPluginCache, withPluginCache } from "./plugin-cache.js";
 import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
+import { bindPluginInstanceModuleLoader } from "./plugin-instance-module-loader.js";
 import { PluginInstance } from "./plugin-instance.js";
-import { bindPluginInstanceModuleLoader } from "./plugin-module-loader-cache.js";
 
 const temp = useAutoCleanupTempDirTracker(afterEach);
 const nativeRequire = createRequire(import.meta.url);
@@ -42,7 +42,12 @@ describe("plugin module generations", () => {
       const home = temp.make("plugin-bun-generations-");
       const result = spawnSync(
         process.env.BUN_BIN ?? "bun",
-        ["--no-install", "src/plugins/plugin-module-generation.bun.test-support.ts", home],
+        [
+          "--no-install",
+          "--conditions=openclaw-custom",
+          "src/plugins/plugin-module-generation.bun.test-support.ts",
+          home,
+        ],
         {
           cwd: process.cwd(),
           encoding: "utf8",

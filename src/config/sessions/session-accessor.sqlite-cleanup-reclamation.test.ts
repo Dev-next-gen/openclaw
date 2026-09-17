@@ -194,7 +194,6 @@ describe("SQLite lifecycle cleanup reclamation", () => {
     const result = await deleteSessionEntryLifecycle({
       archiveTranscript: true,
       expectedEntry: currentEntry,
-      expectedTranscript: { eventJson: [JSON.stringify(events[0])], sessionId },
       storePath,
       target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
     });
