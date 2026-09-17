@@ -510,7 +510,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
                   sessionKey: storeKey,
                   projectedAgentRuns,
                   modelSource: target
-                    ? { ...target.modelSource, entry: sharingTarget?.entry }
+                    ? { entry: sharingTarget?.entry, readSourceEntry: target.readSourceEntry }
                     : undefined,
                   entry: sharingTarget?.entry,
                   storePath: sharingTarget?.storePath,
