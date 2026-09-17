@@ -1110,9 +1110,9 @@ extensions/slack/src/monitor/message-handler/prepare.ts	1
 extensions/slack/src/monitor/message-handler/preview-finalize.ts	3
 extensions/slack/src/monitor/message-handler/subteam-mentions.ts	1
 extensions/slack/src/monitor/provider-support.ts	3
-extensions/slack/src/monitor/provider.ts	5
+extensions/slack/src/monitor/provider.ts	4
 extensions/slack/src/monitor/reconnect-policy.ts	6
-extensions/slack/src/monitor/relay-source.ts	2
+extensions/slack/src/monitor/relay-source.ts	1
 extensions/slack/src/monitor/slash.ts	10
 extensions/slack/src/monitor/thread-resolution.ts	1
 extensions/slack/src/monitor/thread.ts	2
@@ -2477,7 +2477,7 @@ src/config/plugins-allowlist.ts	1
 src/config/redact-snapshot.ts	4
 src/config/runtime-overrides.ts	2
 src/config/runtime-snapshot.ts	1
-src/config/runtime-source-projection.ts	3
+src/config/runtime-source-projection.ts	4
 src/config/schema.ts	1
 src/config/sessions/archive-compression.ts	1
 src/config/sessions/cleanup-service.ts	3
@@ -3186,7 +3186,7 @@ src/plugins/bundle-mcp.ts	2
 src/plugins/bundled-channel-config-metadata.ts	4
 src/plugins/bundled-plugin-scan.ts	1
 src/plugins/candidate-install-owner.ts	2
-src/plugins/capability-provider-runtime.ts	12
+src/plugins/capability-provider-runtime.ts	13
 src/plugins/captured-registration.ts	2
 src/plugins/channel-presence-policy.ts	2
 src/plugins/channel-validation.ts	1
