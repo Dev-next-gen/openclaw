@@ -87,7 +87,7 @@ export class AcpSessionManager {
         sessionKey,
       };
     }
-    const acp = this.deps.readSessionEntry({
+    const acp = this.deps.readAcpSessionEntry({
       cfg: params.cfg,
       sessionKey,
       clone: false,
@@ -336,7 +336,7 @@ export class AcpSessionManager {
       expectedRunId: params.expectedRunId,
       expectedInstanceId: params.expectedInstanceId,
       expectedOwnerKey: params.expectedOwnerKey,
-      readSessionEntry: this.deps.readSessionEntry,
+      readAcpSessionEntry: this.deps.readAcpSessionEntry,
       activeTurnBySession: this.activeTurnBySession,
       withSessionActor: this.withSessionActor.bind(this),
       resolveSession: this.resolveSession.bind(this),

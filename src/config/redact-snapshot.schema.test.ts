@@ -68,7 +68,7 @@ describe("realredactConfigSnapshot_real", () => {
       channels: { "synology-chat": { ...account, accounts: { work: { ...account } } } },
     });
     const result = redactConfigSnapshot(snapshot, hints);
-    const channel = result.config.channels[
+    const channel = result.config.channels?.[
       "synology-chat"
     ] as (typeof snapshot.config.channels)["synology-chat"];
     for (const value of [channel, channel.accounts.work]) {

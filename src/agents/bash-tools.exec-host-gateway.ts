@@ -8,10 +8,10 @@ import { normalizeStringEntries } from "@openclaw/normalization-core/string-norm
 import { describeInterpreterInlineEval } from "../infra/command-analysis/inline-eval.js";
 import { detectPolicyInlineEval } from "../infra/command-analysis/policy.js";
 import { emitTrustedSecurityEvent } from "../infra/diagnostic-events.js";
+import { countObsoleteGeneratedExecApprovals } from "../infra/exec-approvals-generated-migration.js";
 import {
   type AllowAlwaysPersistenceDecision,
   commandRequiresSecurityAuditSuppressionApproval,
-  countObsoleteGeneratedExecApprovals,
   type ExecAsk,
   resolveExecApprovalAllowedDecisions,
   type ExecCommandSegment,
@@ -488,7 +488,7 @@ export async function processGatewayAllowlist(
     hostSecurity === "allowlist" || hostAsk !== "off"
       ? captureApprovedCwdSnapshotSync(params.workdir)
       : undefined;
-  if (capturedCwd && !capturedCwd.ok)
+  if (capturedCwd && !capturedCwd.ok) {
     return {
       deniedResult: buildGatewayExecApprovalDeniedToolResult({
         command: params.command,
@@ -496,6 +496,7 @@ export async function processGatewayAllowlist(
         deniedReason: capturedCwd.message,
       }),
     };
+  }
   const approvedCwdSnapshot = capturedCwd?.snapshot;
   const revalidateBeforeExecution = approvedCwdSnapshot
     ? () =>

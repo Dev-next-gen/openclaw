@@ -598,7 +598,9 @@ actor MacNodeRuntime {
         }
         let effectiveCwd = ExecCommandResolution.canonicalApprovalCwd(params.cwd)
         guard let cwdSnapshot = ExecCommandResolution.captureApprovalCwdSnapshot(effectiveCwd) else {
-            return Self.errorResponse(req, code: .unavailable,
+            return Self.errorResponse(
+                req,
+                code: .unavailable,
                 message: "SYSTEM_RUN_DENIED: approval requires an existing canonical cwd")
         }
         let evaluation = await ExecApprovalEvaluator.evaluate(
@@ -955,8 +957,11 @@ extension MacNodeRuntime {
         guard persistAllowlist, security == .allowlist else { return }
         var seenPatterns = Set<ExecAllowAlwaysPattern>()
         for pattern in allowAlwaysPatterns where seenPatterns.insert(pattern).inserted {
-            ExecApprovalsStore.addAllowlistEntry(agentId: agentId, pattern: pattern.pattern,
-                source: "allow-always", argPattern: pattern.argPattern)
+            ExecApprovalsStore.addAllowlistEntry(
+                agentId: agentId,
+                pattern: pattern.pattern,
+                source: "allow-always",
+                argPattern: pattern.argPattern)
         }
     }
 
@@ -1034,7 +1039,8 @@ extension MacNodeRuntime {
             env: env,
             timeout: timeoutSec,
             beforeSpawn: { ExecCommandResolution.revalidateApprovalCwdSnapshot(cwdSnapshot)
-                ? nil : ExecCommandResolution.approvalCwdDriftDeniedMessage })
+                ? nil : ExecCommandResolution.approvalCwdDriftDeniedMessage
+            })
         if let message = result.preflightError {
             return Self.errorResponse(req, code: .unavailable, message: message)
         }

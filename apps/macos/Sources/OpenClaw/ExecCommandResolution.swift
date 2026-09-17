@@ -1,13 +1,13 @@
 import CryptoKit
 import Foundation
 
-struct ExecApprovalCwdSnapshot: Sendable, Equatable {
+struct ExecApprovalCwdSnapshot: Equatable {
     let path: String
     let device: UInt64
     let inode: UInt64
 }
 
-struct ExecAllowAlwaysPattern: Sendable, Hashable {
+struct ExecAllowAlwaysPattern: Hashable {
     let pattern: String
     let argPattern: String
 }
@@ -45,7 +45,7 @@ struct ExecCommandResolution {
     let resolvedPath: String?
     let executableName: String
     let cwd: String?
-    var argv: [String]? = nil
+    var argv: [String]?
     var reusableArgumentsSafe = true
 
     static func resolve(
@@ -151,7 +151,8 @@ struct ExecCommandResolution {
             return nil
         }
         var resolution = self.resolveExecutable(rawExecutable: raw, cwd: cwd, env: env, argv: effective)
-        resolution?.reusableArgumentsSafe = ExecEnvInvocationUnwrapper.unwrapTransparentDispatchWrappersForResolution(command) == effective
+        resolution?.reusableArgumentsSafe = ExecEnvInvocationUnwrapper
+            .unwrapTransparentDispatchWrappersForResolution(command) == effective
         return resolution
     }
 
@@ -275,8 +276,11 @@ struct ExecCommandResolution {
         else {
             return
         }
-        let candidate = ExecAllowAlwaysPattern(pattern: pattern,
-            argPattern: self.cwdBoundArgPattern(argv: command, cwd: self.canonicalApprovalCwd(cwd)))
+        let candidate = ExecAllowAlwaysPattern(
+            pattern: pattern,
+            argPattern: self.cwdBoundArgPattern(
+                argv: command,
+                cwd: self.canonicalApprovalCwd(cwd)))
         guard seen.insert(candidate).inserted else { return }
         patterns.append(candidate)
     }

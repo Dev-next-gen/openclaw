@@ -20515,7 +20515,39 @@
     },
     {
       "kind": "ui-call",
-      "line": 167,
+      "line": 168,
+      "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
+      "source": "Approval Update",
+      "surface": "apple",
+      "id": "native.apple.263c2ba7f4e96e04"
+    },
+    {
+      "kind": "ui-named-argument",
+      "line": 170,
+      "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
+      "source": "Some approvals need renewal",
+      "surface": "apple",
+      "id": "native.apple.30ebfcbf9acfa508"
+    },
+    {
+      "kind": "ui-named-argument",
+      "line": 171,
+      "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
+      "source": "Older generated approvals are inactive because they were not tied ",
+      "surface": "apple",
+      "id": "native.apple.2214dad706c5f020"
+    },
+    {
+      "kind": "ui-call",
+      "line": 175,
+      "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
+      "source": "Remove Inactive",
+      "surface": "apple",
+      "id": "native.apple.6f3a1df9897a5aa5"
+    },
+    {
+      "kind": "ui-call",
+      "line": 183,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Automatic Trust",
       "surface": "apple",
@@ -20523,7 +20555,7 @@
     },
     {
       "kind": "ui-named-argument",
-      "line": 169,
+      "line": 185,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Auto-allow skill CLIs",
       "surface": "apple",
@@ -20531,7 +20563,7 @@
     },
     {
       "kind": "ui-named-argument",
-      "line": 170,
+      "line": 186,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Let bundled skill command-line tools run without prompting.",
       "surface": "apple",
@@ -20539,7 +20571,7 @@
     },
     {
       "kind": "ui-call",
-      "line": 178,
+      "line": 194,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Trusted skill binaries",
       "surface": "apple",
@@ -20547,7 +20579,7 @@
     },
     {
       "kind": "ui-call",
-      "line": 199,
+      "line": 215,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Add Command",
       "surface": "apple",
@@ -20555,7 +20587,7 @@
     },
     {
       "kind": "ui-named-argument",
-      "line": 201,
+      "line": 217,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Pattern",
       "surface": "apple",
@@ -20563,7 +20595,7 @@
     },
     {
       "kind": "ui-named-argument",
-      "line": 202,
+      "line": 218,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Bare names match PATH commands. Use a path glob for a specific binary.",
       "surface": "apple",
@@ -20571,7 +20603,7 @@
     },
     {
       "kind": "ui-call",
-      "line": 206,
+      "line": 222,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "rg or /opt/homebrew/bin/*",
       "surface": "apple",
@@ -20579,7 +20611,7 @@
     },
     {
       "kind": "ui-call",
-      "line": 210,
+      "line": 226,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Add",
       "surface": "apple",
@@ -20587,7 +20619,7 @@
     },
     {
       "kind": "ui-call",
-      "line": 228,
+      "line": 244,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Allowed Commands",
       "surface": "apple",
@@ -20595,7 +20627,7 @@
     },
     {
       "kind": "ui-call",
-      "line": 246,
+      "line": 262,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Allowlists are per-agent",
       "surface": "apple",
@@ -20603,7 +20635,7 @@
     },
     {
       "kind": "ui-call",
-      "line": 248,
+      "line": 264,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Select an agent scope above to add trusted commands.",
       "surface": "apple",
@@ -20611,7 +20643,7 @@
     },
     {
       "kind": "ui-call",
-      "line": 265,
+      "line": 281,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "No trusted commands yet",
       "surface": "apple",
@@ -20619,7 +20651,7 @@
     },
     {
       "kind": "ui-call",
-      "line": 267,
+      "line": 283,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Commands that miss the allowlist follow the prompt and fallback policy above.",
       "surface": "apple",
@@ -20627,7 +20659,7 @@
     },
     {
       "kind": "conditional-branch",
-      "line": 307,
+      "line": 323,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Access",
       "surface": "apple",
@@ -20635,7 +20667,7 @@
     },
     {
       "kind": "conditional-branch",
-      "line": 308,
+      "line": 324,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Allowlist",
       "surface": "apple",
@@ -20643,7 +20675,7 @@
     },
     {
       "kind": "ui-call",
-      "line": 341,
+      "line": 357,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Last used \\(Self.relativeFormatter.localizedString(for: date, relativeTo: Date()))",
       "surface": "apple",
@@ -20651,7 +20683,7 @@
     },
     {
       "kind": "ui-call",
-      "line": 347,
+      "line": 363,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Last command: \\(lastUsedCommand)",
       "surface": "apple",
@@ -20659,7 +20691,7 @@
     },
     {
       "kind": "ui-call",
-      "line": 353,
+      "line": 369,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Resolved path: \\(lastResolvedPath)",
       "surface": "apple",
@@ -20667,7 +20699,7 @@
     },
     {
       "kind": "conditional-branch",
-      "line": 400,
+      "line": 416,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Shell commands blocked",
       "surface": "apple",
@@ -20675,7 +20707,7 @@
     },
     {
       "kind": "conditional-branch",
-      "line": 401,
+      "line": 417,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Trusted commands can run",
       "surface": "apple",
@@ -20683,7 +20715,7 @@
     },
     {
       "kind": "conditional-branch",
-      "line": 402,
+      "line": 418,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Shell commands allowed",
       "surface": "apple",
@@ -20691,7 +20723,7 @@
     },
     {
       "kind": "conditional-branch",
-      "line": 408,
+      "line": 424,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "system.run requests are denied unless the policy changes.",
       "surface": "apple",
@@ -20699,7 +20731,7 @@
     },
     {
       "kind": "conditional-branch",
-      "line": 409,
+      "line": 425,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Known commands can run; new commands use the prompt policy.",
       "surface": "apple",
@@ -20707,7 +20739,7 @@
     },
     {
       "kind": "conditional-branch",
-      "line": 410,
+      "line": 426,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Agents can run shell commands on this Mac without allowlist checks.",
       "surface": "apple",
@@ -20715,7 +20747,7 @@
     },
     {
       "kind": "conditional-branch",
-      "line": 416,
+      "line": 432,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Block agent shell commands on this Mac.",
       "surface": "apple",
@@ -20723,7 +20755,7 @@
     },
     {
       "kind": "conditional-branch",
-      "line": 417,
+      "line": 433,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Allow trusted command patterns and handle misses with prompts.",
       "surface": "apple",
@@ -20731,7 +20763,7 @@
     },
     {
       "kind": "conditional-branch",
-      "line": 418,
+      "line": 434,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Allow shell commands without checking the allowlist.",
       "surface": "apple",
@@ -20739,7 +20771,7 @@
     },
     {
       "kind": "conditional-branch",
-      "line": 426,
+      "line": 442,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Never show approval prompts.",
       "surface": "apple",
@@ -20747,7 +20779,7 @@
     },
     {
       "kind": "conditional-branch",
-      "line": 427,
+      "line": 443,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Ask only when a command is not trusted yet.",
       "surface": "apple",
@@ -20755,7 +20787,7 @@
     },
     {
       "kind": "conditional-branch",
-      "line": 428,
+      "line": 444,
       "path": "apps/macos/Sources/OpenClaw/SystemRunSettingsView.swift",
       "source": "Ask before every shell command.",
       "surface": "apple",

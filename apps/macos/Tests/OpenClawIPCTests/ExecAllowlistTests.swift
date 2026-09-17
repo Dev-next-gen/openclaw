@@ -79,17 +79,27 @@ struct ExecAllowlistTests {
         let command = ["/usr/bin/printf", "safe"]
         let generated = try #require(ExecCommandResolution.resolveAllowAlwaysPatterns(
             command: command, cwd: cwd, env: nil).first)
-        let entry = ExecAllowlistEntry(pattern: generated.pattern, source: "allow-always",
+        let entry = ExecAllowlistEntry(
+            pattern: generated.pattern,
+            source: "allow-always",
             argPattern: generated.argPattern)
         let same = ExecCommandResolution.resolveForAllowlist(command: command, rawCommand: nil, cwd: cwd, env: nil)
-        let changedArgs = ExecCommandResolution.resolveForAllowlist(command: ["/usr/bin/printf", "changed"],
-            rawCommand: "/usr/bin/printf safe", cwd: cwd, env: nil)
-        let changedCwd = ExecCommandResolution.resolveForAllowlist(command: command, rawCommand: nil,
-            cwd: "/", env: nil)
+        let changedArgs = ExecCommandResolution.resolveForAllowlist(
+            command: ["/usr/bin/printf", "changed"],
+            rawCommand: "/usr/bin/printf safe",
+            cwd: cwd,
+            env: nil)
+        let changedCwd = ExecCommandResolution.resolveForAllowlist(
+            command: command,
+            rawCommand: nil,
+            cwd: "/",
+            env: nil)
         #expect(ExecAllowlistMatcher.match(entries: [entry], resolution: same.first) != nil)
         #expect(ExecAllowlistMatcher.match(entries: [entry], resolution: changedArgs.first) == nil)
         #expect(ExecAllowlistMatcher.match(entries: [entry], resolution: changedCwd.first) == nil)
-        let old = ExecAllowlistEntry(pattern: generated.pattern, source: "allow-always",
+        let old = ExecAllowlistEntry(
+            pattern: generated.pattern,
+            source: "allow-always",
             argPattern: "sha256:argv:obsolete")
         #expect(ExecAllowlistMatcher.match(entries: [old], resolution: same.first) == nil)
     }
@@ -99,7 +109,9 @@ struct ExecAllowlistTests {
         let command = ["/usr/bin/printf", "$HOME"]
         let generated = try #require(ExecCommandResolution.resolveAllowAlwaysPatterns(
             command: command, cwd: cwd, env: nil).first)
-        let entry = ExecAllowlistEntry(pattern: generated.pattern, source: "allow-always",
+        let entry = ExecAllowlistEntry(
+            pattern: generated.pattern,
+            source: "allow-always",
             argPattern: generated.argPattern)
         for wrapped in [
             ["/bin/sh", "-c", "/usr/bin/printf $HOME"],

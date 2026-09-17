@@ -4,8 +4,6 @@
   "sessionAccessorRead": {
     "extensions/telegram/src/bot-deps.ts": 1,
     "extensions/telegram/src/bot-message-context.session-recreate.test-support.ts": 2,
-    "src/acp/control-plane/manager.background-task.ts": 2,
-    "src/acp/control-plane/manager.core.ts": 1,
     "src/agents/agent-command.ts": 2,
     "src/agents/bash-tools.exec-approval-followup.ts": 2,
     "src/agents/command/session.ts": 5,

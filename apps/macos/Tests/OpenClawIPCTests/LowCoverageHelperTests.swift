@@ -47,7 +47,7 @@ struct LowCoverageHelperTests {
         #expect(result.errorMessage != nil)
     }
 
-    @Test(arguments: [Optional<Double>.none, 2])
+    @Test(arguments: [Double?.none, 2])
     func `shell executor stops before spawn when final preflight fails`(timeout: Double?) async {
         let marker = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclaw-shell-preflight-\(UUID().uuidString)")

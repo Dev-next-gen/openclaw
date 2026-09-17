@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { captureEnv, deleteTestEnvValue, setTestEnvValue } from "../test-utils/env.js";
 import { makeTempDir } from "./exec-approvals-test-helpers.js";
+import { buildCwdBoundHashedArgPattern } from "./exec-command-resolution.js";
 
 const requestJsonlSocketMock = vi.hoisted(() => vi.fn());
 
@@ -899,14 +900,22 @@ describe("exec approvals store helpers", () => {
     expect(patterns).toEqual([
       {
         pattern: "/usr/bin/custom-tool.exe",
-        argPattern: "^a\\.py\x00$",
+        argPattern: buildCwdBoundHashedArgPattern(
+          ["/usr/bin/custom-tool.exe", "a.py"],
+          process.cwd(),
+          "win32",
+        ),
       },
     ]);
     const allowlist = allowlistEntries(dir, "worker");
     expect(allowlist).toHaveLength(1);
     expectAllowlistEntryFields(allowlist[0] ?? {}, {
       pattern: "/usr/bin/custom-tool.exe",
-      argPattern: "^a\\.py\x00$",
+      argPattern: buildCwdBoundHashedArgPattern(
+        ["/usr/bin/custom-tool.exe", "a.py"],
+        process.cwd(),
+        "win32",
+      ),
       source: "allow-always",
       lastUsedAt: 654_321,
     });
@@ -941,7 +950,16 @@ describe("exec approvals store helpers", () => {
       ],
     });
 
-    expect(completePatterns).toEqual([{ pattern: "/usr/bin/tool" }]);
+    expect(completePatterns).toEqual([
+      {
+        pattern: "/usr/bin/tool",
+        argPattern: buildCwdBoundHashedArgPattern(
+          ["/usr/bin/tool", "ok"],
+          process.cwd(),
+          process.platform,
+        ),
+      },
+    ]);
     let allowlist = allowlistEntries(dir, "worker");
     expect(allowlist.map((entry) => entry.pattern)).toEqual([
       "/usr/bin/tool",

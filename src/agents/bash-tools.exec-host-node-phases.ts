@@ -10,6 +10,7 @@ import {
   type InterpreterInlineEvalHit,
 } from "../infra/command-analysis/inline-eval.js";
 import { detectPolicyInlineEval } from "../infra/command-analysis/policy.js";
+import { countObsoleteGeneratedExecApprovals } from "../infra/exec-approvals-generated-migration.js";
 import {
   type ExecApprovalsFile,
   type ExecAllowlistEntry,
@@ -19,7 +20,6 @@ import {
   type ExecSecurity,
   type SystemRunApprovalPlan,
   commandRequiresSecurityAuditSuppressionApproval,
-  countObsoleteGeneratedExecApprovals,
   evaluateShellAllowlistWithAuthorization,
   hasDurableExecApproval,
   hasNodeCommandAllowAlwaysMarker,

@@ -178,22 +178,17 @@ function collectExecPolicyConflictWarnings(cfg: OpenClawConfig): string[] {
 
 function collectDurableExecApprovalWarnings(cfg: OpenClawConfig): string[] {
   void cfg;
-  const count = countObsoleteGeneratedExecApprovals(loadExecApprovalsReadOnly());
+  const count = countObsoleteGeneratedExecApprovals(loadExecApprovals());
   if (count === 0) {
     return [];
   }
   return [
-    {
-      checkId: "doctor.exec_approvals_require_cwd_renewal",
-      severity: "warn",
-      title: "Exec approvals need renewal",
-      detail: `${count} older generated ${count === 1 ? "approval is" : "approvals are"} inactive because they are not tied to a working directory.`,
-      remediation: [
-        `Run ${formatCliCommand("openclaw doctor --fix")} to remove the inactive entries.`,
-        'Then rerun affected workflows and choose "Always allow here" when prompted.',
-        "Manual allowlist rules are unchanged.",
-      ].join("\n"),
-    },
+    [
+      `- Exec approvals need renewal: ${count} older generated ${count === 1 ? "approval is" : "approvals are"} inactive because they are not tied to a working directory.`,
+      `  Run ${formatCliCommand("openclaw doctor --fix")} to remove the inactive entries.`,
+      '  Then rerun affected workflows and choose "Always allow here" when prompted.',
+      "  Manual allowlist rules are unchanged.",
+    ].join("\n"),
   ];
 }
 

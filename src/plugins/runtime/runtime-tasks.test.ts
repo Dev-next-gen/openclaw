@@ -92,6 +92,9 @@ describe("runtime tasks", () => {
       task: "Canonical child",
       startedAt: 1,
     });
+    if (!canonical) {
+      throw new Error("expected canonical task creation to succeed");
+    }
     const child = legacyTaskFlow.runTask({
       flowId: created.flowId,
       runtime: "acp",

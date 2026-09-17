@@ -19,7 +19,6 @@ import {
   unwrapKnownDispatchWrapperInvocation,
   unwrapKnownShellMultiplexerInvocation,
 } from "../infra/exec-wrapper-resolution.js";
-import { sameFileIdentity } from "../infra/fs-safe-advanced.js";
 import { parseInlineOptionToken } from "../infra/inline-option-token.js";
 import {
   normalizePackageManagerExecToken,

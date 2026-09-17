@@ -498,8 +498,10 @@ private enum ExecHostExecutor {
 
         let effectiveCwd = ExecCommandResolution.canonicalApprovalCwd(request.cwd)
         guard let cwdSnapshot = ExecCommandResolution.captureApprovalCwdSnapshot(effectiveCwd) else {
-            return self.errorResponse(code: "UNAVAILABLE",
-                message: "SYSTEM_RUN_DENIED: approval requires an existing canonical cwd", reason: "approval-required")
+            return self.errorResponse(
+                code: "UNAVAILABLE",
+                message: "SYSTEM_RUN_DENIED: approval requires an existing canonical cwd",
+                reason: "approval-required")
         }
 
         let context = await self.buildContext(
@@ -615,8 +617,11 @@ private enum ExecHostExecutor {
         guard decision == .allowAlways, context.security == .allowlist else { return }
         var seenPatterns = Set<ExecAllowAlwaysPattern>()
         for pattern in context.allowAlwaysPatterns where seenPatterns.insert(pattern).inserted {
-            ExecApprovalsStore.addAllowlistEntry(agentId: context.agentId, pattern: pattern.pattern,
-                source: "allow-always", argPattern: pattern.argPattern)
+            ExecApprovalsStore.addAllowlistEntry(
+                agentId: context.agentId,
+                pattern: pattern.pattern,
+                source: "allow-always",
+                argPattern: pattern.argPattern)
         }
     }
 
@@ -646,7 +651,8 @@ private enum ExecHostExecutor {
                 env: env,
                 timeout: timeoutSec,
                 beforeSpawn: { ExecCommandResolution.revalidateApprovalCwdSnapshot(cwdSnapshot)
-                    ? nil : ExecCommandResolution.approvalCwdDriftDeniedMessage })
+                    ? nil : ExecCommandResolution.approvalCwdDriftDeniedMessage
+                })
         }.value
         if let message = result.preflightError {
             return self.errorResponse(code: "UNAVAILABLE", message: message, reason: "approval-required")

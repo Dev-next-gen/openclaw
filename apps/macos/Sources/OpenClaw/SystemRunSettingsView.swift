@@ -462,11 +462,11 @@ final class ExecApprovalsSettingsModel {
     var allowlistValidationMessage: String?
 
     var obsoleteGeneratedApprovalCount: Int {
-        self.entries.filter { entry in
+        self.entries.count(where: { entry in
             entry.source == "allow-always" && !entry.pattern.hasPrefix("=command:") &&
                 !entry.pattern.hasPrefix("=node-command:") &&
                 entry.argPattern?.hasPrefix("sha256:cwd-argv:v1:") != true
-        }.count
+        })
     }
 
     func removeObsoleteGeneratedApprovals() {

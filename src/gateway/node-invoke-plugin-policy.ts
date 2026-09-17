@@ -1,6 +1,7 @@
 // Plugin-provided node.invoke policy adapter.
 // Lets plugin policies gate dangerous node commands before transport dispatch.
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { PluginApprovalRequestPayload } from "../infra/plugin-approvals.js";
@@ -145,11 +146,38 @@ export async function applyPluginNodeInvokePolicy(params: {
     return null;
   }
 
+  const config = params.context.getRuntimeConfig();
+  const authorizationConfig = structuredClone({
+    plugins: config.plugins,
+    nodes: config.gateway?.nodes,
+  });
+  const policyConfig = structuredClone(entry.pluginConfig);
+
   const invokeNode: OpenClawPluginNodeInvokePolicyContext["invokeNode"] = async (
     override = {},
   ): Promise<OpenClawPluginNodeInvokeTransportResult> => {
     // Policies invoke the real node through this narrowed transport wrapper so
     // they can retry/override params without getting direct registry access.
+    // Approval prompts and preflight cross async boundaries. A revoked grant or
+    // replaced plugin policy cannot authorize the next transport effect.
+    const currentConfig = params.context.getRuntimeConfig();
+    const currentEntry = getActivePluginGatewayNodePolicyRegistry()?.nodeInvokePolicies?.find(
+      (candidate) => candidate.policy.commands.includes(params.command),
+    );
+    if (
+      currentEntry !== entry ||
+      !isDeepStrictEqual(policyConfig, entry.pluginConfig) ||
+      !isDeepStrictEqual(authorizationConfig, {
+        plugins: currentConfig.plugins,
+        nodes: currentConfig.gateway?.nodes,
+      })
+    ) {
+      return {
+        ok: false,
+        code: "PLUGIN_POLICY_CHANGED",
+        message: "Node policy changed during authorization; retry the request.",
+      };
+    }
     const res = await params.context.nodeRegistry.invoke({
       nodeId: params.nodeSession.nodeId,
       command: params.command,
@@ -178,7 +206,7 @@ export async function applyPluginNodeInvokePolicy(params: {
     params: params.params,
     timeoutMs: params.timeoutMs,
     idempotencyKey: params.idempotencyKey,
-    config: params.context.getRuntimeConfig(),
+    config,
     pluginConfig: entry.pluginConfig,
     node: {
       nodeId: params.nodeSession.nodeId,

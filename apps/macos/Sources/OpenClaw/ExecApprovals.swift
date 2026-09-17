@@ -699,7 +699,12 @@ enum ExecApprovalsStore {
     }
 
     @discardableResult
-    static func addAllowlistEntry(agentId: String?, pattern: String, source: String? = nil, argPattern: String? = nil) -> ExecAllowlistPatternValidationReason? {
+    static func addAllowlistEntry(
+        agentId: String?,
+        pattern: String,
+        source: String? = nil,
+        argPattern: String? = nil) -> ExecAllowlistPatternValidationReason?
+    {
         let normalizedPattern: String
         switch ExecApprovalHelpers.validateAllowlistPattern(pattern) {
         case let .valid(validPattern):
@@ -713,7 +718,10 @@ enum ExecApprovalsStore {
             var agents = file.agents ?? [:]
             var entry = agents[key] ?? ExecApprovalsAgent()
             var allowlist = entry.allowlist ?? []
-            if allowlist.contains(where: { $0.pattern == normalizedPattern && $0.source == source && $0.argPattern == argPattern }) { return }
+            if allowlist
+                .contains(where: {
+                    $0.pattern == normalizedPattern && $0.source == source && $0.argPattern == argPattern
+                }) { return }
             allowlist.append(ExecAllowlistEntry(
                 pattern: normalizedPattern,
                 source: source,

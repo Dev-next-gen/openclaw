@@ -1,7 +1,7 @@
 import path from "node:path";
-import { FsSafeError } from "@openclaw/fs-safe";
 import { resolvePathViaExistingAncestorSync } from "../infra/boundary-path.js";
 import { extractErrorCode } from "../infra/errors.js";
+import { FsSafeError } from "../infra/fs-safe.js";
 import { logWarn } from "../logger.js";
 import {
   clearMemoryArtifactProvenance,

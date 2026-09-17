@@ -24,7 +24,7 @@ export async function runManagerCancelSession(params: {
   expectedRunId?: string;
   expectedInstanceId?: string;
   expectedOwnerKey?: string;
-  readSessionEntry: AcpSessionManagerDeps["readSessionEntry"];
+  readAcpSessionEntry: AcpSessionManagerDeps["readAcpSessionEntry"];
   activeTurnBySession: Map<string, ActiveTurnState>;
   withSessionActor: WithManagerSessionActor;
   resolveSession: ResolveManagerSession;
@@ -49,7 +49,7 @@ export async function runManagerCancelSession(params: {
     if (!expectedOwnerKey) {
       return;
     }
-    const entry = params.readSessionEntry({
+    const entry = params.readAcpSessionEntry({
       cfg: params.cfg,
       sessionKey: params.sessionKey,
     })?.entry;

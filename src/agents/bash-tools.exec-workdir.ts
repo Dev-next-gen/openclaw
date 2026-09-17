@@ -6,9 +6,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { safeRealpathSync } from "../infra/boundary-path.js";
 import type { ExecHost } from "../infra/exec-approvals.js";
-import { safeStatSync } from "../infra/path-guards.js";
+import { safeRealpathSync, safeStatSync } from "../infra/path-guards.js";
 import type { BashSandboxConfig } from "./bash-tools.shared.js";
 import { assertSandboxPath } from "./sandbox-paths.js";
 

@@ -31,7 +31,6 @@ import {
   hasPosixLoginStartupBeforeInlineCommand,
   POSIX_INLINE_COMMAND_FLAGS,
 } from "./shell-inline-command.js";
-export * from "./exec-approvals-generated-migration.js";
 export * from "./exec-approvals-analysis.js";
 export * from "./exec-approvals-allowlist.js";
 export type { ExecAllowlistEntry } from "./exec-approvals.types.js";

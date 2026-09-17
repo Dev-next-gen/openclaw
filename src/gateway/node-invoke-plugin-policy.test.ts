@@ -199,6 +199,35 @@ describe("applyPluginNodeInvokePolicy", () => {
     resetPluginRuntimeStateForTest();
   });
 
+  it.each(["config", "registry", "grant"] as const)(
+    "rejects %s revocation after preflight before final transport",
+    async (mode) => {
+      const { context, invoke } = createContext();
+      let config = {};
+      context.getRuntimeConfig = () => config;
+      const registry = createPolicyRegistry(async (ctx) => {
+        await ctx.invokeNode({ params: { preflightOnly: true } });
+        if (mode === "config") {
+          config = { plugins: { enabled: false } };
+        } else if (mode === "registry") {
+          setActivePluginRegistry(createEmptyPluginRegistry());
+        } else {
+          registry.nodeInvokePolicies[0]!.pluginConfig = { enabled: false };
+        }
+        return ctx.invokeNode({ params: { contentBase64: "cmVwbGFjZW1lbnQ=" } });
+      });
+      setActivePluginRegistry(registry);
+      await expect(invokeDemoPolicy(context)).resolves.toMatchObject({
+        ok: false,
+        code: "PLUGIN_POLICY_CHANGED",
+      });
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(invoke).toHaveBeenCalledWith(
+        expect.objectContaining({ params: { preflightOnly: true } }),
+      );
+    },
+  );
+
   it("fails closed for dangerous plugin node commands without a policy", async () => {
     setDangerousDemoCommandRegistry();
     const { context, invoke } = createContext();

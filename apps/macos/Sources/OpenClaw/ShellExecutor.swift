@@ -9,7 +9,7 @@ enum ShellExecutor {
         var timedOut: Bool
         var success: Bool
         var errorMessage: String?
-        var preflightError: String? = nil
+        var preflightError: String?
     }
 
     private final class CompletionBox: @unchecked Sendable {
@@ -95,8 +95,14 @@ enum ShellExecutor {
                 if let message = beforeSpawn?() {
                     stdoutPipe.fileHandleForWriting.closeFile()
                     stderrPipe.fileHandleForWriting.closeFile()
-                    completion.finish(ShellResult(stdout: "", stderr: "", exitCode: nil,
-                        timedOut: false, success: false, errorMessage: message, preflightError: message))
+                    completion.finish(ShellResult(
+                        stdout: "",
+                        stderr: "",
+                        exitCode: nil,
+                        timedOut: false,
+                        success: false,
+                        errorMessage: message,
+                        preflightError: message))
                     return
                 }
                 do {
@@ -131,8 +137,14 @@ enum ShellExecutor {
         if let message = beforeSpawn?() {
             stdoutPipe.fileHandleForWriting.closeFile()
             stderrPipe.fileHandleForWriting.closeFile()
-            return ShellResult(stdout: "", stderr: "", exitCode: nil,
-                timedOut: false, success: false, errorMessage: message, preflightError: message)
+            return ShellResult(
+                stdout: "",
+                stderr: "",
+                exitCode: nil,
+                timedOut: false,
+                success: false,
+                errorMessage: message,
+                preflightError: message)
         }
         do {
             try process.run()
