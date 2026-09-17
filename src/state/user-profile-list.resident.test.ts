@@ -13,6 +13,7 @@ import { onUserProfilesChanged } from "./user-profile-events.js";
 import {
   getUserProfileDisplay,
   readUserProfileAliases,
+  readUserProfileIdentity,
   resolveUserProfileReference,
   retainUserProfileCatalog,
 } from "./user-profile-list.js";
@@ -21,6 +22,7 @@ import {
   linkEmail,
   setAvatar,
   setDisplayName,
+  setUserProfileRole,
   syncGitHubIdentity,
 } from "./user-profiles.js";
 
@@ -73,12 +75,15 @@ describe("resident profile display and reference catalog", () => {
         runOpenClawStateWriteTransaction(() => {
           merge();
           setDisplayName(second.id, "Rolled back", options);
+          setUserProfileRole(second.id, "rolled-back-role", options);
+          expect(readUserProfileIdentity(second.id, options)?.role).toBeNull();
           expect(getUserProfileDisplay(first.id, options).id).toBe(first.id);
           expect(seen).not.toHaveBeenCalled();
           throw new Error("rollback");
         }, options),
       ).toThrow("rollback");
       expect(seen).not.toHaveBeenCalled();
+      expect(readUserProfileIdentity(second.id, options)?.role).toBeNull();
       merge();
       expect(seen.mock.results.at(-1)?.value).toEqual(new Set([first.id, second.id]));
       linkEmail("first@example.test", third.id, options);
@@ -89,6 +94,7 @@ describe("resident profile display and reference catalog", () => {
         throw new Error("missing merge head");
       }
       setDisplayName(first.id, "Current person", options);
+      setUserProfileRole(first.id, "reader", options);
       expect(setAvatar(first.id, new Uint8Array([1, 2]), "image/png", options).ok).toBe(true);
       const native = vi.spyOn(openOpenClawStateDatabase(options).db, "prepare");
       for (const id of [first.id, second.id, head.value]) {
@@ -97,6 +103,10 @@ describe("resident profile display and reference catalog", () => {
           displayName: "Current person",
           hasAvatar: true,
           avatarRevision: expect.stringMatching(/-png$/),
+        });
+        expect(readUserProfileIdentity(id, options)).toMatchObject({
+          profileId: head.value,
+          role: "reader",
         });
         expect(resolveUserProfileReference(id, options)).toEqual(head);
         expect(resolveUserProfileReference(id.replaceAll("-", ""), options)).toEqual(head);
@@ -131,6 +141,7 @@ describe("resident profile display and reference catalog", () => {
   it("shares one physical-store admission across readers and a later writer handle", () => {
     const options = fixture();
     const person = ensureProfileForEmail("reader@example.test", options);
+    setUserProfileRole(person.id, "reader", options);
     closeOpenClawStateDatabaseByPath(options.path);
     const release = retainUserProfileCatalog(options);
     releases.push(release, retainUserProfileCatalog(options));
@@ -146,6 +157,7 @@ describe("resident profile display and reference catalog", () => {
     ).toEqual([]);
     const native = vi.spyOn(db, "prepare");
     expect(getUserProfileDisplay(person.id, options).displayName).toBe("reader");
+    expect(readUserProfileIdentity(person.id, options)?.role).toBe("reader");
     expect(native).not.toHaveBeenCalled();
     native.mockRestore();
     setDisplayName(person.id, "Current reader", options);

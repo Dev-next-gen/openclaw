@@ -42,7 +42,7 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
     const record = projection.describe(query);
     if (
       !record ||
-      (hasOperatorBoundary(client, cfg) &&
+      (presentation.sharing.sessionCap !== undefined &&
         presentation.sharing.entryFilter?.(record.key, record.entry) === false)
     ) {
       respond(true, { session: null });

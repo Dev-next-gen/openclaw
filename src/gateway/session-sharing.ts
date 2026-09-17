@@ -8,6 +8,7 @@ import { AgentSelectionRequiredError } from "../agents/agent-scope.js";
 import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
+import { prepareGatewayRecipientProfile } from "./expected-profile.js";
 import {
   authorizeGatewaySessionCreation,
   operatorSessionCap,
@@ -636,6 +637,9 @@ export function prepareProjectedSessionSharing(params: {
   isMember: (target: SessionSharingTarget, identityId: string) => boolean;
 }) {
   const { cfg, client, isMember } = params;
+  if (client?.internal?.syntheticClient) {
+    prepareGatewayRecipientProfile(client);
+  }
   const actor = resolveGatewayOperatorRoleActor(client);
   const identity = sharingIdentity(client, actor);
   const retained = client?.preparedSessionProfile;

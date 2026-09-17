@@ -2,13 +2,13 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
 import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
+import { readUserProfileIdentity, retainUserProfileCatalog } from "../state/user-profile-list.js";
 import { ensureProfileForEmail, linkEmail, setUserProfileRole } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   createExpectedProfileBinding,
   ExpectedProfileMismatchError,
   prepareGatewayRecipientProfile,
-  resolvePreparedSessionProfileId,
 } from "./expected-profile.js";
 import { createGatewayConnectionState } from "./server-connection-state.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
@@ -176,27 +176,30 @@ it("presents current recipient roles without SQLite while rejecting source overr
   });
 });
 
-it("checks selected profile identity from current prepared facts without following the requested ID through a merge", async () => {
+it("checks selected profile identity from current resident facts without following the requested ID through a merge", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const source = ensureProfileForEmail("source@expected-profile.test");
     const target = ensureProfileForEmail("target@expected-profile.test");
     const client = sharingPolicyClient({ user: source.id }) as GatewayWsClient;
     prepareGatewayRecipientProfile(client);
-    const binding = createExpectedProfileBinding(source.id, client, () =>
-      resolvePreparedSessionProfileId(client),
-    )!;
-    const prepares = vi.spyOn(DatabaseSync.prototype, "prepare");
-    binding.assertCurrent();
-    const response = vi.fn();
-    binding.guardResponse(response)(true, { session: null });
-    expect(response).toHaveBeenCalledWith(true, { session: null });
-    expect(prepares).not.toHaveBeenCalled();
-    prepares.mockRestore();
-    linkEmail("source@expected-profile.test", target.id);
-    prepareGatewayRecipientProfile(client);
-    const afterMerge = vi.spyOn(DatabaseSync.prototype, "prepare");
-    expect(() => binding.assertCurrent()).toThrow(ExpectedProfileMismatchError);
-    expect(resolvePreparedSessionProfileId(client)).toBe(target.id);
-    expect(afterMerge).not.toHaveBeenCalled();
+    const release = retainUserProfileCatalog();
+    try {
+      const binding = createExpectedProfileBinding(source.id, client)!;
+      const prepares = vi.spyOn(DatabaseSync.prototype, "prepare");
+      binding.assertCurrent();
+      const response = vi.fn();
+      binding.guardResponse(response)(true, { session: null });
+      expect(response).toHaveBeenCalledWith(true, { session: null });
+      expect(prepares).not.toHaveBeenCalled();
+      prepares.mockRestore();
+      linkEmail("source@expected-profile.test", target.id);
+      prepareGatewayRecipientProfile(client);
+      const afterMerge = vi.spyOn(DatabaseSync.prototype, "prepare");
+      expect(() => binding.assertCurrent()).toThrow(ExpectedProfileMismatchError);
+      expect(readUserProfileIdentity(source.id)?.profileId).toBe(target.id);
+      expect(afterMerge).not.toHaveBeenCalled();
+    } finally {
+      release();
+    }
   });
 });

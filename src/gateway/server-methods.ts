@@ -34,11 +34,7 @@ import {
   CONTROL_PLANE_RATE_LIMIT_MAX_REQUESTS,
   CONTROL_PLANE_RATE_LIMIT_WINDOW_MS,
 } from "./control-plane-rate-limit.js";
-import {
-  createExpectedProfileBinding,
-  resolvePreparedSessionProfileId,
-  type ExpectedProfileBinding,
-} from "./expected-profile.js";
+import { createExpectedProfileBinding, type ExpectedProfileBinding } from "./expected-profile.js";
 import {
   ADMIN_SCOPE,
   authorizeOperatorScopesForMethod,
@@ -540,14 +536,7 @@ export async function handleGatewayRequest(
 ): Promise<void> {
   const { req, client, isWebchatConnect, context, signal, hasCurrentClientAuthority } = opts;
   const profileBinding =
-    opts.expectedProfileBinding ??
-    createExpectedProfileBinding(
-      req.expectedProfileId,
-      client,
-      req.method === "sessions.list" || req.method === "sessions.describe"
-        ? () => resolvePreparedSessionProfileId(client)
-        : undefined,
-    );
+    opts.expectedProfileBinding ?? createExpectedProfileBinding(req.expectedProfileId, client);
   // WS publication already owns the shared guard, including policy-close responses.
   const respond =
     profileBinding && !opts.expectedProfileBinding

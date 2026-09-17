@@ -14,7 +14,7 @@ import {
 } from "../infra/sqlite-worker-identity.js";
 import { registerOpenClawStateDatabaseLifecycleListener } from "./openclaw-state-db-cache.js";
 import { withExistingOpenClawStateDatabaseReadOnly } from "./openclaw-state-db-readonly.js";
-import { tableExists } from "./openclaw-state-db-schema-helpers.js";
+import { tableExists, tableHasColumn } from "./openclaw-state-db-schema-helpers.js";
 import {
   openOpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
@@ -105,35 +105,56 @@ export function hasMultipleSessionSharingIdentities(
   return profiles.length >= 2;
 }
 
+/** Exact durable identity facts; never use display-reference prefix matching for authority. */
+export function readUserProfileIdentity(
+  profileId: string,
+  options: OpenClawStateDatabaseOptions = {},
+) {
+  return readProfileCatalog(
+    options,
+    (resident) => {
+      const profile = resolveCatalogProfile(resident, profileId);
+      return (
+        profile && {
+          profileId: profile.id,
+          role: profile.role ?? null,
+          aliases: new Set(
+            [...resident.values()]
+              .filter((row) => row.id === profile.id || row.merged_into === profile.id)
+              .map((row) => row.id),
+          ),
+        }
+      );
+    },
+    (db) => {
+      const profile = selectResolvedUserProfileMetadataById(db, profileId);
+      return (
+        profile && {
+          profileId: profile.id,
+          role: profile.role ?? null,
+          aliases: new Set(
+            executeSqliteQuerySync(
+              db,
+              userProfilesDb(db)
+                .selectFrom("user_profiles")
+                .select("id")
+                .where((eb) =>
+                  eb.or([eb("id", "=", profile.id), eb("merged_into", "=", profile.id)]),
+                ),
+            ).rows.map((row) => row.id),
+          ),
+        }
+      );
+    },
+  );
+}
+
 /** Existing one-hop aliases are identity facts; this read never creates profile storage. */
 export function readUserProfileAliases(
   profileId: string,
   options: OpenClawStateDatabaseOptions = {},
 ): ReadonlySet<string> {
-  const aliases = readProfileCatalog(
-    options,
-    (resident) => {
-      const canonicalId = resolveCatalogProfile(resident, profileId)?.id ?? profileId;
-      return [...resident.values()]
-        .filter((row) => row.id === canonicalId || row.merged_into === canonicalId)
-        .map((row) => row.id);
-    },
-    (db) => {
-      const canonicalId = selectResolvedUserProfileMetadataById(db, profileId)?.id;
-      return canonicalId
-        ? executeSqliteQuerySync(
-            db,
-            userProfilesDb(db)
-              .selectFrom("user_profiles")
-              .select("id")
-              .where((eb) =>
-                eb.or([eb("id", "=", canonicalId), eb("merged_into", "=", canonicalId)]),
-              ),
-          ).rows.map((row) => row.id)
-        : [];
-    },
-  );
-  return new Set([profileId, ...(aliases ?? [])]);
+  return new Set([profileId, ...(readUserProfileIdentity(profileId, options)?.aliases ?? [])]);
 }
 
 const userProfileDisplaySelection = [
@@ -147,7 +168,14 @@ const userProfileDisplaySelection = [
 ] as const;
 
 function selectProfileDisplayEntries(db: DatabaseSync, ids?: string[]) {
-  const query = userProfilesDb(db).selectFrom("user_profiles").select(userProfileDisplaySelection);
+  const query = userProfilesDb(db)
+    .selectFrom("user_profiles")
+    .select([
+      ...userProfileDisplaySelection,
+      ...(hasEnsuredUserProfileRoleSchema(db) || tableHasColumn(db, "user_profiles", "role")
+        ? (["role"] as const)
+        : []),
+    ]);
   const rows = executeSqliteQuerySync(db, ids ? query.where("id", "in", ids) : query).rows;
   return rows.map((row): [string, typeof row] => [row.id, row]);
 }
@@ -200,7 +228,7 @@ function loadProfileCatalog(
   return false;
 }
 
-/** Retain display/navigation facts; physical admission updates every locator before observers. */
+/** Retain exact identity and display/navigation facts; physical admission updates every locator before observers. */
 export function retainUserProfileCatalog(options: OpenClawStateDatabaseOptions = {}): () => void {
   const pathname = profileCatalogPath(options);
   const catalog: ProfileCatalog = profileCatalogs.get(pathname) ?? {
