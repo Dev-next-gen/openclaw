@@ -11,12 +11,12 @@ import {
   listSessionPlacementRecoveries,
   readSessionPlacementRecovery,
   type SessionPlacementRecovery,
+  type SessionPlacementStartMode,
   type SessionPlacementPendingRecovery,
   type SessionPlacementPausedRecovery,
   pauseSessionPlacementRecovery,
   writeSessionPlacementRecoveryIfAvailable,
 } from "../lib/sessions/session-placement-recovery.ts";
-import type { SessionPlacementStartMode } from "../lib/sessions/session-placement-startup.ts";
 import {
   advanceSessionPlacementDraft,
   type SessionPlacementDraftAdvanceResult,

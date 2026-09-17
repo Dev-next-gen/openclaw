@@ -11,6 +11,7 @@ import {
   pauseSessionPlacementRecovery,
   readSessionPlacementRecovery,
   type SessionPlacementRecovery,
+  type SessionPlacementStartMode,
   type SessionPlacementPausedRecovery,
   writeSessionPlacementRecovery,
   writeSessionPlacementRecoveryIfAvailable,
@@ -19,7 +20,6 @@ import {
   deleteRecoveredSessionPlacementDraft,
   deleteSessionPlacementDraft,
   startSessionPlacementInitialTurn,
-  type SessionPlacementStartMode,
 } from "./session-placement-startup.ts";
 
 export type SessionPlacementDraftAdvanceResult =

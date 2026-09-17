@@ -16,9 +16,10 @@ import {
 } from "../../pages/chat/chat-send-ack.ts";
 import { formatTerminalChatSendAckError } from "../../pages/chat/chat-send-support.ts";
 import type { HumanMention } from "../chat/chat-types.ts";
-import type { SessionPlacementTarget } from "./session-placement-recovery.ts";
-
-export type SessionPlacementStartMode = "dispatch" | "recover" | "retry";
+import type {
+  SessionPlacementStartMode,
+  SessionPlacementTarget,
+} from "./session-placement-recovery.ts";
 
 type SessionPlacementStartOutcome =
   | { status: "started"; messageId: string }
