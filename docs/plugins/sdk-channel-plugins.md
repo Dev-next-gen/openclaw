@@ -564,7 +564,8 @@ current provider, account, and conversation context. An authenticated dashboard 
 turn can also use those provider-owned checks without native channel context, including
 Incognito sessions and fresh messages after reconnect. This permission belongs only to
 that admitted turn; background work and scheduled jobs keep their separate authorization.
-Provider account, destination, action, and requester policies remain in force.
+Normal chat and tool permissions, along with provider account, destination, action,
+and requester policies, remain in force.
 
 An adapter lists actions that support the lifetime fence in `actions.readAuthorityActions`.
 Its `actions.providerOwnedReadGates` declaration separately identifies the actions

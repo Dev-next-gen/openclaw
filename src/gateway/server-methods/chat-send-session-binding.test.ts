@@ -36,13 +36,17 @@ const admissionScenarios = [
   "rotated",
   "queued",
   "dashboard",
+  "dashboard-writer",
+  "dashboard-unattested",
   "dashboard-internal",
 ] as const;
 
 it.each(admissionScenarios)(
   "keeps prepared-session binding with its exact admission: %s",
   async (scenario) => {
-    const dashboard = scenario === "dashboard" || scenario === "dashboard-internal";
+    const dashboard = scenario.startsWith("dashboard");
+    const directDashboard = dashboard && scenario !== "dashboard-internal";
+    const dashboardReadAllowed = directDashboard && scenario !== "dashboard-unattested";
     const closure = dashboard ? "released" : scenario;
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const runId = "retained-preparation";
@@ -64,7 +68,14 @@ it.each(admissionScenarios)(
       const profile = ensureProfileForEmail("authoring-binding@example.test");
       const client: GatewayClient = {
         connId: "authoring-binding",
-        ...(dashboard ? { internal: { controlUiAdmin: true as const } } : {}),
+        ...(dashboard && scenario !== "dashboard-unattested"
+          ? {
+              internal: {
+                authenticatedControlUi: true as const,
+                ...(scenario !== "dashboard-writer" ? { controlUiAdmin: true as const } : {}),
+              },
+            }
+          : {}),
         authenticatedUserProfile: {
           profileId: profile.id,
           displayName: null,
@@ -75,7 +86,12 @@ it.each(admissionScenarios)(
           minProtocol: 1,
           maxProtocol: 1,
           role: "operator",
-          scopes: ["operator.read", "operator.write", "operator.admin"],
+          scopes:
+            scenario === "dashboard-writer"
+              ? ["operator.write"]
+              : dashboard
+                ? ["operator.admin"]
+                : ["operator.read", "operator.write", "operator.admin"],
           client: dashboard
             ? { id: "openclaw-control-ui", version: "test", platform: "web", mode: "webchat" }
             : { id: "cli", version: "test", platform: "test", mode: "cli" },
@@ -125,7 +141,7 @@ it.each(admissionScenarios)(
           requestParams: params,
         });
         expect(authorization.error).toBeNull();
-        const sendChat = scenario === "dashboard" ? handleDirectExternalChatSend : handleChatSend;
+        const sendChat = directDashboard ? handleDirectExternalChatSend : handleChatSend;
         await sendChat({
           params,
           req: { type: "req", id: runId, method: "chat.send" },
@@ -145,7 +161,7 @@ it.each(admissionScenarios)(
         );
         options = await entered.promise;
         const dashboardRead = options.replyOptions?.dashboardReadAdmission;
-        expect(Boolean(dashboardRead)).toBe(scenario === "dashboard");
+        expect(Boolean(dashboardRead)).toBe(dashboardReadAllowed);
         owned = observeDispatch.mock.calls.at(-1)?.[0];
         const prepared = options.replyOptions?.onSessionPrepared;
         const runStarted = options.replyOptions?.onAgentRunStart;
