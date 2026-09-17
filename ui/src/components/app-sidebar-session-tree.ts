@@ -94,6 +94,11 @@ export function projectSessionTree(params: {
     const unloadedChildKeys = childSessionKeys.filter((key) => !rowsByKey.has(key));
     // Only direct unloaded children can match: parents carry their keys, but not grandchildren's.
     // Grandchildren join the normal transitive fold after their branch is materialized.
+    const unloadedChildAttention = knownSessionAttention
+      .filter((entry) =>
+        unloadedChildKeys.some((key) => areUiSessionKeysEquivalent(entry.sessionKey, key)),
+      )
+      .map((entry) => entry.attention);
     const childAttention = [
       ...new Map(
         [
@@ -101,11 +106,7 @@ export function projectSessionTree(params: {
             attributeChildAttention(child.ownAttention ?? child.attention, child.label),
             ...(child.childAttention ?? []),
           ]),
-          ...knownSessionAttention
-            .filter((entry) =>
-              unloadedChildKeys.some((key) => areUiSessionKeysEquivalent(entry.sessionKey, key)),
-            )
-            .map((entry) => entry.attention),
+          ...unloadedChildAttention,
         ]
           .filter((value) => value.kind !== "none")
           .map((value) => [JSON.stringify(value), value]),
@@ -150,6 +151,7 @@ export function projectSessionTree(params: {
       ...projected,
       ownAttention: projected.attention,
       childAttention,
+      unloadedChildAttention,
       unreadChildCount,
       queuedChildCount,
       attention,
@@ -176,4 +178,36 @@ export function projectSessionTree(params: {
       return !parentKey || !rootKeys.has(parentKey);
     })
     .map((row) => build(row, false, new Set()));
+}
+
+/** Resolve the currently presented forest's child-list subscriptions. */
+export function collectSidebarChildSessionParents({
+  rows,
+  mainRows,
+  isExpanded,
+}: {
+  rows: readonly SidebarRecentSession[];
+  mainRows: readonly (GatewaySessionRow | null)[];
+  isExpanded: (session: SidebarRecentSession) => boolean;
+}): Set<string> {
+  const parents = new Set<string>();
+  const pending = [...rows];
+  while (pending.length > 0) {
+    const session = pending.shift();
+    if (!session) {
+      continue;
+    }
+    pending.push(...session.children);
+    if (session.childSessionKeys.length > 0 && (session.visuallyActive || isExpanded(session))) {
+      parents.add(session.key);
+    }
+  }
+  // Agent headers replace main rows in roster mode. Hydrate their children
+  // through the same owner so even a saved collapsed group can discover rows.
+  for (const mainRow of mainRows) {
+    if (mainRow && (mainRow.childSessions?.length ?? 0) > 0) {
+      parents.add(mainRow.key);
+    }
+  }
+  return parents;
 }

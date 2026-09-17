@@ -33,7 +33,7 @@ describe("AppSidebar agent roster", () => {
         const header = sidebar.querySelector(".sidebar-workspace-header");
         expect(header?.textContent).toContain(name?.trim() || "OpenClaw");
         expect(header?.querySelector(".sidebar-agent-card__avatar")).toBeNull();
-        expect(header?.querySelector("img")?.getAttribute("src")).toBe("/favicon.svg");
+        expect(header?.querySelector(".sidebar-workspace-header__mark svg")).not.toBeNull();
         expect(sidebar.querySelector("openclaw-sidebar-agent-card")).toBeNull();
         sidebar.querySelector<HTMLButtonElement>(".sidebar-workspace-header__main")?.click();
         await vi.waitFor(() => expect(sidebar.querySelector(".sidebar-agent-menu")).not.toBeNull());
@@ -42,16 +42,13 @@ describe("AppSidebar agent roster", () => {
           [...(menu?.querySelectorAll(":scope > wa-dropdown-item") ?? [])].map((item) =>
             item.textContent?.trim(),
           ),
-        ).toEqual(["Show one agent", "Agent settings", expect.stringContaining("Help")]);
-        expect(menu?.querySelector(".sidebar-agent-menu__agent-grid")).toBeNull();
+        ).toEqual(["Every agent", "New agent", "Agent settings", "Sessions from every agent"]);
+        expect(
+          menu?.querySelectorAll(".sidebar-agent-menu__agent-grid wa-dropdown-item"),
+        ).toHaveLength(3);
         expect(
           [...(menu?.querySelectorAll("a") ?? [])].map((link) => link.getAttribute("href")),
-        ).toEqual([
-          "https://docs.openclaw.ai",
-          "https://docs.openclaw.ai/help",
-          "https://discord.gg/clawd",
-          "https://docs.openclaw.ai/releases",
-        ]);
+        ).toEqual([]);
         menu?.dispatchEvent(
           new CustomEvent("wa-select", {
             detail: { item: menu.querySelector('[value="command:sidebar-agents"]') },
@@ -67,12 +64,92 @@ describe("AppSidebar agent roster", () => {
         sidebar.querySelector<HTMLButtonElement>(".sidebar-agent-card__main")?.click();
         await vi.waitFor(() =>
           expect(sidebar.querySelector('[value="command:sidebar-agents"]')?.textContent).toContain(
-            "Show all agents",
+            "Sessions from every agent",
           ),
         );
       } finally {
         vi.unstubAllGlobals();
       }
+    },
+  );
+
+  it.each([0, 1, 8])("shows %s other sessions behind the agent row", async (count) => {
+    const { sidebar, context } = await mountRoster(roster, [
+      session("working", 100),
+      ...Array.from({ length: count }, (_, index) =>
+        session("working", index, {
+          key: `agent:working:task-${index}`,
+          isMain: false,
+        }),
+      ),
+    ]);
+    sidebar.sidebarAgentsMode = "roster";
+    sidebar.activeRouteId = "chat";
+    sidebar.sessionKey = "agent:working:main";
+    context.agentSelection.set("working");
+    await vi.waitFor(() => expect(agentIds(sidebar)).toHaveLength(3));
+    const group = sidebar.querySelector<HTMLElement>('[data-agent-group="working"]')!;
+    await vi.waitFor(() => expect(sessionKeys(group)).toHaveLength(count));
+    expect(group.querySelector('[data-session-key="agent:working:main"]')).toBeNull();
+    expect(group.querySelector(".sidebar-agent-roster__row")?.getAttribute("aria-current")).toBe(
+      "page",
+    );
+    const toggle = group.querySelector<HTMLButtonElement>("[data-agent-collapse]");
+    expect(toggle !== null).toBe(count > 0);
+    if (toggle) {
+      toggle.click();
+      await vi.waitFor(() => expect(sessionKeys(group)).toEqual([]));
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      toggle.click();
+      await vi.waitFor(() => expect(sessionKeys(group)).toHaveLength(count));
+    }
+    sidebar.activeRouteId = "sessions";
+    await vi.waitFor(() =>
+      expect(group.querySelector(".sidebar-agent-roster__row")?.hasAttribute("aria-current")).toBe(
+        false,
+      ),
+    );
+  });
+
+  it.each([false, true])(
+    "hydrates main descendants in another agent group (collapsed=%s)",
+    async (collapsed) => {
+      const parent = "agent:working:main";
+      const child = "agent:working:subagent:proof";
+      patchSettings({
+        gatewayUrl: "ws://gateway.test",
+        sidebarCollapsedAgentIds: collapsed ? ["working"] : [],
+      });
+      const { sidebar } = await mountRoster(
+        roster,
+        [session("working", 10, { childSessions: [child] })],
+        undefined,
+        [],
+        [],
+        [
+          session("working", 9, {
+            key: child,
+            isMain: false,
+            spawnedBy: parent,
+            hasActiveRun: true,
+            status: "running",
+          }),
+        ],
+      );
+      sidebar.sidebarAgentsMode = "roster";
+      await vi.waitFor(() => expect(agentIds(sidebar)).toHaveLength(3));
+      await vi.waitFor(() =>
+        expect(sidebar.querySelector('[data-agent-collapse="working"]')).not.toBeNull(),
+      );
+      if (collapsed) {
+        expect(sessionKeys(sidebar)).not.toContain(child);
+        sidebar.querySelector<HTMLButtonElement>('[data-agent-collapse="working"]')?.click();
+      }
+      await vi.waitFor(() => expect(sessionKeys(sidebar)).toContain(child));
+      expect(sessionKeys(sidebar)).not.toContain(parent);
+      expect(
+        sidebar.querySelector(`[data-session-key="${child}"] .session-glyph__ring`),
+      ).not.toBeNull();
     },
   );
 
@@ -86,11 +163,7 @@ describe("AppSidebar agent roster", () => {
         throw new Error(`Missing session group for ${id}`);
       }
       await vi.waitFor(() =>
-        expect(sessionKeys(group)).toEqual([
-          `agent:${id}:pinned`,
-          `agent:${id}:main`,
-          `agent:${id}:recent`,
-        ]),
+        expect(sessionKeys(group)).toEqual([`agent:${id}:pinned`, `agent:${id}:recent`]),
       );
       expect(group?.querySelector(`a[href="/new?agent=${id}"]`)).not.toBeNull();
       expect(group?.querySelector(".sidebar-agent-roster__row")?.getAttribute("href")).toBe(
@@ -356,9 +429,7 @@ describe("AppSidebar agent roster", () => {
         expect(rows).toHaveLength(1);
         expect(rows[0]?.classList.contains("sidebar-recent-session--active")).toBe(true);
       });
-      expect(sidebar.querySelector(`[data-session-key="${parentKey}"]`) !== null).toBe(
-        variant === "child of main",
-      );
+      expect(sidebar.querySelector(`[data-session-key="${parentKey}"]`)).toBeNull();
     },
   );
 
@@ -416,7 +487,7 @@ describe("AppSidebar agent roster", () => {
   it("applies owner and archived filters across all agent groups", async () => {
     const { sidebar } = await mountRoster();
     sidebar.sidebarAgentsMode = "roster";
-    await vi.waitFor(() => expect(sessionKeys(sidebar)).toHaveLength(9));
+    await vi.waitFor(() => expect(sessionKeys(sidebar)).toHaveLength(6));
     await selectFilter(sidebar, "owner:profile-ada");
     await vi.waitFor(() =>
       expect(sessionKeys(sidebar)).toEqual([
@@ -436,7 +507,7 @@ describe("AppSidebar agent roster", () => {
     expect(agentIds(sidebar)).toEqual(["main", "recent", "working"]);
   });
 
-  it("filters archived children while keeping main-session children nested", async () => {
+  it("filters archived children while promoting main-session children", async () => {
     const { sidebar } = await mountRoster(roster, [
       session("working", 10, { childSessions: ["agent:working:main-child"] }),
       session("working", 9, {
@@ -459,13 +530,10 @@ describe("AppSidebar agent roster", () => {
     ]);
     sidebar.sidebarAgentsMode = "roster";
     await vi.waitFor(() =>
-      expect(sessionKeys(sidebar)).toEqual(["agent:working:main", "agent:working:parent"]),
+      expect(sessionKeys(sidebar)).toEqual(["agent:working:main-child", "agent:working:parent"]),
     );
     expect(sidebar.querySelector('[data-child-session-toggle="agent:working:parent"]')).toBeNull();
-    sidebar
-      .querySelector<HTMLButtonElement>('[data-child-session-toggle="agent:working:main"]')
-      ?.click();
-    await vi.waitFor(() => expect(sessionKeys(sidebar)).toContain("agent:working:main-child"));
+    expect(sidebar.querySelector('[data-session-key="agent:working:main"]')).toBeNull();
     await selectFilter(sidebar, "status:archived");
     await vi.waitFor(() => expect(sessionKeys(sidebar)).toEqual(["agent:working:archived-child"]));
   });

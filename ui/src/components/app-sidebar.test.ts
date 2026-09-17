@@ -4,6 +4,7 @@ import { expect, it } from "vitest";
 import { AppSidebarSessionNavigationElement } from "./app-sidebar-session-navigation.ts";
 import "../test-helpers/app-sidebar-suite.ts";
 import "../test-helpers/app-sidebar-cases/agent-menu.ts";
+import "../test-helpers/app-sidebar-cases/agent-menu-scope.ts";
 import "../test-helpers/app-sidebar-cases/roster-agent-first.ts";
 import "../test-helpers/app-sidebar-cases/roster.ts";
 import "../test-helpers/app-sidebar-cases/attention.ts";

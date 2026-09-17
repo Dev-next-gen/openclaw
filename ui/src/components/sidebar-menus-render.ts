@@ -108,6 +108,7 @@ export function renderSidebarAgentMenuForController(controller: SidebarMenusCont
     position,
     basePath: host.basePath,
     activeId,
+    scopeId: host.sessionDataContext?.agentSelection.state.scopeId ?? null,
     activeName: normalizeAgentLabel(agent ?? { id: activeId }, identity),
     agents,
     identities,
@@ -130,7 +131,13 @@ export function renderSidebarAgentMenuForController(controller: SidebarMenusCont
     onPointerEnter: () => controller.handleAgentMenuPointerEnter(),
     onPointerLeave: () => controller.handleAgentMenuPointerLeave(),
     onAfterShow: () => controller.restoreFocusAfterAgentMenuHoverOpen(),
-    onSwitchAgent: (agentId) => host.switchChipAgent(agentId),
+    onSwitchAgent: (agentId) => {
+      if (host.sidebarAgentsMode === "roster") {
+        host.sidebarAgentsMode = "chip";
+        patchSettings({ sidebarAgentsMode: "chip" });
+      }
+      host.switchChipAgent(agentId);
+    },
     onAskCapabilities: (agentId) => host.askAgentCapabilities(agentId),
     onTabAway: () => trigger?.focus(),
     onClose: (restoreFocus) => {

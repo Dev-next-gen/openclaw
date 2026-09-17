@@ -59,7 +59,7 @@ export function projectSidebarAgentSessionRows({
   result?: SessionsListResult | null;
   compareSessions: (a: GatewaySessionRow, b: GatewaySessionRow) => number;
   knownSessionAttention: readonly SidebarKnownSessionAttention[];
-}): SidebarRecentSession[] {
+}): { rows: SidebarRecentSession[]; mainSessions: ReadonlyMap<string, SidebarRecentSession> } {
   const grouped = result !== undefined;
   const defaultAgentId = resolveUiDefaultAgentId({
     agentsList: host.sessionDataContext?.agents.state.agentsList,
@@ -302,5 +302,37 @@ export function projectSidebarAgentSessionRows({
   ) {
     projected.unshift(navigationState.toSidebarSession(selectedFallback));
   }
-  return projected;
+  const mainSessions = new Map<string, SidebarRecentSession>();
+  // Promoted children keep their own summaries. The header retains only main's
+  // own state and unloaded descendants, which have no visible row to own it.
+  const withoutMainRows = (sessionRows: readonly SidebarRecentSession[]): SidebarRecentSession[] =>
+    sessionRows.flatMap((row) => {
+      if (!isMainSession(row.key)) {
+        return [{ ...row, children: withoutMainRows(row.children) }];
+      }
+      mainSessions.set(row.key, {
+        ...row,
+        children: [],
+        childAttention: row.unloadedChildAttention,
+        runningChildCount: Math.max(
+          0,
+          row.runningChildCount -
+            row.children.reduce(
+              (count, child) => count + Number(child.hasActiveRun) + child.runningChildCount,
+              0,
+            ),
+        ),
+        failedChildCount: 0,
+        queuedChildCount: 0,
+        unreadChildCount: 0,
+        workspaceConflictCount:
+          Math.max(
+            0,
+            (row.workspaceConflictCount ?? 0) -
+              row.children.reduce((count, child) => count + (child.workspaceConflictCount ?? 0), 0),
+          ) || undefined,
+      });
+      return withoutMainRows(row.children);
+    });
+  return { rows: grouped ? withoutMainRows(projected) : projected, mainSessions };
 }

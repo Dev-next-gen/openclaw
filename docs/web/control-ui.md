@@ -99,7 +99,7 @@ Local onboarding generates a Gateway secret in token mode by default, without a 
 
 ## Agents home
 
-Open **Agents** in the sidebar, choose **All agents** in the agent switcher, or
+Open **Agents** in the sidebar, choose **Every agent** in the agent switcher, or
 visit `/agents` to see your configured agents as a roster. Each card shows the
 agent's identity, model, current work status, last activity, and a preview from its
 main chat. **Open chat** opens that agent's
@@ -109,19 +109,25 @@ main session. Working agents appear first, followed by the most recently active.
 agent creation flow when available, or agent settings otherwise. `/agents` now
 opens the roster; agent configuration remains at `/settings/agents`.
 
-To browse sessions across agents, choose **Show all agents** in the
+To browse sessions across agents, choose **Sessions from every agent** in the
 agent switcher. This enables **team mode**, a browser preference that is off by
 default. The top row becomes a workspace header with the configured Gateway display
-name, or **OpenClaw**, and the OpenClaw mark. Its menu contains **Show one agent**,
-**Agent settings**, and the existing documentation, help, community, and changelog
-links. Sessions appear under collapsible agent headers in configured roster order,
+name, or **OpenClaw**, and a static OpenClaw mark sized like the agent avatar.
+Its menu keeps the agent switcher, followed by **Every agent**, **New agent**,
+and **Agent settings**. **Every agent** opens the Agents home. Documentation, help,
+community, and changelog links remain under **Help** in the account menu at the
+bottom of the sidebar. Sessions appear under agent headers in configured roster order,
 which stays stable as activity changes. **Home** disappears from Pages: click an agent header's avatar or name to
-open that agent's main chat. The separate collapse control only folds its sessions.
+open that agent's main chat. The header is selected while that main chat is active;
+there is no duplicate main-session row. A separate collapse control appears only
+when the agent has other sessions and only folds those sessions.
 The top **+**, labeled **New conversation**, opens an agent menu with avatars and names in
 the same order as the groups; choosing an agent opens New session for that agent.
 Each group's **+** does this directly, appearing on hover or keyboard focus and remaining visible on touch devices. Selecting a session switches the active
-agent for chat. Choose **Show one agent** in the workspace menu to restore the
-agent chip, Home row, and direct New session button.
+agent for chat. Choose an agent in the workspace menu to leave team mode with
+that agent selected, restoring the agent chip, Home row, and direct New session
+button. **Sessions from every agent** is checked while team mode is on; turning
+it off restores the previous page scope.
 
 Enabling team mode also defaults the shared page scope to **All agents**, while
 remembering the previous scope to restore when you turn it off. That scope,

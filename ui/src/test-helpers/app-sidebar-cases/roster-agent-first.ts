@@ -105,34 +105,108 @@ describe("AppSidebar agent roster", () => {
     },
   );
 
-  it("keeps main-session activity on its row and summarizes only collapsed groups", async () => {
-    const mainKey = "agent:working:main";
-    const { sidebar, sessions } = await mountRoster(roster, [
-      session("working", 10, {
-        hasActiveRun: true,
-        status: "queued",
-        owner: { actor: owners[0] },
-        incognito: true,
-      }),
+  it("keeps main-session activity on the agent row without an empty collapse control", async () => {
+    const { sidebar } = await mountRoster(roster, [
+      session("working", 10, { hasActiveRun: true, status: "queued", unread: true }),
     ]);
-    sessions.sessions.setPullRequestSummary(mainKey, { numbers: [103], state: "open" });
     sidebar.sidebarAgentsMode = "roster";
     await vi.waitFor(() => expect(agentIds(sidebar)).toHaveLength(3));
-    const signals = sidebar.querySelector(
-      '[data-session-key="agent:working:main"] .sidebar-recent-session__details-endcap',
-    );
-    expect(signals?.querySelector(".session-glyph__ring--queued")).not.toBeNull();
-    expect(signals?.querySelector(".session-owner-chip")).not.toBeNull();
-    expect(signals?.querySelector('[data-pull-request-state="open"]')).not.toBeNull();
-    expect(signals?.querySelector(".session-row-badge--incognito")).not.toBeNull();
-    expect(sidebar.querySelector(".sidebar-agent-roster__signals .session-glyph__ring")).toBeNull();
-    sidebar.querySelector<HTMLButtonElement>('[data-agent-collapse="working"]')?.click();
+    const group = sidebar.querySelector('[data-agent-group="working"]')!;
     await vi.waitFor(() =>
-      expect(sidebar.querySelector(`[data-session-key="${mainKey}"]`)).toBeNull(),
+      expect(
+        group.querySelector(".sidebar-agent-roster__signals .session-glyph__ring--queued"),
+      ).not.toBeNull(),
     );
-    expect(
-      sidebar.querySelectorAll(".sidebar-agent-roster__signals .session-glyph__ring--queued"),
-    ).toHaveLength(1);
+    expect(group.querySelector('[aria-label="Unread"]')).not.toBeNull();
+    expect(group.querySelector('[data-session-key="agent:working:main"]')).toBeNull();
+    expect(group.querySelector("[data-agent-collapse]")).toBeNull();
+  });
+
+  it.each(["approval", "question", "running"] as const)(
+    "keeps unloaded main-child %s state on the agent header",
+    async (state) => {
+      const mainKey = "agent:working:main";
+      const childKey = "agent:working:subagent:unloaded";
+      const now = Date.now();
+      const { sidebar, gatewayHarness } = await mountRoster(
+        roster,
+        [
+          session("working", 10, {
+            childSessions: [childKey],
+            hasActiveSubagentRun: state === "running",
+          }),
+        ],
+        undefined,
+        [],
+        state === "approval"
+          ? [
+              {
+                id: "unloaded-child-approval",
+                kind: "exec",
+                request: { command: "git status", sessionKey: childKey },
+                createdAtMs: now,
+                expiresAtMs: now + 60_000,
+              },
+            ]
+          : [],
+        [],
+      );
+      sidebar.sidebarAgentsMode = "roster";
+      await vi.waitFor(() => expect(agentIds(sidebar)).toHaveLength(3));
+      if (state === "question") {
+        gatewayHarness.publishEvent("question.requested", {
+          id: "unloaded-child-question",
+          agentId: "working",
+          sessionKey: childKey,
+          questions: [{ questionId: "next", header: "Next", question: "Continue?", options: [] }],
+          createdAtMs: now,
+          expiresAtMs: now + 60_000,
+          status: "pending",
+        });
+      }
+      const signal =
+        state === "running" ? ".session-glyph__ring" : `[data-session-attention="${state}"]`;
+      await vi.waitFor(() =>
+        expect(
+          sidebar.querySelector(
+            `[data-agent-group="working"] .sidebar-agent-roster__signals ${signal}`,
+          ),
+        ).not.toBeNull(),
+      );
+      expect(sidebar.querySelector(`[data-session-key="${mainKey}"]`)).toBeNull();
+      expect(sidebar.querySelector(`[data-session-key="${childKey}"]`)).toBeNull();
+    },
+  );
+
+  it("leaves loaded main-child activity with its visible row and summarizes it once when collapsed", async () => {
+    const mainKey = "agent:working:main";
+    const childKey = "agent:working:subagent:loaded";
+    const { sidebar } = await mountRoster(roster, [
+      session("working", 10, { childSessions: [childKey], hasActiveSubagentRun: true }),
+      session("working", 9, {
+        key: childKey,
+        isMain: false,
+        spawnedBy: mainKey,
+        hasActiveRun: true,
+        status: "running",
+        unread: true,
+      }),
+    ]);
+    sidebar.sidebarAgentsMode = "roster";
+    await vi.waitFor(() =>
+      expect(
+        sidebar.querySelector(`[data-session-key="${childKey}"] .session-glyph__ring`),
+      ).not.toBeNull(),
+    );
+    const header = sidebar.querySelector(
+      '[data-agent-group="working"] .sidebar-agent-roster__signals',
+    )!;
+    expect(header.querySelector(".session-glyph__ring")).toBeNull();
+    expect(header.querySelector('[aria-label="Unread"]')).toBeNull();
+    sidebar.querySelector<HTMLButtonElement>('[data-agent-collapse="working"]')?.click();
+    await vi.waitFor(() => expect(header.querySelectorAll(".session-glyph__ring")).toHaveLength(1));
+    expect(header.querySelectorAll('[aria-label="Unread"]')).toHaveLength(1);
+    expect(header.querySelector('[aria-label="Unread"]')?.textContent?.trim()).toBe("");
   });
 
   it.each([undefined, "Saved work"])(
@@ -261,16 +335,16 @@ describe("AppSidebar agent roster", () => {
     await vi.waitFor(() =>
       expect(
         sidebar.querySelector(
-          '[data-session-key="agent:working:main"] .sidebar-session-team-state .session-glyph__ring',
+          '[data-agent-group="working"] .sidebar-agent-roster__signals .sidebar-session-team-state .session-glyph__ring',
         ),
       ).not.toBeNull(),
     );
     expect(
       sidebar.querySelector(
-        '[data-session-key="agent:working:main"] .sidebar-session-team-state [aria-label="Unread"]',
+        '[data-agent-group="working"] .sidebar-agent-roster__signals .sidebar-session-team-state [aria-label="Unread"]',
       ),
     ).not.toBeNull();
-    expect(sidebar.querySelector(`[data-session-key="${mainKey}"]`)).not.toBeNull();
+    expect(sidebar.querySelector(`[data-session-key="${mainKey}"]`)).toBeNull();
   });
 
   it("does not reinsert a main row rejected by the normal session visibility filter", async () => {
@@ -295,13 +369,13 @@ describe("AppSidebar agent roster", () => {
     );
     sidebar.sessionKey = "global";
     sidebar.sidebarAgentsMode = "roster";
-    await vi.waitFor(() => expect(sessionKeys(sidebar)).toEqual(["global"]));
+    await vi.waitFor(() => expect(agentIds(sidebar)).toEqual(["main"]));
+    expect(sessionKeys(sidebar)).toEqual([]);
     expect(
       sidebar.querySelector(
-        '[data-agent-group="main"] [data-session-key="global"] .session-glyph__ring',
+        '[data-agent-group="main"] .sidebar-agent-roster__signals .session-glyph__ring',
       ),
     ).not.toBeNull();
-    expect(sidebar.querySelector(".sidebar-agent-roster__signals .session-glyph__ring")).toBeNull();
   });
 
   it("starts Online collapsed in team mode and keeps it expandable", async () => {

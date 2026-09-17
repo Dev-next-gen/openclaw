@@ -233,10 +233,10 @@ describe("AppSidebar agent chip", () => {
     const menu = sidebar.querySelector(".sidebar-agent-menu");
     expect(menu).not.toBeNull();
     expect(menu?.querySelector(".sidebar-pair-mobile")).toBeNull();
-    expect(menu?.querySelectorAll('[role="separator"]')).toHaveLength(1);
-    expect(menu?.querySelector('[role="separator"]')?.previousElementSibling?.className).toBe(
-      "sidebar-agent-menu__agent-grid",
-    );
+    expect(menu?.querySelectorAll('[role="separator"]')).toHaveLength(2);
+    expect(
+      menu?.querySelector('[role="separator"]')?.previousElementSibling?.getAttribute("value"),
+    ).toBe("command:all-agents");
     expect(menu?.querySelector("openclaw-sidebar-build-chip")).toBeNull();
     expect(menu?.querySelector("openclaw-theme-mode-toggle")).toBeNull();
     expect(
@@ -246,12 +246,24 @@ describe("AppSidebar agent chip", () => {
     ).toEqual([
       "agent:main",
       "agent:research",
-      "command:sidebar-agents",
       "command:all-agents",
       "command:new-agent",
       "command:capabilities",
       "command:agent-settings",
+      "command:sidebar-agents",
     ]);
+
+    const commands = [...(menu?.querySelectorAll('wa-dropdown-item[value^="command:"]') ?? [])];
+    expect(commands.map((item) => item.textContent?.trim())).toEqual([
+      "Every agent",
+      "New agent",
+      "What can Molty do?",
+      "Agent settings",
+      "Sessions from every agent",
+    ]);
+    for (const command of commands) {
+      expect(command.querySelector('[slot="icon"] svg')).not.toBeNull();
+    }
 
     const agentRows = [...(menu?.querySelectorAll(".sidebar-agent-menu__agent-switch") ?? [])];
     expect(agentRows).toHaveLength(2);
@@ -486,73 +498,6 @@ describe("AppSidebar agent chip", () => {
     label.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
     await sidebar.updateComplete;
     expect(sidebar.querySelector(".sidebar-agent-menu")).toBe(firstMenu);
-  });
-
-  it.each([0, 1])(
-    "keeps the mode toggle and agent actions with %i configured agents",
-    async (count) => {
-      const gateway = createGateway({} as GatewayBrowserClient);
-      const { sidebar } = await mountSidebar(
-        gateway,
-        createSessions("main", ["agent:main:main"]),
-        "panel",
-        {
-          defaultId: "main",
-          mainKey: "main",
-          scope: "per-sender",
-          agents: count === 0 ? [] : [{ id: "main", identity: { name: "Molty", emoji: "🦞" } }],
-        },
-      );
-      sidebar.connected = true;
-      await sidebar.updateComplete;
-
-      sidebar.querySelector<HTMLButtonElement>(".sidebar-agent-card__main")?.click();
-      await sidebar.updateComplete;
-      const menu = sidebar.querySelector(".sidebar-agent-menu");
-      expect(menu?.querySelector(".sidebar-customize-menu__title")).toBeNull();
-      expect(menu?.querySelector('[role="separator"]')).toBeNull();
-      expect(menu?.querySelector(".sidebar-agent-menu__filter")).toBeNull();
-      expect(menu?.querySelector(".sidebar-agent-menu__agent-switch")).toBeNull();
-      expect(
-        [...(menu?.children ?? [])]
-          .filter((element) => element.localName === "wa-dropdown-item")
-          .map((element) => element.getAttribute("value")),
-      ).toEqual([
-        "command:sidebar-agents",
-        "command:all-agents",
-        "command:new-agent",
-        "command:capabilities",
-        "command:agent-settings",
-      ]);
-    },
-  );
-
-  it.each([
-    { label: "All agents", navigation: ["agents-home", undefined] },
-    { label: "Agent settings", navigation: ["agents", { pathname: "/settings/agents/main" }] },
-  ])("navigates to $label and closes the agent menu", async ({ label, navigation }) => {
-    const gateway = createGateway({} as GatewayBrowserClient);
-    const { sidebar } = await mountSidebar(
-      gateway,
-      createSessions("main", ["agent:main:main"]),
-      "panel",
-      TWO_AGENTS,
-    );
-    const onNavigate = vi.fn();
-    sidebar.connected = true;
-    sidebar.onNavigate = onNavigate;
-    await sidebar.updateComplete;
-
-    sidebar.querySelector<HTMLButtonElement>(".sidebar-agent-card__main")?.click();
-    await sidebar.updateComplete;
-    const actionRow = [
-      ...sidebar.querySelectorAll<HTMLElement>(".sidebar-agent-menu wa-dropdown-item"),
-    ].find((row) => row.textContent?.includes(label));
-    expect(actionRow).toBeDefined();
-    actionRow?.click();
-    await sidebar.updateComplete;
-    expect(onNavigate).toHaveBeenCalledWith(...navigation);
-    expect(sidebar.querySelector(".sidebar-agent-menu")).toBeNull();
   });
 
   it("keeps the plain roster without a filter at six agents or fewer", async () => {

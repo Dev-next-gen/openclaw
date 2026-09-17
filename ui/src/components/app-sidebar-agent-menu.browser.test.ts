@@ -50,4 +50,58 @@ describe.runIf("__vitest_browser__" in globalThis)("sidebar agent menu layout", 
       ).toBeLessThanOrEqual(1);
     }
   });
+
+  it("matches workspace and agent header geometry with a static workspace mark", async () => {
+    await import("./app-sidebar.ts");
+    await import("./sidebar-agent-roster.ts");
+    const { createGatewayHarness, createSessions, mountSidebar } =
+      await import("../test-helpers/app-sidebar.ts");
+    const { sidebar } = await mountSidebar(
+      createGatewayHarness({} as GatewayBrowserClient).gateway,
+      createSessions("main", ["agent:main:main"]),
+      "panel",
+      {
+        defaultId: "main",
+        mainKey: "main",
+        scope: "per-sender",
+        agents: [
+          { id: "main", name: "OpenClaw" },
+          { id: "research", name: "Research" },
+        ],
+      },
+    );
+    await document.fonts.ready;
+    const measure = (header: HTMLElement, avatarSelector: string) => {
+      const avatar = header.querySelector<HTMLElement>(avatarSelector)!.getBoundingClientRect();
+      const name = header
+        .querySelector<HTMLElement>(".sidebar-agent-card__name-text")!
+        .getBoundingClientRect();
+      const chevron = header
+        .querySelector<HTMLElement>(".sidebar-agent-card__chevron")!
+        .getBoundingClientRect();
+      return [
+        avatar.width,
+        avatar.height,
+        name.x - avatar.right,
+        chevron.x - name.right,
+        name.y + name.height / 2 - (avatar.y + avatar.height / 2),
+        chevron.y + chevron.height / 2 - (avatar.y + avatar.height / 2),
+      ];
+    };
+    const agent = measure(
+      sidebar.querySelector<HTMLElement>(".sidebar-agent-card__main")!,
+      ".sidebar-agent-card__avatar",
+    );
+    sidebar.sidebarAgentsMode = "roster";
+    await sidebar.updateComplete;
+    const workspaceHeader = sidebar.querySelector<HTMLElement>(".sidebar-workspace-header__main")!;
+    const workspace = measure(workspaceHeader, ".sidebar-workspace-header__mark");
+    for (const [index, dimension] of agent.entries()) {
+      expect(Math.abs(workspace[index]! - dimension)).toBeLessThanOrEqual(1);
+    }
+    const mark = workspaceHeader.querySelector(".sidebar-workspace-header__mark")!;
+    expect(mark.querySelector("svg")).not.toBeNull();
+    expect(mark.querySelector("animate, animateTransform")).toBeNull();
+    expect(mark.getAnimations({ subtree: true })).toHaveLength(0);
+  });
 });
