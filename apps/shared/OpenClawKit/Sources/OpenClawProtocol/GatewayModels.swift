@@ -10737,6 +10737,7 @@ public struct PluginsInspectParams: Codable, Sendable {
 public struct PluginsInspectResult: Codable, Sendable {
     public let ok: Bool
     public let overview: [String: AnyCodable]?
+    public let credentials: [[String: AnyCodable]]?
     public let plugin: [String: AnyCodable]
     public let source: PluginInspectSource?
     public let declared: PluginDeclaredSurface
@@ -10749,6 +10750,7 @@ public struct PluginsInspectResult: Codable, Sendable {
     public init(
         ok: Bool,
         overview: [String: AnyCodable]? = nil,
+        credentials: [[String: AnyCodable]]? = nil,
         plugin: [String: AnyCodable],
         source: PluginInspectSource? = nil,
         declared: PluginDeclaredSurface,
@@ -10760,6 +10762,7 @@ public struct PluginsInspectResult: Codable, Sendable {
     {
         self.ok = ok
         self.overview = overview
+        self.credentials = credentials
         self.plugin = plugin
         self.source = source
         self.declared = declared
@@ -10773,6 +10776,7 @@ public struct PluginsInspectResult: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case ok
         case overview
+        case credentials
         case plugin
         case source
         case declared
@@ -14535,6 +14539,7 @@ public struct SessionRow: Codable, Sendable {
     public let activeleafentryid: AnyCodable?
     public let spawnedby: String?
     public let parentsessionkey: String?
+    public let parentsessionid: String?
     public let controlownersessionkey: String?
     public let childsessions: [String]?
     public let forkedfromparent: Bool?
@@ -14623,6 +14628,7 @@ public struct SessionRow: Codable, Sendable {
         activeleafentryid: AnyCodable? = nil,
         spawnedby: String? = nil,
         parentsessionkey: String? = nil,
+        parentsessionid: String? = nil,
         controlownersessionkey: String? = nil,
         childsessions: [String]? = nil,
         forkedfromparent: Bool? = nil,
@@ -14710,6 +14716,7 @@ public struct SessionRow: Codable, Sendable {
         self.activeleafentryid = activeleafentryid
         self.spawnedby = spawnedby
         self.parentsessionkey = parentsessionkey
+        self.parentsessionid = parentsessionid
         self.controlownersessionkey = controlownersessionkey
         self.childsessions = childsessions
         self.forkedfromparent = forkedfromparent
@@ -14799,6 +14806,7 @@ public struct SessionRow: Codable, Sendable {
         case activeleafentryid = "activeLeafEntryId"
         case spawnedby = "spawnedBy"
         case parentsessionkey = "parentSessionKey"
+        case parentsessionid = "parentSessionId"
         case controlownersessionkey = "controlOwnerSessionKey"
         case childsessions = "childSessions"
         case forkedfromparent = "forkedFromParent"
