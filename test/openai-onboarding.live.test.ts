@@ -310,8 +310,6 @@ describeLive("fresh OpenAI onboarding live", () => {
           gatewaySessionId,
           "--message",
           gatewayPrompt,
-          "--thinking",
-          "off",
           "--json",
         ],
         state.env,
