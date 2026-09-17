@@ -48,6 +48,10 @@ import {
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
+import {
+  closeDatabaseTestCohorts,
+  closeStateDatabaseForTest,
+} from "../test-utils/database-cleanup.js";
 import { createTrackedTempDirs } from "../test-utils/tracked-temp-dirs.js";
 import { acquireGatewayLock } from "./gateway-lock.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
@@ -121,17 +125,11 @@ function autoMigrateLegacyState(
 // Static helpers can retain earlier cohorts after resetModules; close every cohort at teardown.
 const migrationDatabaseClosers = new Set([
   closeOpenClawAgentDatabasesForTest,
-  closeOpenClawStateDatabaseForTest,
+  closeStateDatabaseForTest,
 ]);
 
-function closeMigrationDatabases() {
-  for (const close of migrationDatabaseClosers) {
-    close();
-  }
-}
-
 async function rerunAutomaticMigrationAfterRestart(params: AutoMigrateLegacyStateParams) {
-  closeMigrationDatabases();
+  await closeDatabaseTestCohorts(migrationDatabaseClosers);
   vi.resetModules();
   const [agentDb, stateDb, agentDbTest] = await Promise.all([
     import("../state/openclaw-agent-db.js"),
@@ -147,7 +145,7 @@ async function rerunAutomaticMigrationAfterRestart(params: AutoMigrateLegacyStat
       ...params,
     });
   } finally {
-    closeMigrationDatabases();
+    await closeDatabaseTestCohorts(migrationDatabaseClosers);
     expect(agentDbTest.listOpenClawAgentDatabasesForTest()).toEqual([]);
     expect(stateDb.isOpenClawStateDatabaseOpen()).toBe(false);
   }
@@ -820,12 +818,12 @@ async function createLegacyStateFixture(params?: { includePreKey?: boolean }) {
   };
 }
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
   pluginDoctorStateMigrationEntries.entries = [];
   resetAutoMigrateLegacyTaskStateSidecarsForTest();
   resetAutoMigrateLegacyStateDirForTest();
-  closeMigrationDatabases();
+  await closeDatabaseTestCohorts(migrationDatabaseClosers);
   resetPluginRuntimeStateForTest();
 });
 

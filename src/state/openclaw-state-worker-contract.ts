@@ -11,6 +11,7 @@ import type { CronStoreWorkerOperations } from "../cron/store/load-worker.types.
 import type { CronStoreSaveWorkerOperations } from "../cron/store/save-worker.types.js";
 import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
+import type { ApnsRegistration } from "../infra/push-apns-store.js";
 import type { SessionDeliveryWorkerOperations } from "../infra/session-delivery-queue.worker-contract.js";
 import type { PreparedSqliteAuditRecord } from "../infra/sqlite-audit-record.kernel.js";
 import type { SqliteFileGeneration } from "../infra/sqlite-file-generation.js";
@@ -72,6 +73,8 @@ export type OpenClawStateWorkerOperations = NativeHookRelayStoreWorkerOperations
   CronStoreSaveWorkerOperations &
   SessionDeliveryWorkerOperations &
   DeliveryQueueWorkerOperations & {
+    "apns.registration.read": { input: string; output: ApnsRegistration | null };
+    "apns.registrations.read": { input: readonly string[]; output: Map<string, ApnsRegistration> };
     "sessionState.recordGoalChange": {
       input: { event: SessionStateEventInput & { kind: "goal_changed" }; now: number };
       output: SessionStateNotice[];
