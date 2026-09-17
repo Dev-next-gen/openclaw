@@ -108,6 +108,7 @@ const runtimeConsumers = [
     dir: "src",
   },
   ...[
+    "src/agents/agent-command-local.test.ts",
     "src/agents/simple-completion-runtime.plugin-scope.test.ts",
     "src/agents/prepared-model-catalog-worker.integration.test.ts",
     "src/agents/runtime-plugins.context-engine.integration.test.ts",
@@ -233,6 +234,7 @@ const runtimeConsumers = [
   },
   ...[
     "src/gateway/server.chat-cli-auth.test.ts",
+    "src/gateway/server.cli-watchdog.test.ts",
     "src/gateway/server.codex-failure-recovery.test.ts",
   ].map((file) => ({
     file,

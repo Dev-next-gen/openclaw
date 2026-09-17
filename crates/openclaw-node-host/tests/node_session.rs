@@ -1,8 +1,13 @@
 use ed25519_dalek::{Signer, SigningKey};
 use futures_util::{SinkExt, StreamExt};
 use openclaw_node_host::{
-    CommandRuntime, ConnectAuth, HandlerError, NodeClient, NodeClientConfig, NodeConnectOptions,
-    NodeIdentity, NodeProtocolVersion, NodeSession,
+    AuthenticatedSidecarChannel, CancellationToken, CommandRuntime, ConnectAuth, HandlerError,
+    NodeClient, NodeClientConfig, NodeConnectOptions, NodeIdentity, NodeProtocolVersion,
+    NodeSession, SidecarAdapterError, SidecarAdapterFuture, SidecarAdmissionDecision,
+    SidecarCapabilityAdapter, SidecarCommandRegistration, SidecarConfigurationExchange,
+    SidecarHandshake, SidecarInvocation, SidecarInvocationResult, SidecarLimits,
+    SidecarPeerIdentity, SidecarPeerRole, SidecarProtocolOffer, SidecarRuntimeBridge,
+    SidecarRuntimeConfiguration, SidecarSessionKey, SIDECAR_PROTOCOL_MAJOR, SIDECAR_PROTOCOL_MINOR,
 };
 use serde_json::{json, Value};
 use std::{
@@ -309,6 +314,257 @@ async fn wire_cancellation_during_admission_prevents_handler_construction() {
     assert!(runtime.run(session).await.is_err());
     server.await.unwrap();
     assert!(!handler_constructed.load(Ordering::SeqCst));
+}
+
+#[derive(Default)]
+struct AuthorityAdapter {
+    admissions: AtomicUsize,
+    invocations: AtomicUsize,
+    native_effects: AtomicUsize,
+    retiring_invocation_started: Notify,
+}
+
+impl SidecarCapabilityAdapter for AuthorityAdapter {
+    fn admit(
+        &self,
+        invocation: SidecarInvocation,
+        _cancellation: CancellationToken,
+    ) -> SidecarAdapterFuture<Result<SidecarAdmissionDecision, SidecarAdapterError>> {
+        self.admissions.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            if invocation.command == "product.settings" {
+                Ok(SidecarAdmissionDecision::Deny {
+                    code: "LOCAL_DENY".into(),
+                    message: "denied by product policy".into(),
+                })
+            } else {
+                Ok(SidecarAdmissionDecision::Allow)
+            }
+        })
+    }
+
+    fn invoke(
+        &self,
+        invocation: SidecarInvocation,
+        cancellation: CancellationToken,
+    ) -> SidecarAdapterFuture<Result<SidecarInvocationResult, SidecarAdapterError>> {
+        self.invocations.fetch_add(1, Ordering::SeqCst);
+        if invocation.params == json!({"retire": true}) {
+            self.retiring_invocation_started.notify_one();
+            return Box::pin(async move {
+                cancellation.cancelled().await;
+                Err(SidecarAdapterError::new(
+                    "CANCELLED",
+                    "retired before native effects",
+                ))
+            });
+        }
+        self.native_effects.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            Ok(SidecarInvocationResult::Success {
+                payload: json!({"handledBy": "sidecar-bridge"}),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn sidecar_bridge_preserves_authority_through_the_public_runtime() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(tcp).await.unwrap();
+        send_json(
+            &mut socket,
+            json!({"type":"event","event":"connect.challenge",
+                "payload":{"nonce":"node-nonce","ts":1_700_000_000_123_u64}}),
+        )
+        .await;
+        let connect = receive_json(&mut socket).await;
+        send_json(
+            &mut socket,
+            json!({"type":"res","id":connect["id"],"ok":true,
+                "payload":{"type":"hello-ok","protocol":4}}),
+        )
+        .await;
+
+        for (id, command, params, expected) in [
+            (
+                "allowed",
+                "product.status",
+                json!({}),
+                ("", json!({"handledBy": "sidecar-bridge"})),
+            ),
+            (
+                "denied",
+                "product.settings",
+                json!({}),
+                ("LOCAL_DENY", Value::Null),
+            ),
+            (
+                "retired",
+                "product.status",
+                json!({"retire": true}),
+                ("SIDECAR_CHANNEL_RETIRED", Value::Null),
+            ),
+        ] {
+            send_json(
+                &mut socket,
+                json!({"type":"event","event":"node.invoke.request","payload":{
+                    "id":id,"nodeId":"node-1","command":command,
+                    "paramsJSON":params.to_string()
+                }}),
+            )
+            .await;
+            let result = receive_json(&mut socket).await;
+            assert_eq!(result["method"], "node.invoke.result");
+            assert_eq!(result["params"]["id"], id);
+            if expected.0.is_empty() {
+                assert_eq!(result["params"]["payload"], expected.1);
+            } else {
+                assert_eq!(result["params"]["ok"], false);
+                assert_eq!(result["params"]["error"]["code"], expected.0);
+            }
+            acknowledge(&mut socket, &result).await;
+        }
+        socket.close(None).await.unwrap();
+    });
+
+    let adapter = Arc::new(AuthorityAdapter::default());
+    let (bridge, mut channel) = activated_sidecar_bridge(&adapter);
+    let runtime = bridge.into_runtime();
+    let connect_runtime = runtime.clone();
+    let session = NodeClient::connect(
+        NodeClientConfig::new(format!("ws://{address}")),
+        move |_challenge| {
+            let connect_runtime = connect_runtime.clone();
+            async move {
+                Ok::<_, io::Error>(
+                    connect_runtime.activate(
+                        NodeConnectOptions::new("test", "linux")
+                            .auth(ConnectAuth::token("test-token"))
+                            .identity(NodeIdentity::from_secret_bytes([7; 32])),
+                    ),
+                )
+            }
+        },
+    )
+    .await
+    .unwrap();
+    let run = tokio::spawn(async move { runtime.run(session).await });
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        adapter.retiring_invocation_started.notified(),
+    )
+    .await
+    .expect("retiring sidecar invocation did not reach the adapter boundary");
+    channel.retire();
+
+    assert!(run.await.unwrap().is_err());
+    server.await.unwrap();
+    assert_eq!(adapter.admissions.load(Ordering::SeqCst), 3);
+    assert_eq!(adapter.invocations.load(Ordering::SeqCst), 2);
+    assert_eq!(adapter.native_effects.load(Ordering::SeqCst), 1);
+}
+
+fn activated_sidecar_bridge(
+    adapter: &Arc<AuthorityAdapter>,
+) -> (SidecarRuntimeBridge, AuthenticatedSidecarChannel) {
+    let mut supervisor_handshake =
+        SidecarHandshake::new(sidecar_offer(SidecarPeerRole::Supervisor)).unwrap();
+    let mut runtime_handshake =
+        SidecarHandshake::new(sidecar_offer(SidecarPeerRole::Runtime)).unwrap();
+    let mut supervisor_channel = sidecar_channel(SidecarPeerRole::Supervisor);
+    let mut runtime_channel = sidecar_channel(SidecarPeerRole::Runtime);
+    let offer = supervisor_handshake.start(&mut supervisor_channel).unwrap();
+    let acceptance = runtime_handshake
+        .receive(&mut runtime_channel, &offer)
+        .unwrap()
+        .unwrap();
+    runtime_handshake
+        .complete_acceptance(&mut runtime_channel)
+        .unwrap();
+    supervisor_handshake
+        .receive(&mut supervisor_channel, &acceptance)
+        .unwrap();
+
+    let mut supervisor_exchange = SidecarConfigurationExchange::new(supervisor_handshake).unwrap();
+    let mut runtime_exchange = SidecarConfigurationExchange::new(runtime_handshake).unwrap();
+    let configuration = SidecarRuntimeConfiguration {
+        manifest_generation: 1,
+        capabilities: vec!["native.status".into()],
+        commands: vec![
+            SidecarCommandRegistration {
+                name: "product.settings".into(),
+            },
+            SidecarCommandRegistration {
+                name: "product.status".into(),
+            },
+        ],
+        max_concurrency: 2,
+        max_input_bytes: 1_024,
+        max_output_bytes: 1_024,
+        default_timeout_ms: 1_000,
+        max_timeout_ms: 5_000,
+        result_grace_ms: 50,
+    };
+    let configure = supervisor_exchange
+        .start(&mut supervisor_channel, &configuration)
+        .unwrap();
+    runtime_exchange
+        .receive(&mut runtime_channel, &configure)
+        .unwrap()
+        .unwrap();
+    let manifest = runtime_exchange.validated_manifest().unwrap().clone();
+    let configured = runtime_exchange
+        .acknowledge(&mut runtime_channel, &manifest)
+        .unwrap();
+    runtime_exchange
+        .complete_acknowledgement(&mut runtime_channel)
+        .unwrap();
+    supervisor_exchange
+        .receive(&mut supervisor_channel, &configured)
+        .unwrap();
+
+    let bridge =
+        SidecarRuntimeBridge::activate(&mut runtime_exchange, &mut runtime_channel, adapter)
+            .unwrap();
+    (bridge, runtime_channel)
+}
+
+fn sidecar_channel(role: SidecarPeerRole) -> AuthenticatedSidecarChannel {
+    AuthenticatedSidecarChannel::new(
+        role,
+        "authority-session".into(),
+        1,
+        SidecarSessionKey::from_bytes([0x55; 32]),
+        4_096,
+    )
+    .unwrap()
+}
+
+fn sidecar_offer(role: SidecarPeerRole) -> SidecarProtocolOffer {
+    SidecarProtocolOffer {
+        protocol_major: SIDECAR_PROTOCOL_MAJOR,
+        protocol_minor: SIDECAR_PROTOCOL_MINOR,
+        peer: SidecarPeerIdentity {
+            role,
+            name: match role {
+                SidecarPeerRole::Supervisor => "test-supervisor",
+                SidecarPeerRole::Runtime => "test-runtime",
+            }
+            .into(),
+            version: "test".into(),
+            artifact_identity: "sha256:test-only".into(),
+        },
+        feature_bits: 0,
+        limits: SidecarLimits {
+            max_frame_bytes: 4_096,
+            max_in_flight: 4,
+            bootstrap_timeout_ms: 1_000,
+        },
+    }
 }
 
 #[tokio::test]
