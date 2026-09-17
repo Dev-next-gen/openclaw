@@ -26,14 +26,6 @@ import {
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { hasReplyPayloadContent } from "../../../interactive/payload.js";
 import type { AssistantMessage } from "../../../llm/types.js";
-import {
-  extractAssistantTextForPhase,
-  parseAssistantTextSignature,
-} from "../../../shared/chat-message-content.js";
-import {
-  sanitizeAssistantFinalAnswerText,
-  sanitizeAssistantVisibleText,
-} from "../../../shared/text/assistant-visible-text.js";
 import { classifyOAuthRefreshFailure } from "../../auth-profiles/oauth-refresh-failure.js";
 import {
   formatAssistantErrorText,
@@ -55,67 +47,9 @@ import {
 import { isTimeoutErrorMessage } from "../../failover/classify.js";
 import type { PreparedProviderFailoverOwner } from "../../failover/provider-patterns.js";
 import type { ToolErrorSummary } from "../../tool-error-summary.js";
+import { resolveRawAssistantAnswerText } from "./assistant-answer.js";
 import { buildSourceReplyPayloadState } from "./source-reply-payloads.js";
 import { buildFailureWarning } from "./tool-error-warning.js";
-
-function isAssistantTextContentBlockType(value: unknown): boolean {
-  return value === "text" || value === "input_text" || value === "output_text";
-}
-function resolveRawAssistantAnswerText(lastAssistant: AssistantMessage | undefined): string {
-  if (!lastAssistant) {
-    return "";
-  }
-  const finalAnswerText = extractAssistantTextForPhase(lastAssistant, {
-    phase: "final_answer",
-    sanitizeText: sanitizeAssistantFinalAnswerText,
-  });
-  if (finalAnswerText) {
-    return normalizeOptionalString(finalAnswerText) ?? "";
-  }
-  if (Array.isArray(lastAssistant.content)) {
-    const hasExplicitPhasedTextBlock = lastAssistant.content.some((block) => {
-      if (!block || typeof block !== "object") {
-        return false;
-      }
-      const record = block as { type?: unknown; textSignature?: unknown };
-      return (
-        isAssistantTextContentBlockType(record.type) &&
-        Boolean(parseAssistantTextSignature(record)?.phase)
-      );
-    });
-    if (!hasExplicitPhasedTextBlock) {
-      const signedUnphasedParts = lastAssistant.content
-        .map((block) => {
-          if (!block || typeof block !== "object") {
-            return null;
-          }
-          const record = block as { type?: unknown; text?: unknown; textSignature?: unknown };
-          const signature = parseAssistantTextSignature(record);
-          if (
-            !isAssistantTextContentBlockType(record.type) ||
-            typeof record.text !== "string" ||
-            !signature?.id ||
-            signature.phase
-          ) {
-            return null;
-          }
-          const text = sanitizeAssistantFinalAnswerText(record.text);
-          return text.trim() ? text : null;
-        })
-        .filter((value): value is string => typeof value === "string");
-      if (signedUnphasedParts.length) {
-        return normalizeOptionalString(signedUnphasedParts.join("\n")) ?? "";
-      }
-    }
-  }
-  return (
-    normalizeOptionalString(
-      extractAssistantTextForPhase(lastAssistant, {
-        sanitizeText: sanitizeAssistantVisibleText,
-      }),
-    ) ?? ""
-  );
-}
 
 /**
  * Converts a completed embedded attempt into reply payloads for channels. This
