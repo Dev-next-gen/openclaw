@@ -115,7 +115,7 @@ Reef registration binding reads, reservations, finalization, release, and setup-
 persistence use the shared-state worker. Reservation mutations compare the current
 row before writing; a conflict rereads ownership before retrying. The CLI, setup
 wizard, and channel startup await these operations. Keys, migration gates, trust,
-audit, replay, review, and delivery state retain their existing native
+audit, replay, and review mutations retain their existing native
 owners. Key creation still performs its synchronous guard checks and insert without
 an event-loop yield; those separate operations do not form a cross-process transaction.
 Stored registration JSON, reservation expiry, namespace limits, and Doctor imports
@@ -132,6 +132,21 @@ supported hosts without comparison operations retain atomic native updates until
 approved minimum host version guarantees comparison support. Worker failures never
 switch to that path. Invalid-row diagnostics on current hosts report
 the Reef validation error directly; older hosts retain native store error wrapping.
+
+Reef review-decision lookups and pending-review lists use the shared-state worker.
+Both reads recheck the live channel authority after storage settles, before returning
+results. Older hosts retain their existing asynchronous read adapter. Review requests,
+decisions, and completed-review eviction keep their uninterrupted native authority
+check and mutation path; worker read failures never fall back to native reads.
+Review JSON, digest identity, ordering, capacity, and retention are unchanged.
+
+Reef delivered-message markers use the shared-state worker for lookup and atomic
+insert-if-absent confirmation on current hosts. The inbound flow awaits ingress,
+then durable confirmation, then relay acknowledgment. Capacity failures keep the
+entry parked for retry without evicting live markers. The existing marker JSON,
+expiry, namespace and plugin-wide limits are unchanged; older hosts keep the
+behavior of their existing asynchronous keyed-store adapter. This cut does not
+move Reef's trust, audit, replay, review, key, migration-gate, or cursor owners.
 
 Use Kysely for ordinary queries and mutations. The current
 `getNodeSqliteKysely` facade compiles queries; `executeSqliteQuerySync` runs them
@@ -157,8 +172,8 @@ Only pending reads coalesce; completed results are not cached. Physical integrit
 verification remains with full registry restoration and Doctor, while known
 database failures and quarantine still refuse summary reads.
 
-Session listing loads complete persisted subagent metadata in the shared-state
-worker through a read-only connection. The existing cache coalesces pending fills
+`sessions.list` and `sessions.describe` load complete persisted subagent metadata
+in the shared-state worker through a read-only connection. The existing cache coalesces pending fills
 and applies intervening named updates and deletions before publishing its first
 complete snapshot. Full replacement, registry ownership changes, and database
 retirement fence obsolete replies. Loaded snapshots stay current through registry
@@ -166,7 +181,11 @@ publication instead of periodic reloads: named writes patch rows, while full
 replacement and restore replace snapshots. Retention rules remain unchanged.
 Gateway, embedded, and TUI callers merge accepted rows
 with current host memory and scheduler facts before building the full topology.
-Pure topology grouping yields through the shared session-list work budget.
+Session reads check the shared projection budget before accepting a snapshot,
+then capture persisted rows and live ownership in one synchronous continuation.
+Each resumed caller rechecks the shared budget before admission and cache
+acceptance. Pure topology grouping uses the same budget; a single snapshot
+capture cannot yield midway.
 Synchronous readers reuse the same SQL and row decoder; runtime reads do not
 repair storage.
 

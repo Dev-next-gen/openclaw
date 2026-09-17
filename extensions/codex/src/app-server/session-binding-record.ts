@@ -5,9 +5,18 @@ import type { EmbeddedRunAttemptParamsV2 } from "openclaw/plugin-sdk/agent-harne
 import { resolveSessionAgentIdsStrict } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
+import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { z } from "zod";
 import { CODEX_PLUGIN_MARKETPLACE_NAME_PATTERN } from "./config-contracts.js";
 import { normalizeCodexServiceTier } from "./config-utils.js";
+import type { CodexNativeSubagentHistoryOwner } from "./native-subagent-history-owner.js";
+import {
+  matchesCodexNativeSubagentSubmissionBinding,
+  matchesCodexNativeSubagentSubmissionOwner,
+  readCodexNativeSubagentSubmissions,
+  type CodexNativeSubagentSubmission,
+} from "./native-subagent-submission.js";
+import type { PluginAppPolicyContext } from "./plugin-thread-config.js";
 import type { CodexServiceTier } from "./protocol.js";
 
 /** Stable owner of one Codex thread binding. */
@@ -293,6 +302,8 @@ const storedBindingSchema = z.discriminatedUnion("state", [
     binding: threadBindingSchema,
     sessionId: storedSessionIdSchema,
     lease: bindingLeaseSchema.optional().catch(undefined),
+    // Keep unknown receipt versions opaque; ordinary binding writes must not erase them.
+    nativeSubagentSubmissions: z.unknown().optional(),
   }),
   z.object({
     version: z.literal(1),
@@ -415,6 +426,31 @@ export function readCurrentCodexAppServerBinding(
     : undefined;
 }
 
+export function readCurrentCodexNativeSubagentSubmissions(
+  state: Pick<PluginStateSyncKeyedStore<StoredCodexAppServerBinding>, "lookup">,
+  identity: CodexAppServerBindingIdentity,
+  owner: CodexNativeSubagentHistoryOwner,
+): readonly CodexNativeSubagentSubmission[] {
+  const key = bindingStoreKey(identity);
+  const raw = state.lookup(key);
+  const stored = readStoredCodexAppServerBinding(raw);
+  if (raw !== undefined && !stored) {
+    throw new Error(`Invalid Codex app-server binding row: ${key}`);
+  }
+  if (
+    stored?.state !== "active" ||
+    !ownsStoredSessionGeneration(identity, stored) ||
+    (identity.kind === "session" && owner.sessionId !== identity.sessionId) ||
+    !matchesCodexNativeSubagentSubmissionBinding(stored.binding, owner)
+  ) {
+    return [];
+  }
+  const submissions = readCodexNativeSubagentSubmissions(stored.nativeSubagentSubmissions);
+  return submissions && matchesCodexNativeSubagentSubmissionOwner(submissions.owner, owner)
+    ? submissions.receipts
+    : [];
+}
+
 export class CodexSupervisionBindingReplacementError extends Error {
   constructor(threadId: string, operation: string) {
     super(
@@ -439,4 +475,126 @@ export function assertCodexBindingMayBeReplaced(
   if (binding?.connectionScope === "supervision") {
     throw new CodexSupervisionBindingReplacementError(binding.threadId, operation);
   }
+}
+
+export function readPluginAppPolicyContext(
+  value: unknown,
+  bindingSchemaVersion: 1 | 2,
+): PluginAppPolicyContext | undefined {
+  const record = asOptionalRecord(value);
+  if (!record || typeof record.fingerprint !== "string") {
+    return undefined;
+  }
+  const apps = asOptionalRecord(record.apps);
+  if (!apps) {
+    return undefined;
+  }
+  const parsedApps: PluginAppPolicyContext["apps"] = {};
+  for (const [appId, rawEntry] of Object.entries(apps)) {
+    const entry = asOptionalRecord(rawEntry);
+    if (!entry) {
+      return undefined;
+    }
+    const destructiveApprovalMode = readDestructiveApprovalMode(
+      entry.destructiveApprovalMode,
+      bindingSchemaVersion,
+    );
+    const mcpServerNames =
+      Array.isArray(entry.mcpServerNames) &&
+      entry.mcpServerNames.every((serverName) => typeof serverName === "string")
+        ? entry.mcpServerNames
+        : undefined;
+    if (entry.source === "account") {
+      if (
+        "appId" in entry ||
+        typeof entry.appName !== "string" ||
+        typeof entry.allowDestructiveActions !== "boolean" ||
+        (entry.allowOpenWorld !== undefined && typeof entry.allowOpenWorld !== "boolean") ||
+        destructiveApprovalMode === "invalid" ||
+        !mcpServerNames
+      ) {
+        return undefined;
+      }
+      parsedApps[appId] = {
+        source: "account",
+        appName: entry.appName,
+        allowDestructiveActions: entry.allowDestructiveActions,
+        ...(typeof entry.allowOpenWorld === "boolean"
+          ? { allowOpenWorld: entry.allowOpenWorld }
+          : {}),
+        ...(destructiveApprovalMode ? { destructiveApprovalMode } : {}),
+        mcpServerNames,
+      };
+      continue;
+    }
+    if (
+      "appId" in entry ||
+      (entry.source !== undefined && entry.source !== "plugin") ||
+      typeof entry.configKey !== "string" ||
+      typeof entry.marketplaceName !== "string" ||
+      !CODEX_PLUGIN_MARKETPLACE_NAME_PATTERN.test(entry.marketplaceName) ||
+      typeof entry.pluginName !== "string" ||
+      typeof entry.allowDestructiveActions !== "boolean" ||
+      (entry.allowOpenWorld !== undefined && typeof entry.allowOpenWorld !== "boolean") ||
+      destructiveApprovalMode === "invalid" ||
+      !mcpServerNames
+    ) {
+      return undefined;
+    }
+    parsedApps[appId] = {
+      configKey: entry.configKey,
+      marketplaceName: entry.marketplaceName,
+      pluginName: entry.pluginName,
+      allowDestructiveActions: entry.allowDestructiveActions,
+      ...(typeof entry.allowOpenWorld === "boolean"
+        ? { allowOpenWorld: entry.allowOpenWorld }
+        : {}),
+      ...(destructiveApprovalMode ? { destructiveApprovalMode } : {}),
+      mcpServerNames,
+    };
+  }
+  const parsedPluginAppIds: PluginAppPolicyContext["pluginAppIds"] = {};
+  if (
+    record.pluginAppIds !== undefined &&
+    (!record.pluginAppIds ||
+      typeof record.pluginAppIds !== "object" ||
+      Array.isArray(record.pluginAppIds))
+  ) {
+    return undefined;
+  }
+  if (record.pluginAppIds && typeof record.pluginAppIds === "object") {
+    for (const [configKey, appIds] of Object.entries(record.pluginAppIds)) {
+      if (!Array.isArray(appIds) || appIds.some((appId) => typeof appId !== "string")) {
+        return undefined;
+      }
+      parsedPluginAppIds[configKey] = appIds;
+    }
+  }
+  return {
+    fingerprint: record.fingerprint,
+    apps: parsedApps,
+    pluginAppIds: parsedPluginAppIds,
+  };
+}
+
+function readDestructiveApprovalMode(
+  value: unknown,
+  bindingSchemaVersion: 1 | 2,
+): PluginAppPolicyContext["apps"][string]["destructiveApprovalMode"] | undefined | "invalid" {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === "allow" || value === "deny") {
+    return value;
+  }
+  if (value === "auto") {
+    return bindingSchemaVersion === 1 ? "allow" : "auto";
+  }
+  if (value === "ask" && bindingSchemaVersion === 2) {
+    return "ask";
+  }
+  if (value === "on-request" && bindingSchemaVersion === 1) {
+    return "auto";
+  }
+  return "invalid";
 }

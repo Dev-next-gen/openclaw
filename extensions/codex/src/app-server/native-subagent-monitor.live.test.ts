@@ -248,7 +248,7 @@ describeLive("codex native subagent monitor live", () => {
           threadId: childThreadId,
           output: "FIRST_NATIVE_SHELL",
         });
-        parent.unregister();
+        await parent.unregister();
         expect(claims.first).toBe(1);
         expect(releases.first).toBe(1);
         const expectedTasks = [first];
@@ -282,7 +282,7 @@ describeLive("codex native subagent monitor live", () => {
             `${ordinal} native receipt`,
           );
           expectedTasks.push(structuredClone(assignment));
-          parent.unregister();
+          await parent.unregister();
         }
         expect(claims).toEqual({ first: 1, second: 1, third: 1 });
         expect(releases).toEqual({ first: 1, second: 1, third: 1 });
@@ -391,7 +391,7 @@ describeLive("codex native subagent monitor live", () => {
         // The child is still sleeping when the parent turn ends; delivery after
         // this point proves the detached path, not same-turn streaming.
         expect(streamed.deliveries).toHaveLength(0);
-        parentRegistration.unregister();
+        await parentRegistration.unregister();
 
         const delivery = await waitFor(
           () => streamed.deliveries[0],
@@ -451,7 +451,7 @@ describeLive("codex native subagent monitor live", () => {
           } as AgentHarnessTaskRuntimeScope,
           agentId: "live",
         });
-        recoveryRegistration.unregister();
+        await recoveryRegistration.unregister();
         const recovered = await waitFor(
           () => recovery.deliveries[0],
           120_000,

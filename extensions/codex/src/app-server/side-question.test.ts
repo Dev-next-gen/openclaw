@@ -1295,6 +1295,7 @@ describe("runCodexAppServerSideQuestion", () => {
     {
       metadata: "Platform",
       thinking: "off",
+      rawModel: "configured-alias",
       supported: ["none", "low", "medium", "high", "xhigh", "max"],
       expected: "none",
     },
@@ -1320,14 +1321,16 @@ describe("runCodexAppServerSideQuestion", () => {
     { metadata: "unknown", thinking: "ultra", supported: undefined, expected: "ultra" },
   ] as const)(
     "sends $thinking with $metadata metadata to the side-question request boundary",
-    async ({ metadata, thinking, supported, expected }) => {
+    async (scenario) => {
+      const { metadata, thinking, supported, expected } = scenario;
+      const requestedModel = "rawModel" in scenario ? scenario.rawModel : "gpt-5.6-sol";
       const client = createFakeClient();
       getSharedCodexAppServerClientMock.mockResolvedValue(client);
       const compat: ModelCompatConfig | undefined = supported
         ? { supportedReasoningEfforts: [...supported] }
         : undefined;
       const params = sideParams({
-        model: "gpt-5.6-sol",
+        model: requestedModel,
         resolvedThinkLevel: thinking,
         runtimeModel: {
           ...createCodexTestModel(),
@@ -1353,15 +1356,18 @@ describe("runCodexAppServerSideQuestion", () => {
       });
 
       expect(createOpenClawCodingToolsMock).toHaveBeenCalledWith(
-        expect.objectContaining({ requesterThinkingLevel: thinking }),
+        expect.objectContaining({
+          requesterThinkingLevel: thinking,
+          requesterModel: { provider: "openai", model: "gpt-5.6-sol" },
+        }),
       );
       const turnStartCall = client.request.mock.calls.find(([method]) => method === "turn/start");
       expect(turnStartCall?.[1]).toMatchObject({
         threadId: "side-thread",
-        model: "gpt-5.6-sol",
+        model: requestedModel,
         effort: expected,
         collaborationMode: {
-          settings: { model: "gpt-5.6-sol", reasoning_effort: expected },
+          settings: { model: requestedModel, reasoning_effort: expected },
         },
       });
     },

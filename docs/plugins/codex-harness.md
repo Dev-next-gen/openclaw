@@ -151,6 +151,21 @@ If a recovered turn's end is still unknown, OpenClaw waits for native history or
 an end event before deciding whether later work resumes that task or starts a new one.
 Older tasks without enough native turn information remain unresolved instead of
 borrowing another turn's result.
+
+For Codex V1 follow-ups, OpenClaw retains a successful submission receipt with
+the parent binding until it records the matching native turn as a task. This
+allows recovery when the parent yields or the Gateway restarts before observing
+the child turn. A receipt alone does not keep an idle native connection alive.
+Observation follows the existing warm-thread lifetime; an unmatched receipt
+remains available for later recovery. Resetting the parent or replacing its native connection
+invalidates these receipts. Before downgrading OpenClaw, let pending native work
+settle: older versions can read the binding but may discard its recovery receipts
+when updating it.
+
+Closing a native child applies to the assignment selected when the close starts.
+OpenClaw waits for Codex to confirm that the child's runtime is absent before
+marking unfinished work canceled; a delayed close cannot cancel a later assignment.
+If confirmation is unavailable, the task asks you to retry the close request.
 Native result receipts do not identify the child's turn. If an earlier result
 is still being recovered or repeated identical results make a receipt ambiguous,
 OpenClaw preserves the later pending delivery instead of risking a lost result;

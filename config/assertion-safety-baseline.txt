@@ -179,7 +179,6 @@ extensions/codex/src/app-server/image-payload-sanitizer.ts	3
 extensions/codex/src/app-server/native-config-fence.ts	1
 extensions/codex/src/app-server/native-mcp-app.ts	9
 extensions/codex/src/app-server/native-skill-isolation.ts	1
-extensions/codex/src/app-server/native-subagent-monitor.ts	1
 extensions/codex/src/app-server/native-subagent-task-mirror.ts	2
 extensions/codex/src/app-server/plan-compaction-state.ts	1
 extensions/codex/src/app-server/plugin-activation.ts	6
@@ -205,7 +204,6 @@ extensions/codex/src/app-server/sandbox-exec-server/json-rpc.ts	3
 extensions/codex/src/app-server/sandbox-exec-server/processes.ts	1
 extensions/codex/src/app-server/sandbox-guard.ts	2
 extensions/codex/src/app-server/scheduled-app-authority.ts	5
-extensions/codex/src/app-server/session-binding.ts	2
 extensions/codex/src/app-server/shared-client.ts	2
 extensions/codex/src/app-server/side-question.ts	7
 extensions/codex/src/app-server/startup-binding.ts	2
@@ -2524,7 +2522,6 @@ src/config/sessions/session-reset-boundary-event.ts	5
 src/config/sessions/session-snapshot-merge.ts	26
 src/config/sessions/session-sqlite-target.ts	3
 src/config/sessions/session-store-config.ts	2
-src/config/sessions/session-suggestion-store.ts	2
 src/config/sessions/session-transcript-projection-rebuild.ts	6
 src/config/sessions/session-transcript-reconcile.worker.ts	1
 src/config/sessions/skill-prompt-blobs.ts	5
