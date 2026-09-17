@@ -578,7 +578,7 @@ export class DraftSubmissionFlow {
         context.placementStartup.start({
           recovery,
           persistRecovery: this.pendingPlacement.persistent,
-          recovering: submissionPlacementRecovery.phase !== "creating",
+          mode: submissionPlacementRecovery.phase === "creating" ? "dispatch" : "recover",
           createdAt: submittedAt,
         });
         const ownsStartedPlacement = () =>

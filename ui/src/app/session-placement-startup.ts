@@ -10,6 +10,7 @@ import type {
   SessionPlacementRecovery,
   SessionPlacementTarget,
 } from "../lib/sessions/session-placement-recovery.ts";
+import type { SessionPlacementStartMode } from "../lib/sessions/session-placement-startup.ts";
 import { showToast } from "../lib/toast.ts";
 import type { ApplicationChatSubmissions } from "./chat-submissions.ts";
 import { registerControlUiReloadGuard } from "./document-reload-guard.ts";
@@ -44,7 +45,7 @@ export type ApplicationPlacementStartupStatus = {
 type PlacementStartupInput = {
   readonly recovery: SessionPlacementRecovery;
   readonly persistRecovery: boolean;
-  readonly recovering: boolean;
+  readonly mode: SessionPlacementStartMode;
   readonly createdAt: number;
 };
 
@@ -311,7 +312,7 @@ export function createApplicationPlacementStartup(
         input: {
           recovery: paused,
           persistRecovery: pending?.persistRecovery ?? true,
-          recovering: true,
+          mode: "recover",
           createdAt: pending?.createdAt ?? Date.now(),
         },
         persisted,
