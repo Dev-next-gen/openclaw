@@ -66,9 +66,10 @@ import {
   openSessionWorkspaceFile,
   revealSessionWorkspaceFile,
 } from "./components/chat-session-workspace.ts";
+import { markChatComposerEdit } from "./composer-persistence.ts";
 import { resolveChatLinkFaviconFetcher } from "./link-favicon-loader.ts";
 import { hasAbortableSessionRun, hasDirectSessionRun } from "./run-lifecycle.ts";
-import { scheduleChatScroll } from "./scroll.ts";
+import { lockChatScroll, scheduleChatScroll } from "./scroll.ts";
 import { resolveChatProjectionRunId } from "./tool-stream-status.ts";
 import { workspaceResultConflictFromPlacement } from "./workspace-conflict.ts";
 
@@ -408,6 +409,10 @@ export class ChatPane extends ChatPaneLayoutRender {
       progressCardInitialLoading: this.progressCardInitialLoading,
       collapseTaskProgress: state.settings.chatCollapseTaskProgress === true,
       readingHistory: state.chatReadingHistory,
+      onProgressManipulate: () => {
+        lockChatScroll(state);
+        this.transcript.cancelScroll();
+      },
       onDismissProgressCard,
       gatewayQuestionPrompts:
         catalogKey || sessionParticipationBlocked
@@ -577,7 +582,12 @@ export class ChatPane extends ChatPaneLayoutRender {
       pendingAttachmentReads: attachmentReads.pendingReads,
       getPendingAttachmentReads: () => attachmentReads.pendingReads,
       readSignal: attachmentReadSignal,
-      onPendingReadsChange: (delta) => attachmentReads.updatePending(attachmentReadSignal, delta),
+      onPendingReadsChange: (delta) => {
+        if (delta === 1 && attachmentReadSignal === attachmentReads.readSignal) {
+          markChatComposerEdit(state);
+        }
+        attachmentReads.updatePending(attachmentReadSignal, delta);
+      },
       onAttachmentsChange: (next) => {
         state.chatAttachments = next;
         state.requestUpdate?.();

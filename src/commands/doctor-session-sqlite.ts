@@ -29,7 +29,11 @@ import {
   type DeferredPluginMigration,
 } from "../infra/deferred-plugin-migrations.js";
 import {
+  captureDeferredPluginSessionSources,
+  resolveTrajectoryPath,
+  resolveTrajectoryPointerPath,
   deferredPluginSessionStoreIds,
+  prepareSessionSourceVerification,
   readDeferredPluginSessionImport,
   recordDeferredPluginSessionImport,
   resolveVerifiedSessionSource,
@@ -660,19 +664,16 @@ async function inspectOrMigrateTarget(params: {
   // Keeping them out of the file path also prevents archiving a live database.
   const isSqliteStore = params.target.storePath.endsWith(".sqlite");
   let retainedImport: DeferredPluginSessionImport | undefined;
+  const sourceVerification = prepareSessionSourceVerification({
+    ...params,
+    sqlitePath: resolveTargetSqlitePath(params.target, params.env),
+  });
   if (!isSqliteStore && fs.existsSync(params.target.storePath)) {
     try {
-      retainedImport = readDeferredPluginSessionImport({
-        cfg: params.cfg,
-        target: params.target,
-        sqlitePath: resolveTargetSqlitePath(params.target, params.env),
-        env: params.env,
-      });
+      retainedImport = readDeferredPluginSessionImport(sourceVerification);
     } catch (error) {
       return createDoctorSessionSqliteTargetReport({
-        agentId: params.target.agentId,
-        storePath: params.target.storePath,
-        sqlitePath: resolveTargetSqlitePath(params.target, params.env),
+        ...sourceVerification.resolvedTarget,
         issues: [{ code: "retained_plugin_source_conflict", message: formatErrorMessage(error) }],
       });
     }
@@ -819,8 +820,9 @@ async function inspectOrMigrateTarget(params: {
         }
         const transcriptPath = resolveVerifiedSessionSource(
           source,
-          createMigrationTargetInput(params.target),
+          sourceVerification.resolvedTarget,
           params.env,
+          sourceVerification.verification,
         );
         if (!transcriptPath) {
           throw new Error(`Retained session migration source changed: ${record.transcriptPath}`);
@@ -927,30 +929,13 @@ async function inspectOrMigrateTarget(params: {
       report.issues.every(isRetainedSourceIssue)
     ) {
       try {
-        const sources = new Map<string, MigrationArtifactIdentity>([
-          [path.resolve(params.target.storePath), indexIdentity],
-        ]);
-        for (const record of records) {
-          if (!record.transcriptPath || !record.sourceFingerprint) {
-            continue;
-          }
-          sources.set(
-            path.resolve(record.transcriptPath),
-            readMigrationArtifactIdentity(record.transcriptPath, 1n, record.sourceFingerprint),
-          );
-          for (const file of [
-            resolveTrajectoryPath(record.transcriptPath),
-            resolveTrajectoryPointerPath(record.transcriptPath),
-          ]) {
-            if (file && fs.existsSync(file)) {
-              sources.set(path.resolve(file), readMigrationArtifactIdentity(file));
-            }
-          }
-        }
-        verifiedSources = [...sources].map(([sourcePath, identity]) => ({
-          path: sourcePath,
-          identity,
-        }));
+        verifiedSources = captureDeferredPluginSessionSources({
+          storePath: params.target.storePath,
+          indexIdentity,
+          records,
+          unreferencedJsonlFiles: report.unreferencedJsonlFiles,
+          referencedPaths: params.referencedPaths,
+        });
       } catch (error) {
         report.issues.push({
           code: "transcript_archive_failed",
@@ -1667,6 +1652,15 @@ async function archiveLegacyArtifacts(
       }
     }
   }
+  // A physical move must remain resolvable through every receipt that captured its source.
+  for (const owner of owners) {
+    for (const { path: source } of owner.verifiedSources ?? []) {
+      const shared = planned.get(source);
+      if (shared && !shared.owners.has(owner)) {
+        shared.owners.set(owner, undefined);
+      }
+    }
+  }
   const movesForOwner = (owner: LegacyArchiveTarget) =>
     [...planned.values()]
       .filter((item) => item.owners.has(owner))
@@ -1696,11 +1690,12 @@ async function archiveLegacyArtifacts(
       );
       assertCurrent?.();
       completed.add(move.sourcePath);
-      const report = [...referencingOwners.keys()][0]!.report;
-      (move.kind === "unreferenced-jsonl"
-        ? report.archivedUnreferencedJsonlFiles
-        : report.archivedTranscriptFiles
-      ).push(move.archivePath);
+      for (const { report } of referencingOwners.keys()) {
+        (move.kind === "unreferenced-jsonl"
+          ? report.archivedUnreferencedJsonlFiles
+          : report.archivedTranscriptFiles
+        ).push(move.archivePath);
+      }
     } catch (error) {
       if (error instanceof DeferredPluginMigrationConflictError && error.pending.length > 0) {
         break;
@@ -1799,10 +1794,10 @@ async function archiveImportedLegacySessionStores(
         publishSourceRemoval,
       );
       assertCurrent?.();
-      for (const { target } of entries) {
+      for (const { target, report } of entries) {
         recordCompletedMigrationMoves(activeRun, target, [move]);
+        report.archivedLegacyStoreFiles!.push(move.archivePath);
       }
-      first.report.archivedLegacyStoreFiles!.push(move.archivePath);
     } catch (error) {
       if (error instanceof DeferredPluginMigrationConflictError && error.pending.length > 0) {
         break;
@@ -1919,18 +1914,6 @@ function planImportedTranscriptArtifactsToArchive(
     addMove(trajectoryPointerPath, "trajectory");
   }
   return moves;
-}
-
-function resolveTrajectoryPath(transcriptPath: string): string | undefined {
-  return transcriptPath.endsWith(".jsonl")
-    ? `${transcriptPath.slice(0, -".jsonl".length)}.trajectory.jsonl`
-    : undefined;
-}
-
-function resolveTrajectoryPointerPath(transcriptPath: string): string | undefined {
-  return transcriptPath.endsWith(".jsonl")
-    ? `${transcriptPath.slice(0, -".jsonl".length)}.trajectory-path.json`
-    : undefined;
 }
 
 function planSessionJsonlArchiveMove(params: {
