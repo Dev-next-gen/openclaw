@@ -12,6 +12,7 @@ import {
   resolveAgentIdByWorkspacePath,
   resolveAgentWorkspaceDir,
 } from "../../../agents/agent-scope.js";
+import { createMemoryWriteProvenanceObserver } from "../../../agents/memory-write-provenance.js";
 import { resolveStateDir } from "../../../config/paths.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { root } from "../../../infra/fs-safe.js";
@@ -25,7 +26,10 @@ import { shortenHomePath } from "../../../utils.js";
 import { resolveHookConfig } from "../../config.js";
 import type { HookHandler } from "../../hooks.js";
 import { generateSlugViaLLM } from "../../llm-slug-generator.js";
-import { findPreviousSessionFile, getRecentSessionContentWithResetFallback } from "./transcript.js";
+import {
+  findPreviousSessionFile,
+  getRecentSessionProjectionWithResetFallback,
+} from "./transcript.js";
 
 const log = createSubsystemLogger("hooks/session-memory");
 
@@ -214,10 +218,16 @@ async function saveSessionMemoryNow(event: Parameters<HookHandler>[0]): Promise<
 
     let slug: string | null = null;
     let sessionContent: string | null = null;
+    let sessionOrigin: "agent" | "untrusted" = "untrusted";
 
     if (sessionFile) {
       // Get recent conversation content, with fallback to rotated reset transcript.
-      sessionContent = await getRecentSessionContentWithResetFallback(sessionFile, messageCount);
+      const projection = await getRecentSessionProjectionWithResetFallback(
+        sessionFile,
+        messageCount,
+      );
+      sessionContent = projection?.content ?? null;
+      sessionOrigin = projection?.originClass ?? "untrusted";
       log.debug("Session content loaded", {
         length: sessionContent?.length ?? 0,
         messageCount,
@@ -279,7 +289,17 @@ async function saveSessionMemoryNow(event: Parameters<HookHandler>[0]): Promise<
 
     // Write under memory root with alias-safe file validation.
     const memoryRoot = await root(memoryDir);
-    await memoryRoot.write(filename, entry, { encoding: "utf-8" });
+    const observer = createMemoryWriteProvenanceObserver({
+      mutationRoot: workspaceDir,
+      workspaceDir,
+      resolveOriginClass: () => sessionOrigin,
+    });
+    await observer.write({
+      absolutePath: memoryFilePath,
+      contentBefore: "",
+      contentAfter: entry,
+      commit: () => memoryRoot.write(filename, entry, { encoding: "utf-8" }),
+    });
     log.debug("Memory file written successfully");
 
     // Log completion (but don't send user-visible confirmation - it's internal housekeeping)

@@ -120,7 +120,14 @@ Channels that must expose a temporary public URL for a platform-side media
 fetch can use `createHostedOutboundMediaStore(...)` from
 `openclaw/plugin-sdk/outbound-media` with plugin state stores. Keep platform
 route parsing and token enforcement in the channel plugin; the shared helper
-only owns media loading, expiry metadata, chunk rows, and cleanup.
+only owns media loading, expiry metadata, chunk rows, and cleanup. Forward the
+host-provided `mediaAccess` capability to the shared loader. Use
+`validateBeforePersist` to inspect its exact bytes and metadata; treat the
+buffer as read-only and throw to reject before capability creation or storage.
+Use `overflowPolicy: "reject-new"` on the hosted store and both backing keyed
+stores when issued URLs must remain valid until expiry. Authenticate with
+`readMetadata(...)` before loading bytes with `read(...)` so invalid tokens
+and `HEAD` requests do not hydrate media chunks.
 
 ### Native payload shaping
 

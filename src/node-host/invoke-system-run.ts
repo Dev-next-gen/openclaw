@@ -42,6 +42,13 @@ import {
 } from "../infra/host-env-security.js";
 import { normalizeSystemRunApprovalPlan } from "../infra/system-run-approval-binding.js";
 import { formatExecCommand, resolveSystemRunCommandRequest } from "../infra/system-run-command.js";
+import {
+  APPROVAL_CWD_DRIFT_DENIED_MESSAGE,
+  ApprovedCwdDriftError,
+  captureApprovedCwdSnapshotSync,
+  revalidateApprovedCwdSnapshot,
+  type ApprovedCwdSnapshot,
+} from "../infra/system-run-cwd-binding.js";
 import { logWarn } from "../logger.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { evaluateSystemRunPolicy, resolveExecApprovalDecision } from "./exec-policy.js";
@@ -53,10 +60,8 @@ import {
 } from "./invoke-system-run-allowlist.js";
 import {
   hardenApprovedExecutionPaths,
-  revalidateApprovedCwdSnapshot,
   revalidateApprovedMutableFileOperand,
   resolveMutableFileOperandSnapshotSync,
-  type ApprovedCwdSnapshot,
 } from "./invoke-system-run-plan.js";
 import type {
   ExecEventPayload,
@@ -136,8 +141,6 @@ type SystemRunPolicyPhase = SystemRunParsePhase & {
 };
 
 const safeBinTrustedDirWarningCache = new Set<string>();
-const APPROVAL_CWD_DRIFT_DENIED_MESSAGE =
-  "SYSTEM_RUN_DENIED: approval cwd changed before execution";
 const APPROVAL_SCRIPT_OPERAND_BINDING_DENIED_MESSAGE =
   "SYSTEM_RUN_DENIED: approval missing script operand binding";
 const APPROVAL_SCRIPT_OPERAND_DRIFT_DENIED_MESSAGE =
@@ -265,6 +268,7 @@ export type HandleSystemRunInvokeOptions = {
     cwd: string | undefined,
     env: Record<string, string> | undefined,
     timeoutMs: number | undefined,
+    approvedCwdSnapshot?: ApprovedCwdSnapshot,
   ) => Promise<RunResult>;
   runViaMacAppExecHost: (params: {
     approvals: ReturnType<typeof resolveExecApprovals>;
@@ -665,8 +669,21 @@ async function evaluateSystemRunPolicyPhase(
     });
     return null;
   }
-  const approvedCwdSnapshot = policy.approvedByAsk ? hardenedPaths.approvedCwdSnapshot : undefined;
-  if (policy.approvedByAsk && hardenedPaths.cwd && !approvedCwdSnapshot) {
+  let executionCwd = hardenedPaths.cwd;
+  let approvedCwdSnapshot = policy.approvedByAsk ? hardenedPaths.approvedCwdSnapshot : undefined;
+  if (security === "allowlist" && !approvedCwdSnapshot) {
+    const capturedCwd = captureApprovedCwdSnapshotSync(executionCwd ?? process.cwd());
+    if (!capturedCwd.ok) {
+      await sendSystemRunDenied(opts, parsed.execution, {
+        reason: "approval-required",
+        message: capturedCwd.message,
+      });
+      return null;
+    }
+    executionCwd = capturedCwd.snapshot.cwd;
+    approvedCwdSnapshot = capturedCwd.snapshot;
+  }
+  if ((policy.approvedByAsk || security === "allowlist") && !approvedCwdSnapshot) {
     await sendSystemRunDenied(opts, parsed.execution, {
       reason: "approval-required",
       message: APPROVAL_CWD_DRIFT_DENIED_MESSAGE,
@@ -689,9 +706,9 @@ async function evaluateSystemRunPolicyPhase(
   }
   return {
     ...parsed,
+    cwd: executionCwd,
     approvalDecision,
     argv: hardenedPaths.argv,
-    cwd: hardenedPaths.cwd,
     approvals,
     security,
     ask,
@@ -720,10 +737,7 @@ async function executeSystemRunPhase(
   opts: HandleSystemRunInvokeOptions,
   phase: SystemRunPolicyPhase,
 ): Promise<void> {
-  if (
-    phase.approvedCwdSnapshot &&
-    !revalidateApprovedCwdSnapshot({ snapshot: phase.approvedCwdSnapshot })
-  ) {
+  if (phase.approvedCwdSnapshot && !revalidateApprovedCwdSnapshot(phase.approvedCwdSnapshot)) {
     logWarn(`security: system.run approval cwd drift blocked (runId=${phase.runId})`);
     await sendSystemRunDenied(opts, phase.execution, {
       reason: "approval-required",
@@ -870,7 +884,23 @@ async function executeSystemRunPhase(
     return;
   }
 
-  const result = await opts.runCommand(execArgv, phase.cwd, phase.env, phase.timeoutMs);
+  let result: RunResult;
+  try {
+    result = await opts.runCommand(
+      execArgv,
+      phase.cwd,
+      phase.env,
+      phase.timeoutMs,
+      phase.approvedCwdSnapshot,
+    );
+  } catch (error) {
+    if (!(error instanceof ApprovedCwdDriftError)) throw error;
+    await sendSystemRunDenied(opts, phase.execution, {
+      reason: "approval-required",
+      message: error.message,
+    });
+    return;
+  }
   applyOutputTruncation(result);
   await sendSystemRunCompleted(
     opts,

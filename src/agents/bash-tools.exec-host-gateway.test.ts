@@ -3,6 +3,8 @@
  * Covers allowlist misses, auto-review, strict inline eval, diagnostics
  * follow-ups, and gateway approval result routing.
  */
+import fs from "node:fs/promises";
+import path from "node:path";
 import { beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import {
   onInternalDiagnosticEvent,
@@ -18,6 +20,8 @@ import {
   planShellAuthorization,
   type ExecAuthorizationPlan,
 } from "../infra/exec-authorization-plan.js";
+import { buildCwdBoundHashedArgPattern } from "../infra/exec-command-resolution.js";
+import { withTempDir } from "../test-helpers/temp-dir.js";
 import type { ExecApprovalFollowupTarget } from "./bash-tools.exec-host-shared.js";
 import type { ExecApprovalFollowupFactory } from "./bash-tools.exec-types.js";
 
@@ -365,6 +369,24 @@ describe("processGatewayAllowlist", () => {
     });
   }
 
+  it("rejects a replaced cwd at the final allowed-command boundary", async () => {
+    await withTempDir({ prefix: "gateway-exec-cwd-" }, async (dir) => {
+      const workdir = path.join(dir, "work");
+      await fs.mkdir(workdir);
+      hasExactCommandDurableExecApprovalMock.mockReturnValue(true);
+      buildEnforcedShellCommandMock.mockReturnValue({ ok: true, command: "echo ok" });
+      const result = await runGatewayAllowlist({ command: "echo ok", workdir });
+      expect(result.revalidateBeforeExecution).toEqual(expect.any(Function));
+      expect(await result.revalidateBeforeExecution?.()).toBeUndefined();
+      await fs.rename(workdir, path.join(dir, "original"));
+      await fs.mkdir(workdir);
+      const denied = await result.revalidateBeforeExecution?.();
+      expect(denied?.details.status).toBe("failed");
+      expect(JSON.stringify(denied)).toContain("approval cwd changed");
+      expect(runExecProcessMock).not.toHaveBeenCalled();
+    });
+  });
+
   async function runTimedOutStrictInlineEval(params: {
     security: "full" | "allowlist";
     askFallback: "full" | "allowlist";
@@ -528,6 +550,7 @@ describe("processGatewayAllowlist", () => {
     }
 
     expect(result!).toEqual({
+      revalidateBeforeExecution: expect.any(Function),
       execCommandOverride: undefined,
       allowWithoutEnforcedCommand: true,
     });
@@ -576,6 +599,7 @@ describe("processGatewayAllowlist", () => {
     );
     expect(createAndRegisterDefaultExecApprovalRequestMock).not.toHaveBeenCalled();
     expect(result).toEqual({
+      revalidateBeforeExecution: expect.any(Function),
       execCommandOverride: undefined,
       allowWithoutEnforcedCommand: true,
     });
@@ -624,6 +648,7 @@ describe("processGatewayAllowlist", () => {
     );
     expect(createAndRegisterDefaultExecApprovalRequestMock).not.toHaveBeenCalled();
     expect(result).toEqual({
+      revalidateBeforeExecution: expect.any(Function),
       execCommandOverride: undefined,
       allowWithoutEnforcedCommand: true,
     });
@@ -680,6 +705,7 @@ describe("processGatewayAllowlist", () => {
     expect(createAndRegisterDefaultExecApprovalRequestMock).not.toHaveBeenCalled();
     expect(warnings[0]).toContain("reviewer or explicit approval");
     expect(result).toEqual({
+      revalidateBeforeExecution: expect.any(Function),
       execCommandOverride: undefined,
       allowWithoutEnforcedCommand: true,
     });
@@ -718,6 +744,7 @@ describe("processGatewayAllowlist", () => {
     });
 
     expect(result).toEqual({
+      revalidateBeforeExecution: expect.any(Function),
       execCommandOverride: "/usr/bin/head -c 16",
     });
   });
@@ -759,6 +786,7 @@ describe("processGatewayAllowlist", () => {
     );
     expect(createAndRegisterDefaultExecApprovalRequestMock).not.toHaveBeenCalled();
     expect(result).toEqual({
+      revalidateBeforeExecution: expect.any(Function),
       execCommandOverride: undefined,
       allowWithoutEnforcedCommand: true,
     });
@@ -853,7 +881,10 @@ describe("processGatewayAllowlist", () => {
     });
 
     expect(createAndRegisterDefaultExecApprovalRequestMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ execCommandOverride: undefined });
+    expect(result).toEqual({
+      execCommandOverride: undefined,
+      revalidateBeforeExecution: expect.any(Function),
+    });
   });
 
   it("offers allow-always for shell-wrapper misses with reusable executable patterns", async () => {
@@ -902,7 +933,12 @@ describe("processGatewayAllowlist", () => {
       allowAlwaysPersistence: {
         kind: "patterns",
         commandText: "sh -c 'git status'",
-        patterns: [{ pattern: "/usr/bin/git", argPattern: undefined }],
+        patterns: [
+          {
+            pattern: "/usr/bin/git",
+            argPattern: buildCwdBoundHashedArgPattern(["/usr/bin/git", "status"], process.cwd()),
+          },
+        ],
       },
     });
     expect(buildExecApprovalPendingToolResultMock).toHaveBeenCalledWith(
@@ -1321,7 +1357,10 @@ EOF`,
     });
 
     expect(createAndRegisterDefaultExecApprovalRequestMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ execCommandOverride: undefined });
+    expect(result).toEqual({
+      execCommandOverride: undefined,
+      revalidateBeforeExecution: expect.any(Function),
+    });
   });
 
   it("keeps denying allowlist misses when durable trust does not match", async () => {

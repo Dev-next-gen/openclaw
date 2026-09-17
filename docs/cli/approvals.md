@@ -140,6 +140,11 @@ No target flag means the local approvals file on disk.
 
 `allowlist add|remove` also supports `--agent <id>` (defaults to `"*"`, applying to all agents).
 
+For exec requests, **Always allow here** saves exact command arguments scoped to
+the approved working directory. Another directory requires a separate approval.
+Run `openclaw doctor --fix` after upgrading to remove tagged generated grants that
+lack directory binding; deliberate manual rules are preserved.
+
 ## Notes
 
 - The node host must advertise `system.execApprovals.get/set` (macOS app, headless node host, or Windows companion).

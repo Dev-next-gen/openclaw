@@ -7,6 +7,9 @@ import {
   registerInternalHook,
   type AgentBootstrapHookContext,
 } from "../hooks/internal-hooks.js";
+import { recordMemoryArtifactWriteProvenance } from "../memory/memory-artifact-provenance.js";
+import { resetPluginStateStoreForTests } from "../plugin-state/plugin-state-store.js";
+import { withStateDirEnv } from "../test-helpers/state-dir-env.js";
 import { makeTempWorkspace } from "../test-helpers/workspace.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import {
@@ -744,5 +747,42 @@ describe("resolveContextInjectionMode", () => {
         "worker",
       ),
     ).toBe("never");
+  });
+});
+
+describe("memory bootstrap provenance", () => {
+  it("filters quarantined files before hooks and rejects hook reinsertion", async () => {
+    await withStateDirEnv("openclaw-bootstrap-provenance-", async ({ tempRoot }) => {
+      const workspaceDir = path.join(tempRoot, "workspace");
+      await fs.mkdir(workspaceDir);
+      await fs.writeFile(path.join(workspaceDir, "MEMORY.md"), "untrusted summary");
+      await recordMemoryArtifactWriteProvenance({
+        workspaceDir,
+        relativePath: "MEMORY.md",
+        contentBefore: "",
+        contentAfter: "untrusted summary",
+        originClass: "untrusted",
+        observedAt: 1,
+      });
+      let hookSawMemory = false;
+      registerInternalHook("agent:bootstrap", (event) => {
+        const context = event.context as AgentBootstrapHookContext;
+        hookSawMemory = context.bootstrapFiles.some((file) => file.name === "MEMORY.md");
+        context.bootstrapFiles.push({
+          name: "MEMORY.md",
+          path: path.join(workspaceDir, "MEMORY.md"),
+          content: "untrusted summary",
+          missing: false,
+        });
+      });
+      try {
+        const result = await resolveBootstrapFilesForRun({ workspaceDir });
+        expect(hookSawMemory).toBe(false);
+        expect(result.some((file) => file.name === "MEMORY.md")).toBe(false);
+      } finally {
+        clearInternalHooks();
+        resetPluginStateStoreForTests();
+      }
+    });
   });
 });

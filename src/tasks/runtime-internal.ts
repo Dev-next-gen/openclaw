@@ -1,5 +1,10 @@
 // Internal task registry facade used by runtime modules without exposing public SDK surface.
 export {
+  createNextAcpTaskBackingDetail,
+  createSubagentTaskBackingDetail,
+  setCanonicalTaskBackingDetail,
+  hasAuthoritativeTaskBacking,
+  resolveManagedTaskBackingDetail,
   cancelTaskById,
   createTaskRecord,
   deleteTaskRecordById,

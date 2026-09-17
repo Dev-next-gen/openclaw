@@ -35,6 +35,7 @@ export type PluginStateSyncKeyedStore<T> = {
   lookup(key: string): T | undefined;
   consume(key: string): T | undefined;
   delete(key: string): boolean;
+  deleteIf?: (key: string, predicate: (current: T) => boolean) => boolean;
   entries(): PluginStateEntry<T>[];
   clear(): void;
 };

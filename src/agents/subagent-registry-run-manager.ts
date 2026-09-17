@@ -12,6 +12,10 @@ import {
   type DetachedTaskFindResult,
 } from "../tasks/detached-task-runtime-contract.js";
 import { createRunningTaskRun, finalizeTaskRunByRunId } from "../tasks/detached-task-runtime.js";
+import {
+  createSubagentTaskBackingDetail,
+  setCanonicalTaskBackingDetail,
+} from "../tasks/runtime-internal.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.shared.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import { buildAgentRunTerminalOutcomeFromWaitResult } from "./agent-run-terminal-outcome.js";
@@ -689,6 +693,18 @@ export function createSubagentRunManager(params: {
     }
     params.runs.set(nextRunId, next);
     markOlderKillReconciliationsSuperseded(next);
+    // Revoke copied managed authority before persisting the successor generation.
+    // If this write fails, keep the live successor authoritative in memory; exact
+    // runtime cancellation fences still reject the superseded generation.
+    const backingResult = setCanonicalTaskBackingDetail({
+      runtime: "subagent",
+      childSessionKey: next.childSessionKey,
+      runId: next.taskRunId ?? next.runId,
+      detail: createSubagentTaskBackingDetail(generation),
+    });
+    if (backingResult === "persist_failed") {
+      log.warn("Failed to persist replacement task authority", { runId: next.runId });
+    }
     try {
       params.persistOrThrow();
     } catch (error) {
@@ -796,6 +812,7 @@ export function createSubagentRunManager(params: {
     try {
       const task = createRunningTaskRun({
         runtime: "subagent",
+        detail: createSubagentTaskBackingDetail(generation),
         sourceId: runId,
         ownerKey: requesterSessionKey,
         scopeKind: "session",

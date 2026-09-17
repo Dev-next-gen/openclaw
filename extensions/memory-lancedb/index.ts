@@ -1459,6 +1459,21 @@ export default definePluginEntry({
         ...asRecord(runtimePluginConfig),
       });
     };
+    const assertRetainedToolEnabled = () => {
+      if (!api.runtime.config?.current) {
+        return;
+      }
+      const current = api.runtime.config.current() as OpenClawConfig | undefined;
+      // This stable plugin has global tools, not per-agent factories. Revoke
+      // retained definitions when the live plugin/runtime is explicitly disabled.
+      if (
+        !current ||
+        current.plugins?.enabled === false ||
+        current.plugins?.entries?.["memory-lancedb"]?.enabled === false
+      ) {
+        throw new Error("Memory is disabled. Enable the memory plugin, then retry.");
+      }
+    };
     const readMemoryRecallCooldown = (): { error: string } | undefined => {
       if (!memoryRecallCooldown) {
         return undefined;
@@ -1501,6 +1516,7 @@ export default definePluginEntry({
           limit: optionalPositiveIntegerSchema({ description: "Max results (default: 5)" }),
         }),
         async execute(_toolCallId, params) {
+          assertRetainedToolEnabled();
           const rawParams = params as Record<string, unknown>;
           const query = rawParams.query as string;
           const limit = readPositiveIntegerParam(rawParams, "limit") ?? 5;
@@ -1606,6 +1622,7 @@ export default definePluginEntry({
           ),
         }),
         async execute(_toolCallId, params) {
+          assertRetainedToolEnabled();
           const { text, category = "other" } = params as {
             text: string;
             category?: MemoryEntry["category"];
@@ -1676,6 +1693,7 @@ export default definePluginEntry({
           memoryId: Type.Optional(Type.String({ description: "Specific memory ID" })),
         }),
         async execute(_toolCallId, params) {
+          assertRetainedToolEnabled();
           const { query, memoryId } = params as { query?: string; memoryId?: string };
 
           if (memoryId) {
@@ -1862,7 +1880,11 @@ export default definePluginEntry({
     // ========================================================================
 
     // Auto-recall: inject relevant memories during prompt build
-    api.on("before_prompt_build", async (event) => {
+    api.on("before_prompt_build", async (event, ctx) => {
+      const authority = ctx.toolAuthority;
+      if (!authority?.allows("memory_recall")) {
+        return undefined;
+      }
       const currentCfg = resolveCurrentHookConfig();
       if (!currentCfg.autoRecall) {
         return undefined;
@@ -1895,6 +1917,7 @@ export default definePluginEntry({
           return undefined;
         }
 
+        authority.assertActive();
         // Filter contaminated memories, then cap at the prompt-budget bound.
         const cleanResults = cleanMemorySearchResults(recall.value)
           .map(({ result, text }) => ({ category: result.entry.category, text }))

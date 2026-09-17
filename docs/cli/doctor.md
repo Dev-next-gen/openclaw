@@ -25,6 +25,13 @@ Related:
 
 Prefer `--lint` when automation needs a stable result. Prefer `--fix` when a human operator wants doctor to edit config or state.
 
+After an exec-approval format upgrade, Doctor reports older generated approvals
+that are no longer active because they were not tied to a working directory.
+`openclaw doctor --fix` removes those inactive generated entries and leaves
+manual allowlist rules unchanged. Rerun affected workflows and choose
+**Always allow here** to renew trust for the intended directory. The normal
+`openclaw update` finalization runs this safe repair automatically.
+
 ## Examples
 
 ```bash

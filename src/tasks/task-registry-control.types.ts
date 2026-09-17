@@ -11,6 +11,9 @@ export type CancelAcpSessionAdmin = (params: {
   cfg: OpenClawConfig;
   sessionKey: string;
   reason: string;
+  expectedRunId?: string;
+  expectedInstanceId?: string;
+  expectedOwnerKey?: string;
 }) => Promise<void>;
 
 export type KillSubagentRunAdminResult =
@@ -26,6 +29,9 @@ export type KillSubagentRunAdminResult =
     };
 
 export type KillSubagentRunAdmin = (params: {
+  expectedRunId?: string;
+  expectedGeneration?: number;
+  expectedOwnerKey?: string;
   cfg: OpenClawConfig;
   sessionKey: string;
 }) => Promise<KillSubagentRunAdminResult>;

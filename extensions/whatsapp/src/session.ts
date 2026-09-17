@@ -78,10 +78,11 @@ function enqueueSaveCreds(
   authDir: string,
   saveCreds: () => Promise<void> | void,
   logger: ReturnType<typeof getChildLogger>,
+  beforeCredentialPersistence?: () => Promise<void>,
 ): void {
   enqueueCredsSave(
     authDir,
-    () => safeSaveCreds(authDir, saveCreds, logger),
+    () => safeSaveCreds(authDir, saveCreds, logger, beforeCredentialPersistence),
     (err) => {
       logger.warn({ error: String(err) }, "WhatsApp creds save queue error");
     },
@@ -92,6 +93,7 @@ async function safeSaveCreds(
   authDir: string,
   saveCreds: () => Promise<void> | void,
   logger: ReturnType<typeof getChildLogger>,
+  beforeCredentialPersistence?: () => Promise<void>,
 ): Promise<void> {
   try {
     // Best-effort backup so we can recover after abrupt restarts.
@@ -106,6 +108,7 @@ async function safeSaveCreds(
           filePath: backupPath,
           content: raw,
           tempPrefix: ".creds.backup",
+          beforeCredentialPersistence,
         });
       } catch {
         // keep existing backup
@@ -114,6 +117,7 @@ async function safeSaveCreds(
   } catch {
     // ignore backup failures
   }
+  await beforeCredentialPersistence?.();
   try {
     await Promise.resolve(saveCreds());
   } catch (err) {
@@ -160,6 +164,7 @@ export async function createWaSocket(
   opts: {
     authDir?: string;
     onQr?: (qr: string) => void;
+    beforeCredentialPersistence?: () => Promise<void>;
     getMessage?: (key: WAMessageKey) => Promise<proto.IMessage | undefined>;
     cachedGroupMetadata?: (jid: string) => Promise<GroupMetadata | undefined>;
     waWebSocketUrl?: string | URL;
@@ -174,6 +179,7 @@ export async function createWaSocket(
   const logger = toPinoLikeLogger(baseLogger, verbose ? "info" : "silent");
   const authDir = resolveUserPath(opts.authDir ?? resolveDefaultWebAuthDir());
   await rejectUnsafeWebCredsPath(authDir);
+  await opts.beforeCredentialPersistence?.();
   await ensureDir(authDir);
   const sessionLogger = getChildLogger({ module: "web-session" });
   const queueResult = await waitForCredsSaveQueueWithTimeout(authDir);
@@ -181,12 +187,14 @@ export async function createWaSocket(
     sessionLogger.warn({ authDir }, CREDS_FLUSH_TIMEOUT_MESSAGE);
   } else {
     await rejectUnsafeWebCredsPath(authDir);
-    await restoreCredsFromBackupIfNeeded(authDir);
+    await restoreCredsFromBackupIfNeeded(authDir, {
+      beforeCredentialPersistence: opts.beforeCredentialPersistence,
+    });
   }
   await rejectUnsafeWebCredsPath(authDir);
   const { state } = await useMultiFileAuthState(authDir);
   const saveCreds = async () => {
-    await writeCredsJsonAtomically(authDir, state.creds);
+    await writeCredsJsonAtomically(authDir, state.creds, opts.beforeCredentialPersistence);
   };
   const { version } = await fetchLatestBaileysVersion();
   const waWebSocketUrl = resolveWaWebSocketUrl(opts.waWebSocketUrl) ?? resolveEnvWaWebSocketUrl();
@@ -199,10 +207,21 @@ export async function createWaSocket(
     defaultQueryTimeoutMs:
       opts.defaultQueryTimeoutMs ?? DEFAULT_WHATSAPP_SOCKET_TIMING.defaultQueryTimeoutMs,
   };
+  // Gate the backing store before Baileys caches it; cache flushes must not
+  // persist Signal keys after the login instance loses its authority.
+  const persistedKeys = opts.beforeCredentialPersistence
+    ? {
+        ...state.keys,
+        async set(data: Parameters<typeof state.keys.set>[0]) {
+          await opts.beforeCredentialPersistence?.();
+          await state.keys.set(data);
+        },
+      }
+    : state.keys;
   const sock = makeWASocket({
     auth: {
       creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, logger),
+      keys: makeCacheableSignalKeyStore(persistedKeys, logger),
     },
     version,
     logger,
@@ -220,7 +239,9 @@ export async function createWaSocket(
     ...(opts.cachedGroupMetadata ? { cachedGroupMetadata: opts.cachedGroupMetadata } : {}),
   });
 
-  sock.ev.on("creds.update", () => enqueueSaveCreds(authDir, saveCreds, sessionLogger));
+  sock.ev.on("creds.update", () =>
+    enqueueSaveCreds(authDir, saveCreds, sessionLogger, opts.beforeCredentialPersistence),
+  );
   sock.ev.on("connection.update", (update: Partial<import("baileys").ConnectionState>) => {
     void (async () => {
       try {

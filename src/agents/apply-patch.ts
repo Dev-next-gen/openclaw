@@ -9,9 +9,14 @@ import path from "node:path";
 import { Type } from "typebox";
 import { createAbortError } from "../infra/abort-signal.js";
 import { openRootFile, type RootFileOpenResult } from "../infra/boundary-file-read.js";
+import { extractErrorCode } from "../infra/errors.js";
 import { root as fsRoot } from "../infra/fs-safe.js";
 import { PATH_ALIAS_POLICIES, type PathAliasPolicy } from "../infra/path-alias-guards.js";
 import { applyUpdateHunk } from "./apply-patch-update.js";
+import {
+  withMemoryWriteProvenance,
+  type MemoryWriteProvenanceObserver,
+} from "./memory-write-provenance.js";
 import { toRelativeSandboxPath, resolvePathFromInput } from "./path-policy.js";
 import type { AgentTool } from "./runtime/index.js";
 import { assertSandboxPath } from "./sandbox-paths.js";
@@ -84,6 +89,7 @@ type SandboxApplyPatchConfig = {
 };
 
 type ApplyPatchOptions = {
+  memoryWriteProvenance?: MemoryWriteProvenanceObserver;
   cwd: string;
   sandbox?: SandboxApplyPatchConfig;
   /** Restrict patch paths to the workspace root (cwd). Default: true. Set false to opt out. */
@@ -99,7 +105,12 @@ const applyPatchSchema = Type.Object({
 
 /** Create the agent tool wrapper for applying patch-envelope input. */
 export function createApplyPatchTool(
-  options: { cwd?: string; sandbox?: SandboxApplyPatchConfig; workspaceOnly?: boolean } = {},
+  options: {
+    cwd?: string;
+    sandbox?: SandboxApplyPatchConfig;
+    workspaceOnly?: boolean;
+    memoryWriteProvenance?: MemoryWriteProvenanceObserver;
+  } = {},
 ): AgentTool<typeof applyPatchSchema, ApplyPatchToolDetails> {
   const cwd = options.cwd ?? process.cwd();
   const sandbox = options.sandbox;
@@ -122,6 +133,7 @@ export function createApplyPatchTool(
       }
 
       const result = await applyPatch(input, {
+        memoryWriteProvenance: options.memoryWriteProvenance,
         cwd,
         sandbox,
         workspaceOnly,
@@ -158,7 +170,10 @@ export async function applyPatch(
     deleted: new Set<string>(),
   };
   const noOpPaths = new Set<string>();
-  const fileOps = resolvePatchFileOps(options);
+  const fileOps = withMemoryWriteProvenance(
+    resolvePatchFileOps(options),
+    options.memoryWriteProvenance,
+  );
 
   for (const hunk of parsed.hunks) {
     if (options.signal?.aborted) {
@@ -448,7 +463,14 @@ function assertBoundaryRead(
     return;
   }
   const reason = opened.reason === "validation" ? "unsafe path" : "path not found";
-  throw new Error(`Failed boundary read for ${targetPath} (${reason})`);
+  const error = new Error(`Failed boundary read for ${targetPath} (${reason})`);
+  const code = opened.reason === "path" ? extractErrorCode(opened.error) : undefined;
+  // Preserve only verified missing-path codes for provenance's pre-create read;
+  // boundary validation and other IO errors must remain fatal.
+  if (code === "ENOENT" || code === "ENOTDIR") {
+    Object.assign(error, { code });
+  }
+  throw error;
 }
 
 function toDisplayPath(resolved: string, cwd: string): string {

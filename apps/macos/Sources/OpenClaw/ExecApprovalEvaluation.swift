@@ -9,7 +9,7 @@ struct ExecApprovalEvaluation {
     let env: [String: String]
     let resolution: ExecCommandResolution?
     let allowlistResolutions: [ExecCommandResolution]
-    let allowAlwaysPatterns: [String]
+    let allowAlwaysPatterns: [ExecAllowAlwaysPattern]
     let allowlistMatches: [ExecAllowlistEntry]
     let allowlistSatisfied: Bool
     let allowlistMatch: ExecAllowlistEntry?
@@ -24,6 +24,7 @@ enum ExecApprovalEvaluator {
         envOverrides: [String: String]?,
         agentId: String?) async -> ExecApprovalEvaluation
     {
+        let effectiveCwd = ExecCommandResolution.canonicalApprovalCwd(cwd)
         let trimmedAgent = agentId?.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedAgentId = (trimmedAgent?.isEmpty == false) ? trimmedAgent : nil
         let approvals = ExecApprovalsStore.resolve(agentId: normalizedAgentId)
@@ -38,11 +39,11 @@ enum ExecApprovalEvaluator {
         let allowlistResolutions = ExecCommandResolution.resolveForAllowlist(
             command: command,
             rawCommand: allowlistRawCommand,
-            cwd: cwd,
+            cwd: effectiveCwd,
             env: env)
         let allowAlwaysPatterns = ExecCommandResolution.resolveAllowAlwaysPatterns(
             command: command,
-            cwd: cwd,
+            cwd: effectiveCwd,
             env: env,
             rawCommand: allowlistRawCommand)
         let allowlistMatches = security == .allowlist

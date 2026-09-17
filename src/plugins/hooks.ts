@@ -1,11 +1,10 @@
+import { clampPositiveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 /**
  * Plugin Hook Runner
  *
  * Provides utilities for executing plugin lifecycle hooks with proper
  * error handling and priority ordering.
  */
-
-import { clampPositiveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { copyReplyPayloadMetadata, type ReplyPayload } from "../auto-reply/reply-payload.js";
 import { formatHookErrorForLog } from "../hooks/fire-and-forget.js";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -94,6 +93,10 @@ import type {
   PluginHookResolveExecEnvContext,
   PluginHookResolveExecEnvEvent,
 } from "./hook-types.js";
+import {
+  createPromptToolAuthority,
+  type PromptToolAuthorityInput,
+} from "./prompt-tool-authority.js";
 
 // Re-export types for consumers
 export type {
@@ -850,13 +853,26 @@ export function createHookRunner(
   async function runBeforePromptBuild(
     event: PluginHookBeforePromptBuildEvent,
     ctx: PluginHookAgentContext,
+    toolInput?: PromptToolAuthorityInput,
   ): Promise<PluginHookBeforePromptBuildResult | undefined> {
-    return runModifyingHook<"before_prompt_build", PluginHookBeforePromptBuildResult>(
-      "before_prompt_build",
-      event,
-      ctx,
-      { mergeResults: mergeBeforePromptBuild },
-    );
+    // Only the host's finalized surface may authorize automatic recall. Ignore
+    // a caller-supplied capability so legacy pre-policy dispatches fail closed.
+    const lease = toolInput ? createPromptToolAuthority(ctx, toolInput) : undefined;
+    try {
+      const result = await runModifyingHook<
+        "before_prompt_build",
+        PluginHookBeforePromptBuildResult
+      >(
+        "before_prompt_build",
+        event,
+        { ...ctx, toolAuthority: lease?.authority },
+        { mergeResults: mergeBeforePromptBuild },
+      );
+      lease?.authority.assertActive();
+      return result;
+    } finally {
+      lease?.close();
+    }
   }
 
   async function runAgentTurnPrepare(

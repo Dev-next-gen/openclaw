@@ -6,6 +6,7 @@
  */
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import type { PromptToolAuthorityInput } from "../../plugins/prompt-tool-authority.js";
 import type {
   PluginHookBeforeAgentStartResult,
   PluginHookBeforePromptBuildResult,
@@ -34,6 +35,7 @@ export async function resolveAgentHarnessBeforePromptBuildResult(params: {
   ctx: AgentHarnessHookContext;
   beforeAgentStartResult?: PluginHookBeforeAgentStartResult;
   bootstrapContextRunKind?: BootstrapContextRunKind;
+  toolAuthority?: PromptToolAuthorityInput;
 }): Promise<AgentHarnessPromptBuildResult> {
   const hookRunner = getGlobalHookRunner();
   const hasPrecomputedBeforeAgentStartResult = "beforeAgentStartResult" in params;
@@ -85,10 +87,12 @@ export async function resolveAgentHarnessBeforePromptBuildResult(params: {
   // Support the newer before_prompt_build hook plus the deprecated
   // before_agent_start hook during the prompt-build migration window.
   const promptBuildResult = hookRunner?.hasHooks("before_prompt_build")
-    ? await hookRunner.runBeforePromptBuild(promptEvent, hookCtx).catch((error: unknown) => {
-        log.warn(`before_prompt_build hook failed: ${String(error)}`);
-        return undefined;
-      })
+    ? await hookRunner
+        .runBeforePromptBuild(promptEvent, hookCtx, params.toolAuthority)
+        .catch((error: unknown) => {
+          log.warn(`before_prompt_build hook failed: ${String(error)}`);
+          return undefined;
+        })
     : undefined;
   // The runner resolves before_agent_start during model selection. Reuse that
   // result so legacy one-shot hooks do not run twice for the same turn.

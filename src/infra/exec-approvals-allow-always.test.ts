@@ -19,7 +19,7 @@ import {
   resolveAllowAlwaysPatterns,
   resolveSafeBins,
 } from "./exec-approvals.js";
-import { matchAllowlist } from "./exec-command-resolution.js";
+import { buildCwdBoundHashedArgPattern, matchAllowlist } from "./exec-command-resolution.js";
 
 describe("resolveAllowAlwaysPatterns", () => {
   async function resolvePersistedPatterns(params: {
@@ -339,6 +339,7 @@ describe("resolveAllowAlwaysPatterns", () => {
       resolution.execution ?? null,
       [awk, "-F", ",", "-f", "script.awk", "data.csv"],
       "win32",
+      process.cwd(),
     );
     expect(matched?.pattern).toBe(awk);
     expect(typeof matched?.argPattern).toBe("string");
@@ -348,6 +349,7 @@ describe("resolveAllowAlwaysPatterns", () => {
         resolution.execution ?? null,
         [awk, "-f", "other.awk", "secrets.csv"],
         "win32",
+        process.cwd(),
       ),
     ).toBeNull();
   });
@@ -358,62 +360,61 @@ describe("resolveAllowAlwaysPatterns", () => {
       argvPrefix: [],
       fileFlag: "-File",
       scriptArgs: [""],
-      expectedArgPattern: "^\x00$",
     },
     {
       name: "PowerShell file alias argument",
       argvPrefix: [],
       fileFlag: "-fi",
       scriptArgs: ["arg"],
-      expectedArgPattern: "^arg\x00$",
     },
     {
       name: "empty PowerShell file argument after dispatch unwrap",
       argvPrefix: ["env"],
       fileFlag: "/file",
       scriptArgs: [""],
-      expectedArgPattern: "^\x00$",
     },
-  ])(
-    "persists allow-always patterns for $name",
-    ({ argvPrefix, fileFlag, scriptArgs, expectedArgPattern }) => {
-      const dir = makeTempDir();
-      makeExecutable(dir, "env");
-      makeExecutable(dir, "pwsh");
-      const scriptPath = path.join(dir, "script.ps1");
-      fs.writeFileSync(scriptPath, "");
-      fs.chmodSync(scriptPath, 0o755);
-      try {
-        const env = makePathEnv(dir);
-        const analysis = analyzeArgvCommand({
-          argv: [...argvPrefix, "pwsh", fileFlag, scriptPath, ...scriptArgs],
-          cwd: dir,
-          env,
-        });
-        expect(analysis.ok).toBe(true);
+  ])("persists allow-always patterns for $name", ({ argvPrefix, fileFlag, scriptArgs }) => {
+    const dir = makeTempDir();
+    makeExecutable(dir, "env");
+    makeExecutable(dir, "pwsh");
+    const scriptPath = path.join(dir, "script.ps1");
+    fs.writeFileSync(scriptPath, "");
+    fs.chmodSync(scriptPath, 0o755);
+    try {
+      const env = makePathEnv(dir);
+      const analysis = analyzeArgvCommand({
+        argv: [...argvPrefix, "pwsh", fileFlag, scriptPath, ...scriptArgs],
+        cwd: dir,
+        env,
+      });
+      expect(analysis.ok).toBe(true);
 
-        const entries = resolveAllowAlwaysPatternEntries({
-          segments: analysis.segments,
-          cwd: dir,
-          env,
-          platform: "win32",
-        });
-        expect(entries).toEqual([{ pattern: scriptPath, argPattern: expectedArgPattern }]);
+      const entries = resolveAllowAlwaysPatternEntries({
+        segments: analysis.segments,
+        cwd: dir,
+        env,
+        platform: "win32",
+      });
+      expect(entries).toEqual([
+        {
+          pattern: scriptPath,
+          argPattern: buildCwdBoundHashedArgPattern([scriptPath, ...scriptArgs], dir, "win32"),
+        },
+      ]);
 
-        const result = evaluateExecAllowlist({
-          analysis,
-          allowlist: entries,
-          safeBins: new Set(),
-          cwd: dir,
-          env,
-          platform: "win32",
-        });
-        expect(result.allowlistSatisfied).toBe(true);
-      } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-      }
-    },
-  );
+      const result = evaluateExecAllowlist({
+        analysis,
+        allowlist: entries,
+        safeBins: new Set(),
+        cwd: dir,
+        env,
+        platform: "win32",
+      });
+      expect(result.allowlistSatisfied).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it("keeps inline awk programs out of allow-always persistence in strict inline-eval mode", async () => {
     if (process.platform === "win32") {
@@ -1098,7 +1099,7 @@ $0 \\"$1\\"" touch {marker}`,
     { command: "pnpm install", executable: "pnpm" },
     { command: "yarn install", executable: "yarn" },
   ])(
-    "keeps exec-like arguments on known non-exec package-manager subcommands allowlisted: $command",
+    "requires renewal of old package-manager grants: $command",
     async ({ command, executable }) => {
       if (process.platform === "win32") {
         return;
@@ -1117,7 +1118,21 @@ $0 \\"$1\\"" touch {marker}`,
         platform: process.platform,
       });
 
-      expect(result.allowlistSatisfied).toBe(true);
+      expect(result.allowlistSatisfied).toBe(false);
+      const renewed = await evaluateShellAllowlistWithAuthorization({
+        command,
+        cwd: dir,
+        env,
+        safeBins,
+        allowlist: [
+          {
+            pattern: executablePath,
+            source: "allow-always",
+            argPattern: buildCwdBoundHashedArgPattern(command.split(" "), dir),
+          },
+        ],
+      });
+      expect(renewed.allowlistSatisfied).toBe(true);
     },
   );
 
@@ -1265,7 +1280,12 @@ $0 \\"$1\\"" touch {marker}`,
       env,
       platform,
     });
-    expect(entries).toEqual([{ pattern: script, argPattern: "^allowed\x00$" }]);
+    expect(entries).toEqual([
+      {
+        pattern: script,
+        argPattern: buildCwdBoundHashedArgPattern([script, "allowed"], dir, platform),
+      },
+    ]);
 
     const allowed = evaluateExecAllowlist({
       analysis,
@@ -1322,9 +1342,14 @@ $0 \\"$1\\"" touch {marker}`,
     });
     expect(staleOuter.allowlistSatisfied).toBe(false);
 
+    const hashedInnerEntry = {
+      pattern: tsxPath,
+      source: "allow-always" as const,
+      argPattern: buildCwdBoundHashedArgPattern([tsxPath, "./run.ts"], dir),
+    };
     const inner = await evaluateShellAllowlistWithAuthorization({
       command: "pnpm exec -- tsx ./run.ts",
-      allowlist: [{ pattern: tsxPath, source: "allow-always" }],
+      allowlist: [hashedInnerEntry],
       safeBins,
       cwd: dir,
       env,
@@ -1334,17 +1359,17 @@ $0 \\"$1\\"" touch {marker}`,
 
     const pnpmCwdInner = await evaluateShellAllowlistWithAuthorization({
       command: "pnpm -C ./package exec -- tsx ./run.ts",
-      allowlist: [{ pattern: tsxPath, source: "allow-always" }],
+      allowlist: [hashedInnerEntry],
       safeBins,
       cwd: dir,
       env,
       platform: process.platform,
     });
-    expect(pnpmCwdInner.allowlistSatisfied).toBe(true);
+    expect(pnpmCwdInner.allowlistSatisfied).toBe(false);
 
     const npmInner = await evaluateShellAllowlistWithAuthorization({
       command: "npm --loglevel=silent exec -- tsx ./run.ts",
-      allowlist: [{ pattern: tsxPath, source: "allow-always" }],
+      allowlist: [hashedInnerEntry],
       safeBins,
       cwd: dir,
       env,
@@ -1354,17 +1379,17 @@ $0 \\"$1\\"" touch {marker}`,
 
     const npmCwdInner = await evaluateShellAllowlistWithAuthorization({
       command: "npm -C ./package exec -- tsx ./run.ts",
-      allowlist: [{ pattern: tsxPath, source: "allow-always" }],
+      allowlist: [hashedInnerEntry],
       safeBins,
       cwd: dir,
       env,
       platform: process.platform,
     });
-    expect(npmCwdInner.allowlistSatisfied).toBe(true);
+    expect(npmCwdInner.allowlistSatisfied).toBe(false);
 
     const npmAliasInner = await evaluateShellAllowlistWithAuthorization({
       command: "npm x -- tsx ./run.ts",
-      allowlist: [{ pattern: tsxPath, source: "allow-always" }],
+      allowlist: [hashedInnerEntry],
       safeBins,
       cwd: dir,
       env,
@@ -1374,7 +1399,7 @@ $0 \\"$1\\"" touch {marker}`,
 
     const chainedInner = await evaluateShellAllowlistWithAuthorization({
       command: "pnpm exec -- npm x -- tsx ./run.ts",
-      allowlist: [{ pattern: tsxPath, source: "allow-always" }],
+      allowlist: [hashedInnerEntry],
       safeBins,
       cwd: dir,
       env,
@@ -1384,7 +1409,7 @@ $0 \\"$1\\"" touch {marker}`,
 
     const yarnInner = await evaluateShellAllowlistWithAuthorization({
       command: "yarn exec -- tsx ./run.ts",
-      allowlist: [{ pattern: tsxPath, source: "allow-always" }],
+      allowlist: [hashedInnerEntry],
       safeBins,
       cwd: dir,
       env,

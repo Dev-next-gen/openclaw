@@ -127,6 +127,43 @@ describe("runEmbeddedAgent Codex app-server recovery", () => {
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps memory source taint across retry attempts and distrusts automatic flush input", async () => {
+    let firstState: EmbeddedRunAttemptParams["memoryTurnProvenance"];
+    mockedRunEmbeddedAttempt
+      .mockImplementationOnce(async (attemptParams) => {
+        firstState = (attemptParams as EmbeddedRunAttemptParams).memoryTurnProvenance;
+        expect(firstState?.isTainted()).toBe(false);
+        firstState?.markTainted();
+        return codexClientClosedAttempt();
+      })
+      .mockImplementationOnce(async (attemptParams) => {
+        expect((attemptParams as EmbeddedRunAttemptParams).memoryTurnProvenance).toBe(firstState);
+        expect(firstState?.isTainted()).toBe(true);
+        return successAttempt();
+      });
+    await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "codex",
+      model: "gpt-5.5",
+      senderIsOwner: true,
+      runId: "memory-taint-retry",
+    });
+    mockedRunEmbeddedAttempt.mockImplementationOnce(async (attemptParams) => {
+      expect((attemptParams as EmbeddedRunAttemptParams).memoryTurnProvenance?.isTainted()).toBe(
+        true,
+      );
+      return successAttempt();
+    });
+    await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "codex",
+      model: "gpt-5.5",
+      senderIsOwner: true,
+      trigger: "memory",
+      runId: "memory-flush-taint",
+    });
+  });
+
   it("keeps shared abort ownership open through a replay-safe retry", async () => {
     const freezeAbort = vi.fn();
     const replyOperation = {

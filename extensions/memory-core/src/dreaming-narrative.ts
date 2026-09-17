@@ -25,6 +25,7 @@ type SubagentSurface = {
     idempotencyKey: string;
     sessionKey: string;
     message: string;
+    disableTools?: boolean;
     model?: string;
     extraSystemPrompt?: string;
     lane?: string;
@@ -242,6 +243,7 @@ async function startNarrativeRunOrFallback(params: {
       idempotencyKey: `${params.sessionKey}-${params.nowMs}`,
       sessionKey: params.sessionKey,
       message: params.message,
+      disableTools: true,
       ...(params.model ? { model: params.model } : {}),
       extraSystemPrompt: NARRATIVE_SYSTEM_PROMPT,
       lane: `dreaming-narrative:${params.sessionKey}`,

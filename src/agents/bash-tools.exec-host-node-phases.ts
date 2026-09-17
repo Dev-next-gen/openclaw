@@ -19,6 +19,7 @@ import {
   type ExecSecurity,
   type SystemRunApprovalPlan,
   commandRequiresSecurityAuditSuppressionApproval,
+  countObsoleteGeneratedExecApprovals,
   evaluateShellAllowlistWithAuthorization,
   hasDurableExecApproval,
   hasNodeCommandAllowAlwaysMarker,
@@ -574,6 +575,7 @@ export async function analyzeNodeApprovalRequirement(params: {
   let allowlistSatisfied = false;
   let durableApprovalSatisfied = false;
   let nodeApprovalsFileKnown = false;
+  let obsoleteGeneratedApprovalCount = 0;
   const inlineEvalHit =
     params.request.strictInlineEval === true
       ? (policyCommandEvals
@@ -625,6 +627,7 @@ export async function analyzeNodeApprovalRequirement(params: {
           agentId: params.prepared.agentId,
           overrides: { security: "full" },
         });
+        obsoleteGeneratedApprovalCount = countObsoleteGeneratedExecApprovals(resolved.file);
         // Allowlist-only precheck; safe bins are node-local and may diverge.
         // POSIX node transport wraps commands, so mirror node policy by
         // accepting either the prepared wrapper or its semantic inner command.
@@ -681,6 +684,15 @@ export async function analyzeNodeApprovalRequirement(params: {
     } catch {
       // Fall back to requiring approval if node approvals cannot be fetched.
     }
+  }
+  if (
+    params.hostSecurity === "allowlist" &&
+    !allowlistSatisfied &&
+    obsoleteGeneratedApprovalCount > 0
+  ) {
+    params.request.warnings.push(
+      `${obsoleteGeneratedApprovalCount} older generated exec approvals are inactive on this node because they are not tied to a working directory. Run "openclaw doctor --fix" on the node, then approve again.`,
+    );
   }
   return {
     analysisOk,

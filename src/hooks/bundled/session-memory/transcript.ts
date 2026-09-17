@@ -56,15 +56,18 @@ function extractTextMessageContent(content: unknown): string | undefined {
   return undefined;
 }
 
-export async function getRecentSessionContent(
+export type SessionMemoryProjection = { content: string; originClass: "agent" | "untrusted" };
+
+export async function getRecentSessionProjection(
   sessionFilePath: string,
   messageCount = 15,
-): Promise<string | null> {
+): Promise<SessionMemoryProjection | null> {
   try {
     const content = await fs.readFile(sessionFilePath, "utf-8");
     const lines = content.trim().split("\n");
 
-    const allMessages: string[] = [];
+    const allMessages: Array<{ text: string; trusted: boolean }> = [];
+    let trustedTurn = false;
     let lastAssistantText: string | undefined;
     for (const line of lines) {
       try {
@@ -74,8 +77,15 @@ export async function getRecentSessionContent(
             role?: unknown;
             content?: unknown;
             provenance?: unknown;
+            __openclaw?: { senderIsOwner?: unknown };
           };
           const role = msg.role;
+          if (role === "user") {
+            trustedTurn =
+              msg["__openclaw"]?.senderIsOwner === true && !hasInterSessionUserProvenance(msg);
+          } else if (role === "toolResult" || role === "tool") {
+            trustedTurn = false;
+          }
           if ((role === "user" || role === "assistant") && "content" in msg && msg.content) {
             if (role === "user" && hasInterSessionUserProvenance(msg)) {
               continue;
@@ -96,7 +106,7 @@ export async function getRecentSessionContent(
               }
             }
             if (sanitized && !sanitized.startsWith("/")) {
-              allMessages.push(`${role}: ${sanitized}`);
+              allMessages.push({ text: `${role}: ${sanitized}`, trusted: trustedTurn });
               if (role === "assistant") {
                 lastAssistantText = sanitized;
               }
@@ -108,18 +118,33 @@ export async function getRecentSessionContent(
       }
     }
 
-    return allMessages.slice(-messageCount).join("\n");
+    const limit = Number.isFinite(messageCount) ? Math.max(0, Math.floor(messageCount)) : 0;
+    if (limit === 0) {
+      return null;
+    }
+    const recent = allMessages.slice(-limit);
+    return {
+      content: recent.map((entry) => entry.text).join("\n"),
+      originClass: recent.every((entry) => entry.trusted) ? "agent" : "untrusted",
+    };
   } catch {
     return null;
   }
 }
 
-export async function getRecentSessionContentWithResetFallback(
+export async function getRecentSessionContent(
   sessionFilePath: string,
   messageCount = 15,
 ): Promise<string | null> {
-  const primary = await getRecentSessionContent(sessionFilePath, messageCount);
-  if (primary) {
+  return (await getRecentSessionProjection(sessionFilePath, messageCount))?.content ?? null;
+}
+
+export async function getRecentSessionProjectionWithResetFallback(
+  sessionFilePath: string,
+  messageCount = 15,
+): Promise<SessionMemoryProjection | null> {
+  const primary = await getRecentSessionProjection(sessionFilePath, messageCount);
+  if (primary?.content) {
     return primary;
   }
 
@@ -135,10 +160,21 @@ export async function getRecentSessionContentWithResetFallback(
     }
 
     const latestResetPath = path.join(dir, resetCandidates[resetCandidates.length - 1]);
-    return (await getRecentSessionContent(latestResetPath, messageCount)) || primary;
+    const reset = await getRecentSessionProjection(latestResetPath, messageCount);
+    return reset?.content ? reset : primary;
   } catch {
     return primary;
   }
+}
+
+export async function getRecentSessionContentWithResetFallback(
+  sessionFilePath: string,
+  messageCount = 15,
+): Promise<string | null> {
+  return (
+    (await getRecentSessionProjectionWithResetFallback(sessionFilePath, messageCount))?.content ??
+    null
+  );
 }
 
 function stripResetSuffix(fileName: string): string {

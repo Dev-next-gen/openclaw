@@ -35,13 +35,13 @@ import {
   resolveInlineCommandMatch,
 } from "../infra/shell-inline-command.js";
 import { formatExecCommand, resolveSystemRunCommandRequest } from "../infra/system-run-command.js";
+import {
+  type ApprovedCwdSnapshot,
+  captureApprovedCwdSnapshotSync,
+  revalidateApprovedCwdSnapshot as revalidateCwdSnapshot,
+} from "../infra/system-run-cwd-binding.js";
 import { splitShellArgs } from "../utils/shell-argv.js";
-
-/** File identity snapshot for the approved working directory. */
-export type ApprovedCwdSnapshot = {
-  cwd: string;
-  stat: fs.Stats;
-};
+export type { ApprovedCwdSnapshot } from "../infra/system-run-cwd-binding.js";
 
 const MUTABLE_ARGV1_INTERPRETER_PATTERNS = [
   /^(?:node|nodejs)$/,
@@ -927,72 +927,9 @@ export function resolveMutableFileOperandSnapshotSync(params: {
   };
 }
 
-function resolveCanonicalApprovalCwdSync(cwd: string):
-  | {
-      ok: true;
-      snapshot: ApprovedCwdSnapshot;
-    }
-  | { ok: false; message: string } {
-  const requestedCwd = path.resolve(cwd);
-  let cwdLstat: fs.Stats;
-  let cwdStat: fs.Stats;
-  let cwdReal: string;
-  let cwdRealStat: fs.Stats;
-  try {
-    cwdLstat = fs.lstatSync(requestedCwd);
-    cwdStat = fs.statSync(requestedCwd);
-    cwdReal = fs.realpathSync(requestedCwd);
-    cwdRealStat = fs.statSync(cwdReal);
-  } catch {
-    return {
-      ok: false,
-      message: "SYSTEM_RUN_DENIED: approval requires an existing canonical cwd",
-    };
-  }
-  if (!cwdStat.isDirectory()) {
-    return {
-      ok: false,
-      message: "SYSTEM_RUN_DENIED: approval requires cwd to be a directory",
-    };
-  }
-  if (hasMutableSymlinkPathComponentSync(requestedCwd)) {
-    return {
-      ok: false,
-      message: "SYSTEM_RUN_DENIED: approval requires canonical cwd (no symlink path components)",
-    };
-  }
-  if (cwdLstat.isSymbolicLink()) {
-    return {
-      ok: false,
-      message: "SYSTEM_RUN_DENIED: approval requires canonical cwd (no symlink cwd)",
-    };
-  }
-  if (
-    !sameFileIdentity(cwdStat, cwdLstat) ||
-    !sameFileIdentity(cwdStat, cwdRealStat) ||
-    !sameFileIdentity(cwdLstat, cwdRealStat)
-  ) {
-    return {
-      ok: false,
-      message: "SYSTEM_RUN_DENIED: approval cwd identity mismatch",
-    };
-  }
-  return {
-    ok: true,
-    snapshot: {
-      cwd: cwdReal,
-      stat: cwdStat,
-    },
-  };
-}
-
-/** Rechecks that the approved cwd still points at the same directory identity. */
+/** Compatibility entry point; both exec hosts share directory-identity validation. */
 export function revalidateApprovedCwdSnapshot(params: { snapshot: ApprovedCwdSnapshot }): boolean {
-  const current = resolveCanonicalApprovalCwdSync(params.snapshot.cwd);
-  if (!current.ok) {
-    return false;
-  }
-  return sameFileIdentity(params.snapshot.stat, current.snapshot.stat);
+  return revalidateCwdSnapshot(params.snapshot);
 }
 
 export function revalidateApprovedMutableFileOperand(params: {
@@ -1045,16 +982,15 @@ export function hardenApprovedExecutionPaths(params: {
     };
   }
 
-  let hardenedCwd = params.cwd;
-  let approvedCwdSnapshot: ApprovedCwdSnapshot | undefined;
-  if (hardenedCwd) {
-    const canonicalCwd = resolveCanonicalApprovalCwdSync(hardenedCwd);
-    if (!canonicalCwd.ok) {
-      return canonicalCwd;
-    }
-    hardenedCwd = canonicalCwd.snapshot.cwd;
-    approvedCwdSnapshot = canonicalCwd.snapshot;
+  // Capture an omitted cwd once on the execution host. Approval, persistence,
+  // revalidation, and process launch must all bind the same directory identity.
+  let hardenedCwd = params.cwd ?? process.cwd();
+  const canonicalCwd = captureApprovedCwdSnapshotSync(hardenedCwd);
+  if (!canonicalCwd.ok) {
+    return canonicalCwd;
   }
+  hardenedCwd = canonicalCwd.snapshot.cwd;
+  const approvedCwdSnapshot = canonicalCwd.snapshot;
 
   if (params.argv.length === 0) {
     return {

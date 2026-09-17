@@ -1122,6 +1122,7 @@ CREATE INDEX IF NOT EXISTS idx_delivery_queue_target
   WHERE channel IS NOT NULL AND target IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS task_runs (
+  detail_json TEXT,
   task_id TEXT NOT NULL PRIMARY KEY,
   runtime TEXT NOT NULL,
   task_kind TEXT,
@@ -1364,4 +1365,9 @@ CREATE INDEX IF NOT EXISTS idx_worktrees_repo_fingerprint
   ON worktrees(repo_fingerprint);
 
 CREATE INDEX IF NOT EXISTS idx_worktrees_removed_at
-  ON worktrees(removed_at);\n`;
+  ON worktrees(removed_at);
+
+CREATE TABLE IF NOT EXISTS config_revision_keys (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  hmac_key BLOB NOT NULL CHECK (length(hmac_key) = 32)
+);\n`;

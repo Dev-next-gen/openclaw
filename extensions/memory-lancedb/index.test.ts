@@ -37,6 +37,14 @@ import memoryPlugin, {
 import { createLanceDbRuntimeLoader } from "./lancedb-runtime.js";
 import { installTmpDirHarness } from "./test-helpers.js";
 
+function memoryRecallAuthority() {
+  return {
+    fingerprint: "test-recall",
+    allows: (name: string) => name === "memory_recall",
+    assertActive: () => {},
+  };
+}
+
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "test-key";
 type MemoryPluginTestConfig = {
   embedding?: {
@@ -665,6 +673,7 @@ describe("memory plugin e2e", () => {
       loadLanceDbModule,
       run: async (dynamicMemoryPlugin) => {
         const registeredTools: any[] = [];
+        let liveEnabled = true;
         const mockApi = {
           id: "memory-lancedb",
           name: "Memory (LanceDB)",
@@ -679,7 +688,13 @@ describe("memory plugin e2e", () => {
             autoCapture: false,
             autoRecall: false,
           },
-          runtime: {},
+          runtime: {
+            config: {
+              current: () => ({
+                plugins: { entries: { "memory-lancedb": { enabled: liveEnabled } } },
+              }),
+            },
+          },
           logger: {
             info: vi.fn(),
             warn: vi.fn(),
@@ -713,6 +728,11 @@ describe("memory plugin e2e", () => {
             limit: "3.5",
           }),
         ).rejects.toThrow("limit must be a positive integer");
+        liveEnabled = false;
+        for (const { tool } of registeredTools) {
+          await expect(tool.execute("revoked", {})).rejects.toThrow("Memory is disabled");
+        }
+        expect(embeddingsCreate).toHaveBeenCalledTimes(1);
       },
     });
   });
@@ -1024,7 +1044,10 @@ describe("memory plugin e2e", () => {
     )?.[1];
     expect(beforePromptBuild).toBeTypeOf("function");
     await expect(
-      beforePromptBuild?.({ prompt: "what editor should i use?", messages: [] }, {}),
+      beforePromptBuild?.(
+        { prompt: "what editor should i use?", messages: [] },
+        { toolAuthority: memoryRecallAuthority() },
+      ),
     ).resolves.toBeUndefined();
     expectHookRegistered(on, "agent_end");
   });
@@ -1149,6 +1172,16 @@ describe("memory plugin e2e", () => {
         )?.[1];
         expect(beforePromptBuild).toBeTypeOf("function");
 
+        for (const context of [
+          {},
+          { toolAuthority: { ...memoryRecallAuthority(), allows: () => false } },
+        ]) {
+          await expect(
+            beforePromptBuild?.({ prompt: "what editor should i use?", messages: [] }, context),
+          ).resolves.toBeUndefined();
+        }
+        expect(embeddingsCreate).not.toHaveBeenCalled();
+
         const latestUserText = `what editor should i use? ${"with a very long channel metadata tail ".repeat(10)}`;
         const expectedRecallQuery = normalizeRecallQuery(latestUserText, 120);
         const result = await beforePromptBuild?.(
@@ -1160,7 +1193,7 @@ describe("memory plugin e2e", () => {
               { role: "user", content: latestUserText },
             ],
           },
-          {},
+          { toolAuthority: memoryRecallAuthority() },
         );
 
         expect(loadLanceDbModule).toHaveBeenCalledTimes(1);
@@ -1256,7 +1289,7 @@ describe("memory plugin e2e", () => {
 
           const resultPromise = beforePromptBuild?.(
             { prompt: "what editor should i use?", messages: [] },
-            {},
+            { toolAuthority: memoryRecallAuthority() },
           );
           await vi.advanceTimersByTimeAsync(15_000);
 
@@ -1440,7 +1473,7 @@ describe("memory plugin e2e", () => {
 
       const result = await beforePromptBuild?.(
         { prompt: "what editor should i use?", messages: [] },
-        {},
+        { toolAuthority: memoryRecallAuthority() },
       );
 
       expect(loadLanceDbModule).toHaveBeenCalledTimes(1);
@@ -1569,7 +1602,7 @@ describe("memory plugin e2e", () => {
 
       const result = await beforePromptBuild?.(
         { prompt: "what editor should i use?", messages: [] },
-        {},
+        { toolAuthority: memoryRecallAuthority() },
       );
 
       expect(result).toBeUndefined();
@@ -1682,7 +1715,7 @@ describe("memory plugin e2e", () => {
 
       const result = await beforePromptBuild?.(
         { prompt: "what editor should i use after memory is removed?", messages: [] },
-        {},
+        { toolAuthority: memoryRecallAuthority() },
       );
 
       expect(result).toBeUndefined();

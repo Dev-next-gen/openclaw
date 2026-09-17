@@ -146,8 +146,7 @@ function resolveToolSource(tool: AnyAgentTool): "core" | "plugin" | "channel" {
   return "core";
 }
 
-/** Resolves, authorizes, and invokes one gateway-visible core/plugin/channel tool. */
-export async function invokeGatewayTool(params: {
+type InvokeGatewayToolParams = {
   cfg: OpenClawConfig;
   input: ToolsInvokeInput;
   messageChannel?: string;
@@ -157,7 +156,12 @@ export async function invokeGatewayTool(params: {
   senderIsOwner?: boolean;
   toolCallIdPrefix: string;
   approvalMode?: "request" | "report";
-}): Promise<ToolsInvokeOutcome> {
+  signal?: AbortSignal;
+};
+
+async function invokeGatewayToolWithSignal(
+  params: InvokeGatewayToolParams & { signal: AbortSignal },
+): Promise<ToolsInvokeOutcome> {
   const toolName = normalizeOptionalString(params.input.name ?? params.input.tool) ?? "";
   if (!toolName) {
     return {
@@ -279,7 +283,7 @@ export async function invokeGatewayTool(params: {
       status: 200,
       toolName,
       source: resolveToolSource(gatewayTool),
-      result: await gatewayTool.execute?.(toolCallId, hookResult.params),
+      result: await gatewayTool.execute?.(toolCallId, hookResult.params, params.signal),
     };
   } catch (err) {
     const inputStatus = resolveToolInputErrorStatus(err);
@@ -301,5 +305,20 @@ export async function invokeGatewayTool(params: {
       toolName,
       error: { type: "tool_error", message: "tool execution failed" },
     };
+  }
+}
+
+/** Resolves, authorizes, and invokes one gateway-visible core/plugin/channel tool. */
+export async function invokeGatewayTool(
+  params: InvokeGatewayToolParams,
+): Promise<ToolsInvokeOutcome> {
+  const requestAbort = new AbortController();
+  const signal = params.signal
+    ? AbortSignal.any([params.signal, requestAbort.signal])
+    : requestAbort.signal;
+  try {
+    return await invokeGatewayToolWithSignal({ ...params, signal });
+  } finally {
+    requestAbort.abort();
   }
 }

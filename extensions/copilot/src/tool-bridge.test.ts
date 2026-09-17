@@ -507,6 +507,7 @@ describe("createCopilotToolBridge", () => {
       const authProfileStore = { kind: "fake-store" } as never;
       const config = { agents: {} } as never;
       const onToolOutcome = vi.fn();
+      const memoryTurnProvenance = { isTainted: () => true, markTainted: vi.fn() };
 
       await createCopilotToolBridge({
         agentId: "agent-1",
@@ -515,6 +516,7 @@ describe("createCopilotToolBridge", () => {
           runId: "run-1",
           config,
           onToolOutcome,
+          memoryTurnProvenance,
         } as never,
         createOpenClawCodingTools,
         modelId: "gpt-4o",
@@ -527,6 +529,7 @@ describe("createCopilotToolBridge", () => {
       expect(opts.runId).toBe("run-1");
       expect(opts.config).toBe(config);
       expect(opts.onToolOutcome).toBe(onToolOutcome);
+      expect(opts.memoryTurnProvenance).toBe(memoryTurnProvenance);
     });
 
     it("prefers the unscoped toolAuthProfileStore when building OpenClaw tools", async () => {

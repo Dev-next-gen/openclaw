@@ -446,6 +446,7 @@ export const uk: TranslationMap = {
     pending: "{count} pending",
     allowOnce: "Allow once",
     alwaysAllow: "Always allow",
+    alwaysAllowHere: "Always allow here",
     allowAlwaysUnavailable:
       "Чинна політика схвалення вимагає схвалення щоразу, тому «Дозволяти завжди» недоступно.",
     deny: "Deny",

@@ -3331,6 +3331,10 @@ export const agentHandlers: GatewayRequestHandlers = {
               runId,
               lane: request.lane,
               modelRun: request.modelRun === true,
+              ...(client?.internal?.agentRunTracking === "plugin_subagent" &&
+              Array.isArray(client.internal.pluginSubagentToolsAllow)
+                ? { toolsAllow: [...client.internal.pluginSubagentToolsAllow] }
+                : {}),
               promptMode: request.promptMode,
               extraSystemPrompt: request.extraSystemPrompt,
               bootstrapContextMode: request.bootstrapContextMode,

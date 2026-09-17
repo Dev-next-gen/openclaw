@@ -230,6 +230,7 @@ export async function waitForWhatsAppLoginResult(params: {
   waitForConnection?: typeof waitForWaConnection;
   createSocket?: typeof createWaSocket;
   socketTiming?: WhatsAppSocketTimingOptions;
+  beforeCredentialPersistence?: () => Promise<void>;
   onQr?: (qr: string) => void;
   onSocketReplaced?: (sock: WaSocket) => void;
 }): Promise<WhatsAppLoginWaitResult> {
@@ -251,6 +252,7 @@ export async function waitForWhatsAppLoginResult(params: {
         authDir: params.authDir,
         ...params.socketTiming,
         onQr: params.onQr,
+        beforeCredentialPersistence: params.beforeCredentialPersistence,
       });
       params.onSocketReplaced?.(currentSock);
       return null;
@@ -322,6 +324,7 @@ export async function waitForWhatsAppLoginResult(params: {
           authDir: params.authDir,
           isLegacyAuthDir: params.isLegacyAuthDir,
           runtime: params.runtime,
+          beforeCredentialPersistence: params.beforeCredentialPersistence,
         });
         if (!cleared) {
           const existingAuth = await readWebAuthExistsForDecision(params.authDir);

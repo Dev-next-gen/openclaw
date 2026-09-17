@@ -1,8 +1,7 @@
+import fs from "node:fs/promises";
 // Read/write/edit tool wrappers for host and sandbox workspaces.
 // Adds workspace-root guards, adaptive read paging, image validation, memory
 // append-only writes, and parameter cleanup around the session file tools.
-
-import fs from "node:fs/promises";
 import path from "node:path";
 import { URL } from "node:url";
 import { detectMime } from "@openclaw/media-core/mime";
@@ -34,6 +33,10 @@ import {
 } from "./agent-tools.params.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
 import type { ImageSanitizationLimits } from "./image-sanitization.js";
+import {
+  withMemoryWriteProvenance,
+  type MemoryWriteProvenanceObserver,
+} from "./memory-write-provenance.js";
 import { toRelativeWorkspacePath } from "./path-policy.js";
 import type { AgentToolResult } from "./runtime/index.js";
 import { assertSandboxPath } from "./sandbox-paths.js";
@@ -548,6 +551,7 @@ export function resolveToolPathAgainstWorkspaceRoot(params: {
 }
 
 type MemoryFlushAppendOnlyWriteOptions = {
+  memoryWriteProvenance?: MemoryWriteProvenanceObserver;
   root: string;
   relativePath: string;
   containerWorkdir?: string;
@@ -672,14 +676,33 @@ export function wrapToolMemoryFlushAppendOnlyWrite(
         );
       }
 
-      await appendMemoryFlushContent({
-        absolutePath: allowedAbsolutePath,
-        root: options.root,
-        relativePath: options.relativePath,
-        content,
-        sandbox: options.sandbox,
-        signal,
-      });
+      const commit = () =>
+        appendMemoryFlushContent({
+          absolutePath: allowedAbsolutePath,
+          root: options.root,
+          relativePath: options.relativePath,
+          content,
+          sandbox: options.sandbox,
+          signal,
+        });
+      if (options.memoryWriteProvenance) {
+        const contentBefore = await readOptionalUtf8File({
+          absolutePath: allowedAbsolutePath,
+          relativePath: options.relativePath,
+          sandbox: options.sandbox,
+          signal,
+        });
+        const separator =
+          contentBefore && !contentBefore.endsWith("\n") && !content.startsWith("\n") ? "\n" : "";
+        await options.memoryWriteProvenance.write({
+          absolutePath: allowedAbsolutePath,
+          contentBefore,
+          contentAfter: `${contentBefore}${separator}${content}`,
+          commit,
+        });
+      } else {
+        await commit();
+      }
       return {
         content: [{ type: "text", text: `Appended content to ${options.relativePath}.` }],
         details: {
@@ -824,6 +847,7 @@ export function wrapToolWorkspaceRootGuardWithOptions(
 }
 
 type SandboxToolParams = {
+  memoryWriteProvenance?: MemoryWriteProvenanceObserver;
   root: string;
   bridge: SandboxFsBridge;
   modelContextWindowTokens?: number;
@@ -844,7 +868,10 @@ export function createSandboxedReadTool(params: SandboxToolParams) {
 /** Create a sandbox-backed write tool with required-parameter validation. */
 export function createSandboxedWriteTool(params: SandboxToolParams) {
   const base = createWriteTool(params.root, {
-    operations: createSandboxWriteOperations(params),
+    operations: withMemoryWriteProvenance(
+      createSandboxWriteOperations(params),
+      params.memoryWriteProvenance,
+    ),
   }) as unknown as AnyAgentTool;
   return wrapToolParamValidation(base, REQUIRED_PARAM_GROUPS.write);
 }
@@ -852,23 +879,38 @@ export function createSandboxedWriteTool(params: SandboxToolParams) {
 /** Create a sandbox-backed edit tool with required-parameter validation. */
 export function createSandboxedEditTool(params: SandboxToolParams) {
   const base = createEditTool(params.root, {
-    operations: createSandboxEditOperations(params),
+    operations: withMemoryWriteProvenance(
+      createSandboxEditOperations(params),
+      params.memoryWriteProvenance,
+    ),
   }) as unknown as AnyAgentTool;
   return wrapToolParamValidation(base, REQUIRED_PARAM_GROUPS.edit);
 }
 
 /** Create a host workspace write tool using guarded filesystem operations. */
-export function createHostWorkspaceWriteTool(root: string, options?: { workspaceOnly?: boolean }) {
+export function createHostWorkspaceWriteTool(
+  root: string,
+  options?: { workspaceOnly?: boolean; memoryWriteProvenance?: MemoryWriteProvenanceObserver },
+) {
   const base = createWriteTool(root, {
-    operations: createHostWriteOperations(root, options),
+    operations: withMemoryWriteProvenance(
+      createHostWriteOperations(root, options),
+      options?.memoryWriteProvenance,
+    ),
   }) as unknown as AnyAgentTool;
   return wrapToolParamValidation(base, REQUIRED_PARAM_GROUPS.write);
 }
 
 /** Create a host workspace edit tool using guarded filesystem operations. */
-export function createHostWorkspaceEditTool(root: string, options?: { workspaceOnly?: boolean }) {
+export function createHostWorkspaceEditTool(
+  root: string,
+  options?: { workspaceOnly?: boolean; memoryWriteProvenance?: MemoryWriteProvenanceObserver },
+) {
   const base = createEditTool(root, {
-    operations: createHostEditOperations(root, options),
+    operations: withMemoryWriteProvenance(
+      createHostEditOperations(root, options),
+      options?.memoryWriteProvenance,
+    ),
   }) as unknown as AnyAgentTool;
   return wrapToolParamValidation(base, REQUIRED_PARAM_GROUPS.edit);
 }
@@ -1012,7 +1054,10 @@ async function writeWorkspaceFile(
   await (await getRoot()).write(relative, content, { mkdir: true });
 }
 
-function createHostWriteOperations(root: string, options?: { workspaceOnly?: boolean }) {
+function createHostWriteOperations(
+  root: string,
+  options?: { workspaceOnly?: boolean; memoryWriteProvenance?: MemoryWriteProvenanceObserver },
+) {
   const workspaceOnly = options?.workspaceOnly ?? false;
 
   if (!workspaceOnly) {
@@ -1056,7 +1101,10 @@ function createHostWriteOperations(root: string, options?: { workspaceOnly?: boo
   } as const;
 }
 
-function createHostEditOperations(root: string, options?: { workspaceOnly?: boolean }) {
+function createHostEditOperations(
+  root: string,
+  options?: { workspaceOnly?: boolean; memoryWriteProvenance?: MemoryWriteProvenanceObserver },
+) {
   const workspaceOnly = options?.workspaceOnly ?? false;
 
   if (!workspaceOnly) {

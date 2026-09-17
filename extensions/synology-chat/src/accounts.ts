@@ -11,7 +11,10 @@ import {
 } from "openclaw/plugin-sdk/account-resolution";
 import { resolveDangerousNameMatchingEnabled } from "openclaw/plugin-sdk/dangerous-name-runtime";
 import { parseStrictInteger } from "openclaw/plugin-sdk/number-runtime";
-import { normalizeStringEntries } from "openclaw/plugin-sdk/string-coerce-runtime";
+import {
+  normalizeOptionalString,
+  normalizeStringEntries,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 import type {
   SynologyChatChannelConfig,
   ResolvedSynologyChatAccount,
@@ -141,6 +144,12 @@ export function resolveAccount(
     enabled: merged.enabled ?? true,
     token: merged.token ?? envToken,
     incomingUrl: merged.incomingUrl ?? envIncomingUrl,
+    // The public callback is an exact per-route mapping. A named account with
+    // its own webhookPath must not silently publish capabilities on the base route.
+    webhookUrl:
+      normalizeOptionalString(
+        id === DEFAULT_ACCOUNT_ID ? merged.webhookUrl : rawAccount.webhookUrl,
+      ) ?? "",
     nasHost: merged.nasHost ?? envNasHost,
     webhookPath: merged.webhookPath ?? "/webhook/synology",
     webhookPathSource,

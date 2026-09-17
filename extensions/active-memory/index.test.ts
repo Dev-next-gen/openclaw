@@ -203,7 +203,15 @@ describe("active-memory plugin", () => {
       registeredCommands[command.name] = command;
     }),
     on: vi.fn((hookName: string, handler: Function, opts?: Record<string, unknown>) => {
-      hooks[hookName] = handler;
+      hooks[hookName] = (event: unknown, context: Record<string, unknown>) =>
+        handler(event, {
+          toolAuthority: {
+            fingerprint: "test-active-surface",
+            allows: () => true,
+            assertActive: () => {},
+          },
+          ...context,
+        });
       hookOptions[hookName] = opts;
     }),
   };
@@ -435,6 +443,24 @@ describe("active-memory plugin", () => {
       stateDir = "";
     }
   });
+
+  it.each([undefined, { fingerprint: "denied", allows: () => false, assertActive: () => {} }])(
+    "does not start recall without host-authorized tools",
+    async (toolAuthority) => {
+      const result = await hooks.before_prompt_build(
+        { prompt: "remember my preferences", messages: [] },
+        {
+          agentId: "main",
+          trigger: "user",
+          sessionKey: "agent:main:main",
+          messageProvider: "webchat",
+          toolAuthority,
+        },
+      );
+      expect(result).toBeUndefined();
+      expect(runEmbeddedAgent).not.toHaveBeenCalled();
+    },
+  );
 
   it("registers a before_prompt_build hook", () => {
     const [hookName, handler, options] = firstHookRegistration();

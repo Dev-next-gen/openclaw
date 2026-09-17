@@ -149,7 +149,6 @@ function collectStructuredAttachmentSources(
           readStringParam(attachment, "contentType") ?? readStringParam(attachment, "mimeType"),
         filename: readStringParam(attachment, "filename") ?? readStringParam(attachment, "name"),
       });
-      break;
     }
   }
   return sources;

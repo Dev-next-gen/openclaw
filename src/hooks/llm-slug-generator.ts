@@ -111,6 +111,9 @@ Reply with ONLY the slug, nothing else. Examples: "vendor-pitch", "api-design", 
       model,
       timeoutMs,
       runId: `slug-gen-${Date.now()}`,
+      // Conversation-derived utility input cannot regain caller-denied capabilities.
+      disableTools: true,
+      toolsAllow: [],
       cleanupBundleMcpOnRunEnd: true,
       // Internal helper run: route failures lane-local so an upstream 400/billing
       // here cannot poison the shared profile (#71709).

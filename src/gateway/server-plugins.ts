@@ -249,6 +249,7 @@ function resolveRequestedFallbackModelRef(params: {
 function createSyntheticOperatorClient(params?: {
   allowModelOverride?: boolean;
   agentRunTracking?: "plugin_subagent";
+  pluginSubagentToolsAllow?: string[];
   pluginRuntimeOwnerId?: string;
   scopes?: string[];
 }): GatewayRequestOptions["client"] {
@@ -272,6 +273,9 @@ function createSyntheticOperatorClient(params?: {
     internal: {
       allowModelOverride: params?.allowModelOverride === true,
       ...(params?.agentRunTracking ? { agentRunTracking: params.agentRunTracking } : {}),
+      ...(params?.pluginSubagentToolsAllow
+        ? { pluginSubagentToolsAllow: [...params.pluginSubagentToolsAllow] }
+        : {}),
       ...(params?.scopes?.includes(APPROVALS_SCOPE) ? { approvalRuntime: true } : {}),
       ...(pluginRuntimeOwnerId ? { pluginRuntimeOwnerId } : {}),
     },
@@ -337,6 +341,7 @@ function mergeGatewayClientInternal(
 type DispatchGatewayMethodInProcessOptions = {
   allowSyntheticModelOverride?: boolean;
   agentRunTracking?: "plugin_subagent";
+  pluginSubagentToolsAllow?: string[];
   disableSyntheticClient?: boolean;
   expectFinal?: boolean;
   forceSyntheticClient?: boolean;
@@ -451,6 +456,7 @@ export async function dispatchGatewayMethodInProcessRaw(
   const syntheticClient = createSyntheticOperatorClient({
     allowModelOverride: options?.allowSyntheticModelOverride === true,
     agentRunTracking: options?.agentRunTracking,
+    pluginSubagentToolsAllow: options?.pluginSubagentToolsAllow,
     ...(pluginRuntimeOwnerId ? { pluginRuntimeOwnerId } : {}),
     scopes: options?.syntheticScopes,
   });
@@ -459,6 +465,9 @@ export async function dispatchGatewayMethodInProcessRaw(
     pluginRuntimeOwnerId || options?.agentRunTracking
       ? {
           ...(options?.agentRunTracking ? { agentRunTracking: options.agentRunTracking } : {}),
+          ...(options?.pluginSubagentToolsAllow
+            ? { pluginSubagentToolsAllow: [...options.pluginSubagentToolsAllow] }
+            : {}),
           ...(pluginRuntimeOwnerId ? { pluginRuntimeOwnerId } : {}),
         }
       : undefined,
@@ -653,6 +662,7 @@ export function createGatewaySubagentRuntime(): PluginRuntime["subagent"] {
         {
           allowSyntheticModelOverride,
           agentRunTracking: "plugin_subagent",
+          ...(params.disableTools === true ? { pluginSubagentToolsAllow: [] } : {}),
           ...(pluginId ? { pluginRuntimeOwnerId: pluginId } : {}),
         },
       );

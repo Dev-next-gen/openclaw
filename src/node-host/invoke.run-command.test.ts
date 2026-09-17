@@ -1,5 +1,12 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  captureApprovedCwdSnapshotSync,
+  ApprovedCwdDriftError,
+} from "../infra/system-run-cwd-binding.js";
+import { withTempDir } from "../test-utils/temp-dir.js";
 import { testing } from "./invoke.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -34,6 +41,22 @@ describe("runCommand", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+  });
+
+  it("rejects directory replacement at the final spawn boundary", async () => {
+    await withTempDir("node-exec-cwd-", async (root) => {
+      const canonicalRoot = await fs.realpath(root);
+      const cwd = path.join(canonicalRoot, "work");
+      await fs.mkdir(cwd);
+      const captured = captureApprovedCwdSnapshotSync(cwd);
+      if (!captured.ok) throw new Error(captured.message);
+      await fs.rename(cwd, path.join(canonicalRoot, "original"));
+      await fs.mkdir(cwd);
+      await expect(
+        testing.runCommand(["echo", "never"], cwd, undefined, undefined, captured.snapshot),
+      ).rejects.toBeInstanceOf(ApprovedCwdDriftError);
+      expect(spawn).not.toHaveBeenCalled();
+    });
   });
 
   it.each(["stdout", "stderr"] as const)(

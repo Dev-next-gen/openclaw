@@ -7,6 +7,7 @@ import {
   pluginStateClear,
   pluginStateConsume,
   pluginStateDelete,
+  pluginStateDeleteIf,
   pluginStateEntries,
   pluginStateLookup,
   pluginStateRegister,
@@ -449,6 +450,16 @@ function createSyncKeyedStoreForPluginId<T>(
         pluginId,
         namespace,
         key: normalizedKey,
+        ...(env ? { env } : {}),
+      });
+    },
+    deleteIf(key, predicate) {
+      const normalizedKey = validateKey(key, "delete");
+      return pluginStateDeleteIf({
+        pluginId,
+        namespace,
+        key: normalizedKey,
+        predicate: (current) => predicate(current as T),
         ...(env ? { env } : {}),
       });
     },

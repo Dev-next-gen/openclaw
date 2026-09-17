@@ -123,7 +123,7 @@ vi.mock("openclaw/plugin-sdk/webhook-ingress", async () => {
 
 vi.mock("./client.js", () => ({
   sendMessage: vi.fn().mockResolvedValue(true),
-  sendFileUrl: vi.fn().mockResolvedValue(true),
+  sendHostedFileUrl: vi.fn().mockResolvedValue({ status: "accepted" }),
   resolveLegacyWebhookNameToChatUserId: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -174,4 +174,12 @@ vi.mock("./runtime.js", () => ({
     },
   })),
   setSynologyRuntime: vi.fn(),
+}));
+
+vi.mock("./outbound-media.js", () => ({
+  tryHandleSynologyHostedMediaRequest: vi.fn(async () => false),
+  prepareSynologyHostedMedia: vi.fn(async () => ({
+    url: "https://gateway.example.com/w?capability=secret",
+    cleanup: vi.fn(async () => {}),
+  })),
 }));

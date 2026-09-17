@@ -2,12 +2,13 @@
 import type { AcpRuntime, AcpRuntimeHandle } from "@openclaw/acp-core/runtime/types";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
-  type AcpRuntimeError,
+  AcpRuntimeError,
   toAcpRuntimeError,
   withAcpRuntimeErrorBoundary,
 } from "../runtime/errors.js";
 import type {
   ActiveTurnState,
+  AcpSessionManagerDeps,
   EnsureManagerRuntimeHandle,
   ResolveManagerSession,
   SetManagerSessionState,
@@ -20,6 +21,10 @@ export async function runManagerCancelSession(params: {
   cfg: OpenClawConfig;
   sessionKey: string;
   reason?: string;
+  expectedRunId?: string;
+  expectedInstanceId?: string;
+  expectedOwnerKey?: string;
+  readSessionEntry: AcpSessionManagerDeps["readSessionEntry"];
   activeTurnBySession: Map<string, ActiveTurnState>;
   withSessionActor: WithManagerSessionActor;
   resolveSession: ResolveManagerSession;
@@ -28,15 +33,49 @@ export async function runManagerCancelSession(params: {
 }): Promise<void> {
   const actorKey = normalizeActorKey(params.sessionKey);
   const activeTurn = params.activeTurnBySession.get(actorKey);
+  const expectedRunId = params.expectedRunId?.trim();
+  const expectedInstanceId = params.expectedInstanceId?.trim();
+  const expectedOwnerKey = params.expectedOwnerKey?.trim();
+  const requireExpectedTurn = (current: ActiveTurnState | undefined) => {
+    if (
+      (expectedRunId && current?.requestId !== expectedRunId) ||
+      (expectedInstanceId && current?.instanceId !== expectedInstanceId)
+    ) {
+      throw new AcpRuntimeError("ACP_TURN_FAILED", "ACP task is no longer the active run.");
+    }
+    return current;
+  };
+  const requireExpectedOwner = () => {
+    if (!expectedOwnerKey) {
+      return;
+    }
+    const entry = params.readSessionEntry({
+      cfg: params.cfg,
+      sessionKey: params.sessionKey,
+    })?.entry;
+    const ownerKey = entry?.spawnedBy?.trim() || entry?.parentSessionKey?.trim();
+    if (ownerKey !== expectedOwnerKey) {
+      throw new AcpRuntimeError("ACP_TURN_FAILED", "ACP task owner could not be verified.");
+    }
+  };
+  requireExpectedTurn(activeTurn);
   if (activeTurn) {
-    await cancelActiveTurn({
+    await cancelManagerActiveTurn({
       activeTurn,
       reason: params.reason,
+      revalidate: () => {
+        requireExpectedTurn(params.activeTurnBySession.get(actorKey));
+        requireExpectedOwner();
+      },
     });
     return;
   }
 
   await params.withSessionActor(params.sessionKey, async () => {
+    // The actor wait may admit queued work. Recheck exact authority only after
+    // that wait, immediately before the idle-handle cancellation boundary.
+    requireExpectedTurn(params.activeTurnBySession.get(actorKey));
+    requireExpectedOwner();
     const resolution = params.resolveSession({
       cfg: params.cfg,
       sessionKey: params.sessionKey,
@@ -47,6 +86,8 @@ export async function runManagerCancelSession(params: {
       sessionKey: params.sessionKey,
       meta: resolvedMeta,
     });
+    requireExpectedTurn(params.activeTurnBySession.get(actorKey));
+    requireExpectedOwner();
     try {
       await cancelRuntimeHandle({
         runtime,
@@ -72,10 +113,13 @@ export async function runManagerCancelSession(params: {
   });
 }
 
-async function cancelActiveTurn(params: {
+/** Aborts and deduplicates runtime cancellation for one active manager turn. */
+export async function cancelManagerActiveTurn(params: {
   activeTurn: ActiveTurnState;
   reason?: string;
+  revalidate?: () => void;
 }): Promise<void> {
+  params.revalidate?.();
   params.activeTurn.abortController.abort();
   if (!params.activeTurn.cancelPromise) {
     params.activeTurn.cancelPromise = params.activeTurn.runtime.cancel({

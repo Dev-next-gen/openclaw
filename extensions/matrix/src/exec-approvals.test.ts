@@ -482,4 +482,35 @@ describe("matrix exec approvals", () => {
       }),
     ).toBe(false);
   });
+  it("requires an exact Matrix id for exec approval authorization", () => {
+    const cfg = buildConfig({ enabled: true, approvers: ["user:@\u212A:example.org"] });
+
+    expect(isMatrixExecApprovalAuthorizedSender({ cfg, senderId: "@\u212A:example.org" })).toBe(
+      true,
+    );
+    expect(isMatrixExecApprovalAuthorizedSender({ cfg, senderId: "@k:example.org" })).toBe(false);
+  });
+  it("requires an exact Matrix id for approval target recipients", () => {
+    const cfg = {
+      channels: {
+        matrix: {
+          homeserver: "https://matrix.example.org",
+          userId: "@bot:example.org",
+          accessToken: "tok",
+        },
+      },
+      approvals: {
+        exec: {
+          enabled: true,
+          mode: "targets",
+          targets: [{ channel: "matrix", to: "user:@\u212A:example.org" }],
+        },
+      },
+    } as OpenClawConfig;
+
+    expect(isMatrixExecApprovalAuthorizedSender({ cfg, senderId: "@\u212A:example.org" })).toBe(
+      true,
+    );
+    expect(isMatrixExecApprovalAuthorizedSender({ cfg, senderId: "@k:example.org" })).toBe(false);
+  });
 });

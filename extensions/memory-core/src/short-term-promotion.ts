@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
+import { isMemoryArtifactEligibleForAutomaticContext } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import type { MemorySearchResult } from "openclaw/plugin-sdk/memory-core-host-runtime-files";
 import {
   DEFAULT_MEMORY_DEEP_DREAMING_MAX_PROMOTED_SNIPPET_TOKENS,
@@ -1296,10 +1297,19 @@ export async function loadShortTermPromotionDreamingStats(params: {
   };
 }
 
-async function shortTermRecallSourceIsFile(sourcePath: string): Promise<boolean> {
+async function shortTermRecallSourceIsFile(
+  workspaceDir: string,
+  sourcePath: string,
+): Promise<boolean> {
   try {
     const stat = await fs.stat(sourcePath);
-    return stat.isFile();
+    return (
+      stat.isFile() &&
+      (await isMemoryArtifactEligibleForAutomaticContext({
+        workspaceDir,
+        relativePath: path.relative(workspaceDir, sourcePath).replaceAll(path.sep, "/"),
+      }))
+    );
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       return false;
@@ -1322,7 +1332,7 @@ export async function filterLiveShortTermRecallEntries(params: {
     if (existing) {
       return existing;
     }
-    const check = shortTermRecallSourceIsFile(sourcePath);
+    const check = shortTermRecallSourceIsFile(workspaceDir, sourcePath);
     sourceFileChecks.set(sourcePath, check);
     return check;
   };
@@ -2289,6 +2299,16 @@ async function rehydratePromotionCandidate(
         continue;
       }
       throw err;
+    }
+
+    if (
+      !(await isMemoryArtifactEligibleForAutomaticContext({
+        workspaceDir,
+        relativePath: path.relative(workspaceDir, sourcePath).replaceAll(path.sep, "/"),
+        content: rawSource,
+      }))
+    ) {
+      continue;
     }
 
     const lines = rawSource.split(/\r?\n/);

@@ -16,6 +16,7 @@ import type {
 export const SUBAGENT_KILL_TASK_ERROR = "Subagent run killed.";
 
 export type DetachedTaskCreateParams = {
+  detail?: TaskRecord["detail"];
   runtime: TaskRuntime;
   taskKind?: string;
   sourceId?: string;

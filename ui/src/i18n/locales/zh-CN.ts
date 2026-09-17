@@ -443,6 +443,7 @@ export const zh_CN: TranslationMap = {
     pending: "{count} 个待处理",
     allowOnce: "允许一次",
     alwaysAllow: "始终允许",
+    alwaysAllowHere: "Always allow here",
     allowAlwaysUnavailable: "有效的批准策略要求每次都批准，因此“始终允许”不可用。",
     deny: "拒绝",
     labels: {

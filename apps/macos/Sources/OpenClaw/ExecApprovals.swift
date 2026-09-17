@@ -119,6 +119,8 @@ struct ExecAllowlistRejectedEntry: Equatable {
 struct ExecAllowlistEntry: Codable, Hashable, Identifiable {
     var id: UUID
     var pattern: String
+    var source: String?
+    var argPattern: String?
     var lastUsedAt: Double?
     var lastUsedCommand: String?
     var lastResolvedPath: String?
@@ -126,12 +128,16 @@ struct ExecAllowlistEntry: Codable, Hashable, Identifiable {
     init(
         id: UUID = UUID(),
         pattern: String,
+        source: String? = nil,
+        argPattern: String? = nil,
         lastUsedAt: Double? = nil,
         lastUsedCommand: String? = nil,
         lastResolvedPath: String? = nil)
     {
         self.id = id
         self.pattern = pattern
+        self.source = source
+        self.argPattern = argPattern
         self.lastUsedAt = lastUsedAt
         self.lastUsedCommand = lastUsedCommand
         self.lastResolvedPath = lastResolvedPath
@@ -140,6 +146,8 @@ struct ExecAllowlistEntry: Codable, Hashable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case id
         case pattern
+        case source
+        case argPattern
         case lastUsedAt
         case lastUsedCommand
         case lastResolvedPath
@@ -149,6 +157,8 @@ struct ExecAllowlistEntry: Codable, Hashable, Identifiable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         self.pattern = try container.decode(String.self, forKey: .pattern)
+        self.source = try container.decodeIfPresent(String.self, forKey: .source)
+        self.argPattern = try container.decodeIfPresent(String.self, forKey: .argPattern)
         self.lastUsedAt = try container.decodeIfPresent(Double.self, forKey: .lastUsedAt)
         self.lastUsedCommand = try container.decodeIfPresent(String.self, forKey: .lastUsedCommand)
         self.lastResolvedPath = try container.decodeIfPresent(String.self, forKey: .lastResolvedPath)
@@ -158,6 +168,8 @@ struct ExecAllowlistEntry: Codable, Hashable, Identifiable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(self.id, forKey: .id)
         try container.encode(self.pattern, forKey: .pattern)
+        try container.encodeIfPresent(self.source, forKey: .source)
+        try container.encodeIfPresent(self.argPattern, forKey: .argPattern)
         try container.encodeIfPresent(self.lastUsedAt, forKey: .lastUsedAt)
         try container.encodeIfPresent(self.lastUsedCommand, forKey: .lastUsedCommand)
         try container.encodeIfPresent(self.lastResolvedPath, forKey: .lastResolvedPath)
@@ -687,7 +699,7 @@ enum ExecApprovalsStore {
     }
 
     @discardableResult
-    static func addAllowlistEntry(agentId: String?, pattern: String) -> ExecAllowlistPatternValidationReason? {
+    static func addAllowlistEntry(agentId: String?, pattern: String, source: String? = nil, argPattern: String? = nil) -> ExecAllowlistPatternValidationReason? {
         let normalizedPattern: String
         switch ExecApprovalHelpers.validateAllowlistPattern(pattern) {
         case let .valid(validPattern):
@@ -701,15 +713,38 @@ enum ExecApprovalsStore {
             var agents = file.agents ?? [:]
             var entry = agents[key] ?? ExecApprovalsAgent()
             var allowlist = entry.allowlist ?? []
-            if allowlist.contains(where: { $0.pattern == normalizedPattern }) { return }
+            if allowlist.contains(where: { $0.pattern == normalizedPattern && $0.source == source && $0.argPattern == argPattern }) { return }
             allowlist.append(ExecAllowlistEntry(
                 pattern: normalizedPattern,
+                source: source,
+                argPattern: argPattern,
                 lastUsedAt: Date().timeIntervalSince1970 * 1000))
             entry.allowlist = allowlist
             agents[key] = entry
             file.agents = agents
         }
         return nil
+    }
+
+    @discardableResult
+    static func removeObsoleteGeneratedAllowAlwaysEntries() -> Int {
+        var removed = 0
+        self.updateFile { file in
+            guard var agents = file.agents else { return }
+            for key in agents.keys {
+                guard var agent = agents[key] else { continue }
+                agent.allowlist = (agent.allowlist ?? []).filter { entry in
+                    let obsolete = entry.source == "allow-always" &&
+                        !entry.pattern.hasPrefix("=command:") && !entry.pattern.hasPrefix("=node-command:") &&
+                        entry.argPattern?.hasPrefix("sha256:cwd-argv:v1:") != true
+                    if obsolete { removed += 1 }
+                    return !obsolete
+                }
+                agents[key] = agent
+            }
+            file.agents = agents
+        }
+        return removed
     }
 
     static func recordAllowlistUse(
@@ -727,6 +762,8 @@ enum ExecApprovalsStore {
                 return ExecAllowlistEntry(
                     id: item.id,
                     pattern: item.pattern,
+                    source: item.source,
+                    argPattern: item.argPattern,
                     lastUsedAt: Date().timeIntervalSince1970 * 1000,
                     lastUsedCommand: command,
                     lastResolvedPath: resolvedPath)
@@ -862,6 +899,8 @@ enum ExecApprovalsStore {
             return ExecAllowlistEntry(
                 id: entry.id,
                 pattern: migratedPattern,
+                source: entry.source,
+                argPattern: entry.argPattern,
                 lastUsedAt: entry.lastUsedAt,
                 lastUsedCommand: entry.lastUsedCommand,
                 lastResolvedPath: normalizedResolved)
@@ -872,6 +911,8 @@ enum ExecApprovalsStore {
             return ExecAllowlistEntry(
                 id: entry.id,
                 pattern: pattern,
+                source: entry.source,
+                argPattern: entry.argPattern,
                 lastUsedAt: entry.lastUsedAt,
                 lastUsedCommand: entry.lastUsedCommand,
                 lastResolvedPath: normalizedResolved)
@@ -881,6 +922,8 @@ enum ExecApprovalsStore {
                 return ExecAllowlistEntry(
                     id: entry.id,
                     pattern: migratedPattern,
+                    source: entry.source,
+                    argPattern: entry.argPattern,
                     lastUsedAt: entry.lastUsedAt,
                     lastUsedCommand: entry.lastUsedCommand,
                     lastResolvedPath: normalizedResolved)
@@ -888,6 +931,8 @@ enum ExecApprovalsStore {
                 return ExecAllowlistEntry(
                     id: entry.id,
                     pattern: trimmedPattern,
+                    source: entry.source,
+                    argPattern: entry.argPattern,
                     lastUsedAt: entry.lastUsedAt,
                     lastUsedCommand: entry.lastUsedCommand,
                     lastResolvedPath: normalizedResolved)
@@ -915,6 +960,8 @@ enum ExecApprovalsStore {
                     ExecAllowlistEntry(
                         id: migrated.id,
                         pattern: pattern,
+                        source: migrated.source,
+                        argPattern: migrated.argPattern,
                         lastUsedAt: migrated.lastUsedAt,
                         lastUsedCommand: migrated.lastUsedCommand,
                         lastResolvedPath: normalizedResolvedPath))
@@ -930,6 +977,8 @@ enum ExecApprovalsStore {
                         ExecAllowlistEntry(
                             id: migrated.id,
                             pattern: trimmedPattern,
+                            source: migrated.source,
+                            argPattern: migrated.argPattern,
                             lastUsedAt: migrated.lastUsedAt,
                             lastUsedCommand: migrated.lastUsedCommand,
                             lastResolvedPath: normalizedResolvedPath))
@@ -949,7 +998,9 @@ enum ExecApprovalsStore {
         var seen = Set<String>()
         var allowlist: [ExecAllowlistEntry] = []
         func append(_ entry: ExecAllowlistEntry) {
-            guard let key = self.normalizedPattern(entry.pattern), !seen.contains(key) else {
+            guard let pattern = self.normalizedPattern(entry.pattern) else { return }
+            let key = "\(pattern)\0\(entry.source ?? "")\0\(entry.argPattern ?? "")"
+            guard !seen.contains(key) else {
                 return
             }
             seen.insert(key)

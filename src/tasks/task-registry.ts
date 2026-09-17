@@ -1,12 +1,14 @@
 // Coordinates task registry creation, updates, delivery state, and snapshots.
 import crypto from "node:crypto";
 import { createRequire } from "node:module";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import {
   buildAgentRunTerminalOutcome,
   type AgentRunTerminalOutcome,
 } from "../agents/agent-run-terminal-outcome.js";
+import { subagentRuns } from "../agents/subagent-registry-memory.js";
 import { shouldRouteCompletionThroughRequesterSession } from "../auto-reply/reply/completion-delivery-policy.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { onAgentEvent } from "../infra/agent-events.js";
@@ -32,7 +34,7 @@ import {
   shouldSuppressDuplicateTerminalDelivery,
   shouldUseParentReviewTaskTerminalMessage,
 } from "./task-executor-policy.js";
-import type { TaskFlowRecord } from "./task-flow-registry.types.js";
+import type { JsonValue, TaskFlowRecord } from "./task-flow-registry.types.js";
 import {
   getTaskFlowById,
   syncFlowFromTaskResult,
@@ -206,7 +208,10 @@ function assertParentFlowLinkAllowed(params: {
 }
 
 function cloneTaskRecord(record: TaskRecord): TaskRecord {
-  return { ...record };
+  return {
+    ...record,
+    ...(record.detail !== undefined ? { detail: structuredClone(record.detail) } : {}),
+  };
 }
 
 function normalizeTaskTimestamps(task: TaskRecord): TaskRecord {
@@ -880,10 +885,9 @@ function findExistingTaskForCreate(params: {
         ) {
           return false;
         }
-        if (params.runtime === "acp") {
-          // ACP one-task flow ids can be derived after creation; they must not
-          // split one logical ACP run into duplicate task rows.
-          return true;
+        if (params.runtime === "acp" && !params.parentFlowId?.trim()) {
+          const existingFlowId = task.parentFlowId?.trim();
+          return !existingFlowId || getTaskFlowById(existingFlowId)?.syncMode === "task_mirrored";
         }
         return (
           (normalizeOptionalString(task.parentFlowId) ?? "") ===
@@ -925,11 +929,15 @@ function mergeExistingTaskForCreate(
     label?: string;
     task: string;
     preferMetadata?: boolean;
+    detail?: JsonValue;
     deliveryStatus?: TaskDeliveryStatus;
     notifyPolicy?: TaskNotifyPolicy;
   },
 ): TaskRecord | null {
   const patch: Partial<TaskRecord> = {};
+  if (params.detail !== undefined) {
+    patch.detail = structuredClone(params.detail);
+  }
   const requesterOrigin = normalizeDeliveryContext(params.requesterOrigin);
   const currentDeliveryState = taskDeliveryStates.get(existing.taskId);
   if (requesterOrigin && !currentDeliveryState?.requesterOrigin) {
@@ -1692,6 +1700,9 @@ function updateTasksByRunId(params: {
   }
   const updated: TaskRecord[] = [];
   for (const match of matches) {
+    if (!hasAuthoritativeTaskBacking(match)) {
+      continue;
+    }
     const task = updateTask(match.taskId, params.patch);
     if (task) {
       updated.push(task);
@@ -1716,7 +1727,7 @@ function ensureListener() {
     }
     const now = evt.ts || Date.now();
     for (const current of scopedTasks) {
-      if (isTerminalTaskStatus(current.status)) {
+      if (isTerminalTaskStatus(current.status) || !hasAuthoritativeTaskBacking(current)) {
         continue;
       }
       const patch: Partial<TaskRecord> = {
@@ -1791,6 +1802,7 @@ function ensureListener() {
 }
 
 export function createTaskRecord(params: {
+  detail?: JsonValue;
   runtime: TaskRuntime;
   taskKind?: string;
   sourceId?: string;
@@ -1878,6 +1890,7 @@ export function createTaskRecord(params: {
   const lastEventAt = params.lastEventAt ?? params.startedAt ?? now;
   const record: TaskRecord = normalizeTaskTimestamps({
     taskId,
+    ...(params.detail !== undefined ? { detail: structuredClone(params.detail) } : {}),
     runtime: params.runtime,
     taskKind: normalizeOptionalString(params.taskKind),
     sourceId: normalizeOptionalString(params.sourceId),
@@ -1960,6 +1973,9 @@ function updateTaskStateByRunId(params: {
   }
   const updated: TaskRecord[] = [];
   for (const current of matches) {
+    if (!hasAuthoritativeTaskBacking(current)) {
+      continue;
+    }
     const patch: Partial<TaskRecord> = {};
     const nextStatus = params.status ? normalizeTaskStatus(params.status) : current.status;
     if (
@@ -2219,6 +2235,15 @@ export async function cancelTaskById(params: {
   }
   const childSessionKey = task.childSessionKey?.trim();
   try {
+    if (!hasAuthoritativeTaskBacking(task)) {
+      return {
+        found: true,
+        cancelled: false,
+        reason: "Task backing ownership could not be verified.",
+        task: cloneTaskRecord(task),
+      };
+    }
+    const managedBacking = getManagedTaskBackingInstance(task);
     // A direct kill is only a provisional terminal projection. Re-read the
     // owning subagent run before promotion so its canonical completion can win.
     if (task.runtime !== "cli") {
@@ -2263,12 +2288,20 @@ export async function cancelTaskById(params: {
           cfg: params.cfg,
           sessionKey: childSessionKey,
           reason: params.reason?.trim() || "task-cancel",
+          expectedRunId: task.runId,
+          ...(managedBacking?.runtime === "acp"
+            ? { expectedInstanceId: managedBacking.instanceId, expectedOwnerKey: task.ownerKey }
+            : {}),
         });
       } else if (task.runtime === "subagent") {
         const { killSubagentRunAdmin } = await loadTaskRegistryControlRuntime();
         const result = await killSubagentRunAdmin({
           cfg: params.cfg,
           sessionKey: childSessionKey,
+          expectedRunId: task.runId,
+          ...(managedBacking?.runtime === "subagent"
+            ? { expectedGeneration: managedBacking.generation, expectedOwnerKey: task.ownerKey }
+            : {}),
         });
         const current = tasks.get(task.taskId);
         if (current?.status === "cancelled" && current.error === SUBAGENT_KILL_TASK_ERROR) {
@@ -2643,4 +2676,225 @@ export function setTaskRegistryControlRuntimeForTests(runtime: TaskRegistryContr
     TASK_REGISTRY_CONTROL_RUNTIME_OVERRIDE_KEY
   ] = runtime;
   controlRuntimeLoader.clear();
+}
+
+const TASK_BACKING_DETAIL_KIND = "task_backing_instance";
+/** Owner-minted identity persisted in canonical tasks and copied into managed projections. */
+export type TaskBackingInstance =
+  | { runtime: "acp"; instanceId: string; generation: number }
+  | { runtime: "subagent"; generation: number };
+
+type TaskBackingDetail = TaskBackingInstance & { kind: typeof TASK_BACKING_DETAIL_KIND };
+type ManagedTaskBacking = { taskId: string; instance: TaskBackingInstance };
+
+function readTaskBackingInstance(value: unknown): TaskBackingInstance | undefined {
+  const detail = asOptionalRecord(value);
+  if (detail?.kind !== TASK_BACKING_DETAIL_KIND) {
+    return undefined;
+  }
+  if (detail.runtime === "acp") {
+    const instanceId = typeof detail.instanceId === "string" ? detail.instanceId.trim() : "";
+    return instanceId &&
+      typeof detail.generation === "number" &&
+      Number.isSafeInteger(detail.generation) &&
+      detail.generation > 0
+      ? { runtime: "acp", instanceId, generation: detail.generation }
+      : undefined;
+  }
+  if (
+    detail.runtime === "subagent" &&
+    typeof detail.generation === "number" &&
+    Number.isSafeInteger(detail.generation) &&
+    detail.generation > 0
+  ) {
+    return { runtime: "subagent", generation: detail.generation };
+  }
+  return undefined;
+}
+
+function readManagedTaskBacking(value: unknown): ManagedTaskBacking | undefined {
+  const detail = asOptionalRecord(value);
+  const taskId = typeof detail?.taskId === "string" ? detail.taskId.trim() : "";
+  const instance = readTaskBackingInstance(detail);
+  return taskId && instance ? { taskId, instance } : undefined;
+}
+
+function sameTaskBackingInstance(left: TaskBackingInstance, right: TaskBackingInstance): boolean {
+  return left.runtime === "acp" && right.runtime === "acp"
+    ? left.instanceId === right.instanceId && left.generation === right.generation
+    : left.runtime === "subagent" && right.runtime === "subagent"
+      ? left.generation === right.generation
+      : false;
+}
+
+function isCanonicalBackingTask(task: TaskRecord): boolean {
+  const flowId = task.parentFlowId?.trim();
+  return Boolean(flowId && getTaskFlowById(flowId)?.syncMode === "task_mirrored");
+}
+
+function resolveCurrentCanonicalBacking(params: {
+  runtime: TaskRuntime;
+  scopeKind: TaskScopeKind;
+  ownerKey: string;
+  childSessionKey: string;
+  runId: string;
+}): { task: TaskRecord; instance: TaskBackingInstance } | undefined {
+  ensureTaskRegistryReady();
+  const candidates = [...(taskIdsByRelatedSessionKey.get(params.childSessionKey) ?? [])]
+    .flatMap((taskId) => {
+      const task = tasks.get(taskId);
+      return task ? [task] : [];
+    })
+    .flatMap((task) => {
+      const instance = readTaskBackingInstance(task.detail);
+      return instance &&
+        instance.runtime === params.runtime &&
+        task.runtime === params.runtime &&
+        task.scopeKind === params.scopeKind &&
+        task.childSessionKey?.trim() === params.childSessionKey &&
+        isCanonicalBackingTask(task)
+        ? [{ task, instance }]
+        : [];
+    })
+    .toSorted((left, right) => {
+      const generationDelta = right.instance.generation - left.instance.generation;
+      if (generationDelta !== 0) {
+        return generationDelta;
+      }
+      return (
+        right.task.createdAt - left.task.createdAt ||
+        right.task.taskId.localeCompare(left.task.taskId)
+      );
+    });
+  const current = candidates[0];
+  // July can retain an already-live successor after task-store persistence fails.
+  // The runtime generation revokes old projections even while the durable task
+  // still carries its predecessor's identity (including after registry reload).
+  if (current?.instance.runtime === "subagent") {
+    const live = [...subagentRuns.values()]
+      .filter((run) => run.childSessionKey === params.childSessionKey)
+      .toSorted((left, right) => (right.generation ?? 0) - (left.generation ?? 0))[0];
+    if (
+      live &&
+      (live.generation !== current.instance.generation ||
+        live.requesterSessionKey !== params.ownerKey ||
+        (live.taskRunId ?? live.runId) !== params.runId)
+    ) {
+      return undefined;
+    }
+  }
+  return current?.task.ownerKey === params.ownerKey && current.task.runId?.trim() === params.runId
+    ? current
+    : undefined;
+}
+
+function createAcpTaskBackingDetail(instanceId: string, generation = 1): TaskBackingDetail {
+  return { kind: TASK_BACKING_DETAIL_KIND, runtime: "acp", instanceId, generation };
+}
+
+export function createNextAcpTaskBackingDetail(params: {
+  childSessionKey: string;
+  instanceId: string;
+}): JsonValue {
+  ensureTaskRegistryReady();
+  // ACP serializes turns per child session. Persisting the next generation here
+  // keeps same-run-id replacements distinguishable after restart.
+  let generation = 0;
+  for (const taskId of taskIdsByRelatedSessionKey.get(params.childSessionKey) ?? []) {
+    const task = tasks.get(taskId);
+    const instance = task ? readTaskBackingInstance(task.detail) : undefined;
+    if (task && instance?.runtime === "acp" && isCanonicalBackingTask(task)) {
+      generation = Math.max(generation, instance.generation);
+    }
+  }
+  return createAcpTaskBackingDetail(params.instanceId, generation + 1);
+}
+
+export function createSubagentTaskBackingDetail(generation: number): TaskBackingDetail {
+  return { kind: TASK_BACKING_DETAIL_KIND, runtime: "subagent", generation };
+}
+
+export function resolveManagedTaskBackingDetail(params: {
+  runtime: TaskRuntime;
+  scopeKind: TaskScopeKind;
+  ownerKey: string;
+  childSessionKey: string;
+  runId: string;
+}): JsonValue | undefined {
+  const current = resolveCurrentCanonicalBacking(params);
+  return current
+    ? current.instance.runtime === "acp"
+      ? {
+          ...createAcpTaskBackingDetail(current.instance.instanceId, current.instance.generation),
+          taskId: current.task.taskId,
+        }
+      : {
+          ...createSubagentTaskBackingDetail(current.instance.generation),
+          taskId: current.task.taskId,
+        }
+    : undefined;
+}
+
+function getManagedTaskBackingInstance(task: TaskRecord): TaskBackingInstance | undefined {
+  const flowId = task.parentFlowId?.trim();
+  return flowId && getTaskFlowById(flowId)?.syncMode === "managed"
+    ? readManagedTaskBacking(task.detail)?.instance
+    : undefined;
+}
+
+/** A managed projection may control a child only while its exact canonical instance is current. */
+export function hasAuthoritativeTaskBacking(task: TaskRecord): boolean {
+  if (task.runtime !== "acp" && task.runtime !== "subagent") {
+    return true;
+  }
+  const flowId = task.parentFlowId?.trim();
+  if (!flowId || getTaskFlowById(flowId)?.syncMode !== "managed") {
+    return true;
+  }
+  const childSessionKey = task.childSessionKey?.trim();
+  if (!childSessionKey) {
+    return true;
+  }
+  const runId = task.runId?.trim();
+  const managed = readManagedTaskBacking(task.detail);
+  if (!runId || !managed) {
+    return false;
+  }
+  const current = resolveCurrentCanonicalBacking({
+    runtime: task.runtime,
+    scopeKind: task.scopeKind,
+    ownerKey: task.ownerKey,
+    childSessionKey,
+    runId,
+  });
+  return Boolean(
+    current &&
+    current.task.taskId === managed.taskId &&
+    sameTaskBackingInstance(current.instance, managed.instance),
+  );
+}
+
+/** Rebinds only the runtime-owned canonical task when its operational generation changes. */
+export function setCanonicalTaskBackingDetail(params: {
+  runtime: TaskRuntime;
+  childSessionKey: string;
+  runId: string;
+  detail: JsonValue;
+}): "updated" | "missing" | "persist_failed" {
+  try {
+    const task = getTasksByRunScope({
+      runId: params.runId,
+      runtime: params.runtime,
+      sessionKey: params.childSessionKey,
+    }).find((candidate) => {
+      const flowId = candidate.parentFlowId?.trim();
+      return flowId && getTaskFlowById(flowId)?.syncMode === "task_mirrored";
+    });
+    if (!task) {
+      return "missing";
+    }
+    return updateTask(task.taskId, { detail: params.detail }) ? "updated" : "persist_failed";
+  } catch {
+    return "persist_failed";
+  }
 }

@@ -164,6 +164,22 @@ struct SystemRunSettingsView: View {
 
     private var allowlistView: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if self.model.obsoleteGeneratedApprovalCount > 0 {
+                SettingsCardGroup("Approval Update") {
+                    SettingsCardRow(
+                        title: "Some approvals need renewal",
+                        subtitle: "Older generated approvals are inactive because they were not tied " +
+                            "to a working directory. Manual rules are unchanged.",
+                        showsDivider: false)
+                    {
+                        Button("Remove Inactive") {
+                            self.model.removeObsoleteGeneratedApprovals()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+            }
+
             SettingsCardGroup("Automatic Trust") {
                 SettingsCardToggleRow(
                     title: "Auto-allow skill CLIs",
@@ -444,6 +460,19 @@ final class ExecApprovalsSettingsModel {
     var entries: [ExecAllowlistEntry] = []
     var skillBins: [String] = []
     var allowlistValidationMessage: String?
+
+    var obsoleteGeneratedApprovalCount: Int {
+        self.entries.filter { entry in
+            entry.source == "allow-always" && !entry.pattern.hasPrefix("=command:") &&
+                !entry.pattern.hasPrefix("=node-command:") &&
+                entry.argPattern?.hasPrefix("sha256:cwd-argv:v1:") != true
+        }.count
+    }
+
+    func removeObsoleteGeneratedApprovals() {
+        ExecApprovalsStore.removeObsoleteGeneratedAllowAlwaysEntries()
+        self.loadSettings(for: self.selectedAgentId)
+    }
 
     var agentPickerIds: [String] {
         [Self.defaultsScopeId] + self.agentIds

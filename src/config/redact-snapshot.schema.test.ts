@@ -57,4 +57,25 @@ describe("realredactConfigSnapshot_real", () => {
       "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5",
     );
   });
+  it("redacts Synology callback credentials from generated hints and restores exact config", () => {
+    const hints = buildConfigSchema().uiHints;
+    const account = {
+      incomingUrl: "https://nas.example.test/incoming?token=private-nas-token",
+      webhookUrl: "https://gateway.example.test/synology?proxy=private-route-token",
+      webhookPath: "/webhook/synology",
+    };
+    const snapshot = makeSnapshot({
+      channels: { "synology-chat": { ...account, accounts: { work: { ...account } } } },
+    });
+    const result = redactConfigSnapshot(snapshot, hints);
+    const channel = result.config.channels[
+      "synology-chat"
+    ] as (typeof snapshot.config.channels)["synology-chat"];
+    for (const value of [channel, channel.accounts.work]) {
+      expect(value.incomingUrl).toBe(REDACTED_SENTINEL);
+      expect(value.webhookUrl).toBe(REDACTED_SENTINEL);
+      expect(value.webhookPath).toBe(account.webhookPath);
+    }
+    expect(restoreRedactedValues(result.config, snapshot.config, hints)).toEqual(snapshot.config);
+  });
 });

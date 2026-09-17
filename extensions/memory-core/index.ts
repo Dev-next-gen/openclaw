@@ -38,7 +38,7 @@ const loadRuntimeProviderModule = createLazyRuntimeModule(
 );
 
 function getToolConfig(options: MemoryToolOptions): OpenClawConfig | undefined {
-  return options.getConfig?.() ?? options.config;
+  return options.getConfig ? options.getConfig() : options.config;
 }
 
 function hasMemoryToolContext(options: MemoryToolOptions): boolean {
@@ -140,7 +140,8 @@ function createLazyMemoryGetTool(options: MemoryToolOptions): AnyAgentTool | nul
 }
 
 function resolveMemoryToolOptions(ctx: OpenClawPluginToolContext): MemoryToolOptions {
-  const getConfig = () => ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config;
+  const getConfig = () =>
+    ctx.getRuntimeConfig ? ctx.getRuntimeConfig() : (ctx.runtimeConfig ?? ctx.config);
   return {
     config: getConfig(),
     getConfig,

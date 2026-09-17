@@ -768,6 +768,9 @@
       "source": "official",
       "kind": "channel",
       "openclaw": {
+        "contracts": {
+          "tools": ["whatsapp_call", "whatsapp_login"]
+        },
         "channel": {
           "id": "whatsapp",
           "label": "WhatsApp",

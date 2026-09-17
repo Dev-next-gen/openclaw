@@ -1406,7 +1406,8 @@ async function handlePluginAction(ctx: ResolvedActionContext): Promise<MessageAc
   // gateway or local dispatch to keep both execution modes on the same topic.
   const targetForThreading =
     normalizeOptionalString(params.to) ?? normalizeOptionalString(params.channelId) ?? "";
-  if (targetForThreading) {
+  // A file download must authorize explicit caller scope, not ambient thread context.
+  if (targetForThreading && action !== "download-file") {
     resolveAndApplyOutboundThreadId(params, {
       cfg,
       to: targetForThreading,

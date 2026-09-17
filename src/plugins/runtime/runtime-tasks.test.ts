@@ -4,6 +4,7 @@ import {
   getDetachedTaskLifecycleRuntime,
   setDetachedTaskLifecycleRuntime,
 } from "../../tasks/detached-task-runtime.js";
+import { createRunningTaskRun } from "../../tasks/task-executor.js";
 import {
   getRuntimeTaskMocks,
   installRuntimeTaskDeliveryMock,
@@ -76,6 +77,21 @@ describe("runtime tasks", () => {
         stateJson: { lane: "priority" },
       }),
     );
+    const canonical = createRunningTaskRun({
+      runtime: "acp",
+      ownerKey: "agent:main:main",
+      scopeKind: "session",
+      childSessionKey: "agent:main:subagent:child",
+      runId: "runtime-task-run",
+      detail: {
+        kind: "task_backing_instance",
+        runtime: "acp",
+        instanceId: "instance:runtime-task-run",
+        generation: 1,
+      },
+      task: "Canonical child",
+      startedAt: 1,
+    });
     const child = legacyTaskFlow.runTask({
       flowId: created.flowId,
       runtime: "acp",
@@ -125,7 +141,7 @@ describe("runtime tasks", () => {
     expect(taskRun.title).toBe("Review PR 1");
     expect(taskRun.progressSummary).toBe("Inspecting");
     expect(taskRuns.findLatest()?.id).toBe(child.task.taskId);
-    expect(taskRuns.resolve("runtime-task-run")?.id).toBe(child.task.taskId);
+    expect(taskRuns.resolve("runtime-task-run")?.id).toBe(canonical.taskId);
     const summary = requireRecord(taskFlows.getTaskSummary(created.flowId));
     expect(summary.total).toBe(1);
     expect(summary.active).toBe(1);
@@ -158,6 +174,21 @@ describe("runtime tasks", () => {
         goal: "Cancel active task",
       }),
     );
+    createRunningTaskRun({
+      runtime: "acp",
+      ownerKey: "agent:main:main",
+      scopeKind: "session",
+      childSessionKey: "agent:main:subagent:child",
+      runId: "runtime-task-cancel",
+      detail: {
+        kind: "task_backing_instance",
+        runtime: "acp",
+        instanceId: "instance:runtime-task-cancel",
+        generation: 1,
+      },
+      task: "Canonical child",
+      startedAt: 1,
+    });
     const child = legacyTaskFlow.runTask({
       flowId: created.flowId,
       runtime: "acp",
@@ -181,6 +212,9 @@ describe("runtime tasks", () => {
       cfg: {},
       sessionKey: "agent:main:subagent:child",
       reason: "task-cancel",
+      expectedRunId: "runtime-task-cancel",
+      expectedInstanceId: "instance:runtime-task-cancel",
+      expectedOwnerKey: "agent:main:main",
     });
     expect(result.found).toBe(true);
     expect(result.cancelled).toBe(true);
@@ -204,6 +238,21 @@ describe("runtime tasks", () => {
         goal: "Cancel through runtime seam",
       }),
     );
+    createRunningTaskRun({
+      runtime: "acp",
+      ownerKey: "agent:main:main",
+      scopeKind: "session",
+      childSessionKey: "agent:main:subagent:child",
+      runId: "runtime-task-cancel-seam",
+      detail: {
+        kind: "task_backing_instance",
+        runtime: "acp",
+        instanceId: "instance:runtime-task-cancel-seam",
+        generation: 1,
+      },
+      task: "Canonical child",
+      startedAt: 1,
+    });
     const child = legacyTaskFlow.runTask({
       flowId: created.flowId,
       runtime: "acp",
@@ -253,6 +302,21 @@ describe("runtime tasks", () => {
         goal: "Keep owner isolation",
       }),
     );
+    createRunningTaskRun({
+      runtime: "acp",
+      ownerKey: "agent:main:main",
+      scopeKind: "session",
+      childSessionKey: "agent:main:subagent:child",
+      runId: "runtime-task-isolation",
+      detail: {
+        kind: "task_backing_instance",
+        runtime: "acp",
+        instanceId: "instance:runtime-task-isolation",
+        generation: 1,
+      },
+      task: "Canonical child",
+      startedAt: 1,
+    });
     const child = legacyTaskFlow.runTask({
       flowId: created.flowId,
       runtime: "acp",

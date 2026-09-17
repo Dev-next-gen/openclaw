@@ -1437,6 +1437,7 @@ export async function runEmbeddedAttempt(
             authProfileStore: params.authProfileStore,
             recordToolPrepStage: (name) => corePluginToolStages.mark(name),
             onToolOutcome: params.onToolOutcome,
+            memoryTurnProvenance: params.memoryTurnProvenance,
             allocateToolOutcomeOrdinal: params.allocateToolOutcomeOrdinal,
             skillsSnapshot: skillsSnapshotForRun,
             skillUsagePaths,
@@ -4133,6 +4134,10 @@ export async function runEmbeddedAttempt(
               prompt: params.prompt,
               messages: promptBuildMessages,
               hookCtx,
+              toolAuthority: {
+                activeToolNames: uncompactedEffectiveTools.map((tool) => tool.name),
+                signal: runAbortController.signal,
+              },
               hookRunner,
               beforeAgentStartResult: params.beforeAgentStartResult,
               bootstrapContextRunKind: params.bootstrapContextRunKind,

@@ -106,6 +106,7 @@ import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
 import { agentHarnessBuildsOpenClawTools, selectAgentHarness } from "../harness/selection.js";
 import { LiveSessionModelSwitchError } from "../live-model-switch-error.js";
 import { shouldSwitchToLiveModel, clearLiveModelSwitchPending } from "../live-model-switch.js";
+import { createMemoryTurnProvenance } from "../memory-turn-provenance.js";
 import {
   applyAuthHeaderOverride,
   applyLocalNoAuthHeaderOverride,
@@ -1656,6 +1657,11 @@ async function runEmbeddedAgentInternal(
         ordinal: -1,
         value: undefined as string | undefined,
       };
+      // Retry attempts share origin authority. July lacks a durable typed turn
+      // origin for automatic flush prompts, so their historical input is untrusted.
+      const memoryTurnProvenance = createMemoryTurnProvenance(
+        params.senderIsOwner !== true || params.trigger === "memory",
+      );
       let nextToolOutcomeOrdinal = 0;
       const allocateToolOutcomeOrdinal = (): number => nextToolOutcomeOrdinal++;
       const readAttemptTerminalToolPresentation = (): string | undefined =>
@@ -2241,6 +2247,7 @@ async function runEmbeddedAgentInternal(
             beforeAgentStartResult,
             thinkLevel,
             onToolOutcome: observeToolOutcome,
+            memoryTurnProvenance,
             allocateToolOutcomeOrdinal,
             onToolStreamBoundary: maybeAnnounceFastModeAutoOff,
             onRunProgress: notifyRunProgress,

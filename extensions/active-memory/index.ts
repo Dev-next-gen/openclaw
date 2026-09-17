@@ -1350,8 +1350,16 @@ function buildCacheKey(params: {
   sessionKey?: string;
   sessionId?: string;
   query: string;
+  authorityFingerprint?: string;
+  toolsAllow?: readonly string[];
+  model?: string;
 }): string {
-  const hash = crypto.createHash("sha1").update(params.query).digest("hex");
+  const hash = crypto
+    .createHash("sha256")
+    .update(
+      JSON.stringify([params.query, params.authorityFingerprint, params.toolsAllow, params.model]),
+    )
+    .digest("hex");
   return `${params.agentId}:${params.sessionKey ?? params.sessionId ?? "none"}:${hash}`;
 }
 
@@ -3106,6 +3114,7 @@ async function maybeResolveActiveRecall(params: {
   messageProvider?: string;
   channelId?: string;
   query: string;
+  authorityFingerprint?: string;
   searchQuery: string;
   currentModelProviderId?: string;
   currentModelId?: string;
@@ -3118,6 +3127,14 @@ async function maybeResolveActiveRecall(params: {
     sessionKey: params.sessionKey,
     sessionId: params.sessionId,
     query: params.query,
+    authorityFingerprint: params.authorityFingerprint,
+    toolsAllow: params.config.toolsAllow,
+    model: JSON.stringify([
+      params.config.model,
+      params.config.modelFallback,
+      params.currentModelProviderId,
+      params.currentModelId,
+    ]),
   });
   const cached = getCachedResult(cacheKey);
   const resolvedModelRef = getModelRef(params.api, params.agentId, params.config, {
@@ -3597,7 +3614,16 @@ export default definePluginEntry({
       "before_prompt_build",
       async (event, ctx) => {
         refreshLiveConfigFromRuntime();
-        const invocationConfig = config;
+        const authority = ctx.toolAuthority;
+        if (!authority) {
+          return undefined;
+        }
+        authority.assertActive();
+        const toolsAllow = config.toolsAllow.filter((name) => authority.allows(name));
+        if (!toolsAllow.some((name) => name !== "memory_get")) {
+          return undefined;
+        }
+        const invocationConfig = { ...config, toolsAllow };
         const liveRecallTimeoutMs =
           invocationConfig.timeoutMs +
           invocationConfig.setupGraceTimeoutMs +
@@ -3713,11 +3739,13 @@ export default definePluginEntry({
               channelId: ctx.channelId,
               query,
               searchQuery,
+              authorityFingerprint: authority.fingerprint,
               currentModelProviderId: ctx.modelProviderId,
               currentModelId: ctx.modelId,
               abortSignal: deadlineController.signal,
             });
             deadlineController.signal.throwIfAborted();
+            authority.assertActive();
             if (!result.summary) {
               return undefined;
             }

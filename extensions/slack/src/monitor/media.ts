@@ -236,6 +236,7 @@ const MAX_SLACK_FORWARDED_ATTACHMENTS = 8;
 async function fetchFreshSlackFileUrl(params: {
   file: SlackFile;
   client?: SlackWebClient;
+  isRefreshedFileAllowed?: (file: SlackFile) => boolean;
 }): Promise<string | null> {
   if (!params.file.id || !params.client) {
     return null;
@@ -243,6 +244,9 @@ async function fetchFreshSlackFileUrl(params: {
   try {
     const info = await params.client.files.info({ file: params.file.id });
     const freshFile = info.file as SlackFile | undefined;
+    if (freshFile && params.isRefreshedFileAllowed?.(freshFile) === false) {
+      return null;
+    }
     const freshUrl = freshFile?.url_private_download ?? freshFile?.url_private;
     if (freshUrl) {
       logVerbose(`slack: refreshed file URL via files.info for file id=${params.file.id}`);
@@ -362,6 +366,7 @@ async function mapLimit<T, R>(
 export async function resolveSlackMedia(params: {
   files?: SlackFile[];
   client?: SlackWebClient;
+  isRefreshedFileAllowed?: (file: SlackFile) => boolean;
   token: string;
   maxBytes: number;
   readIdleTimeoutMs?: number;
@@ -377,7 +382,13 @@ export async function resolveSlackMedia(params: {
     MAX_SLACK_MEDIA_CONCURRENCY,
     async (file) => {
       const eventUrl = file.url_private_download ?? file.url_private;
-      const url = eventUrl ?? (await fetchFreshSlackFileUrl({ file, client: params.client }));
+      const url =
+        eventUrl ??
+        (await fetchFreshSlackFileUrl({
+          file,
+          client: params.client,
+          isRefreshedFileAllowed: params.isRefreshedFileAllowed,
+        }));
       if (!url) {
         return null;
       }
@@ -394,7 +405,11 @@ export async function resolveSlackMedia(params: {
         return result;
       }
 
-      const freshUrl = await fetchFreshSlackFileUrl({ file, client: params.client });
+      const freshUrl = await fetchFreshSlackFileUrl({
+        file,
+        client: params.client,
+        isRefreshedFileAllowed: params.isRefreshedFileAllowed,
+      });
       if (!freshUrl) {
         return null;
       }
@@ -418,6 +433,7 @@ export async function resolveSlackMedia(params: {
 export async function resolveSlackAttachmentContent(params: {
   attachments?: SlackAttachment[];
   client?: SlackWebClient;
+  isRefreshedFileAllowed?: (file: SlackFile) => boolean;
   token: string;
   maxBytes: number;
   readIdleTimeoutMs?: number;

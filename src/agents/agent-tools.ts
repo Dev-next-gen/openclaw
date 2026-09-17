@@ -21,7 +21,7 @@ import { applyExecPolicyLayer } from "../infra/exec-policy.js";
 import { resolveMergedSafeBinProfileFixtures } from "../infra/exec-safe-bin-runtime-policy.js";
 import { logWarn } from "../logger.js";
 import type { PluginHookChannelContext } from "../plugins/hook-types.js";
-import { getPluginToolMeta } from "../plugins/tools.js";
+import { copyPluginToolMeta, getPluginToolMeta } from "../plugins/tools.js";
 import { GATEWAY_OWNER_ONLY_CORE_TOOLS } from "../security/dangerous-tools.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
 import type { SkillSnapshot, SkillUsagePath } from "../skills/types.js";
@@ -58,7 +58,11 @@ import { describeExecTool, describeProcessTool } from "./bash-tools.descriptions
 import type { ExecToolDefaults } from "./bash-tools.exec-types.js";
 import type { ProcessToolDefaults } from "./bash-tools.process.js";
 import { execSchema, processSchema } from "./bash-tools.schemas.js";
-import { listChannelAgentTools } from "./channel-tools.js";
+import {
+  BEFORE_TOOL_CALL_SOURCE_TOOL,
+  BEFORE_TOOL_CALL_WRAPPED,
+} from "./before-tool-call-metadata.js";
+import { copyChannelAgentToolMeta, listChannelAgentTools } from "./channel-tools.js";
 import { shouldSuppressManagedWebSearchTool } from "./codex-native-web-search.js";
 import {
   resolveConversationCapabilityProfile,
@@ -69,6 +73,8 @@ import {
   filterLocalModelLeanTools,
   resolveLocalModelLeanPreserveToolNames,
 } from "./local-model-lean.js";
+import { createMemoryTurnProvenance, type MemoryTurnProvenance } from "./memory-turn-provenance.js";
+import { createMemoryWriteProvenanceObserver } from "./memory-write-provenance.js";
 import type { ModelAuthMode } from "./model-auth.js";
 import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js";
 import { createOpenClawTools } from "./openclaw-tools.js";
@@ -105,6 +111,7 @@ import {
   type ToolSearchCatalogRef,
   type ToolSearchCatalogToolExecutor,
 } from "./tool-search.js";
+import { copyToolTerminalPresentation } from "./tool-terminal-presentation.js";
 import {
   replaceWithEffectiveCronCreatorToolAllowlist,
   type CronCreatorToolAllowlistEntry,
@@ -526,6 +533,8 @@ export function createOpenClawCodingTools(options?: {
   crestodianTool?: import("./tools/crestodian-tool.js").CrestodianToolOptions;
   /** Trusted sender identity bit for command/channel-action auth and owner-gated plugin tools. */
   senderIsOwner?: boolean;
+  /** Shared across all attempts of a host-owned turn. */
+  memoryTurnProvenance?: MemoryTurnProvenance;
   /** Auth profiles already loaded for this run; used for prompt-time tool availability. */
   authProfileStore?: AuthProfileStore;
   /** Callback invoked when sessions_yield tool is called. */
@@ -709,6 +718,16 @@ export function createOpenClawCodingTools(options?: {
   const runtimeRoot = capabilityProfile.workspace.runtimeRoot;
   const codingRoot = sandboxRoot ?? runtimeRoot;
   const memoryFlushWriteRoot = sandboxRoot ?? workspaceRoot;
+  const memoryTurnProvenance =
+    options?.memoryTurnProvenance ?? createMemoryTurnProvenance(options?.senderIsOwner !== true);
+  if (options?.senderIsOwner !== true) {
+    memoryTurnProvenance.markTainted();
+  }
+  const memoryWriteProvenance = createMemoryWriteProvenanceObserver({
+    mutationRoot: sandboxRoot ?? workspaceRoot,
+    workspaceDir: workspaceRoot,
+    resolveOriginClass: () => (memoryTurnProvenance.isTainted() ? "untrusted" : "agent"),
+  });
   const includeCoreTools = options?.includeCoreTools !== false;
   const toolConstructionPlan = options?.toolConstructionPlan ?? {
     includeBaseCodingTools: includeCoreTools,
@@ -784,7 +803,10 @@ export function createOpenClawCodingTools(options?: {
         if (sandboxRoot) {
           continue;
         }
-        const wrapped = createHostWorkspaceWriteTool(codingRoot, { workspaceOnly });
+        const wrapped = createHostWorkspaceWriteTool(codingRoot, {
+          workspaceOnly,
+          memoryWriteProvenance,
+        });
         base.push(workspaceOnly ? wrapToolWorkspaceRootGuard(wrapped, codingRoot) : wrapped);
         continue;
       }
@@ -792,7 +814,10 @@ export function createOpenClawCodingTools(options?: {
         if (sandboxRoot) {
           continue;
         }
-        const wrapped = createHostWorkspaceEditTool(codingRoot, { workspaceOnly });
+        const wrapped = createHostWorkspaceEditTool(codingRoot, {
+          workspaceOnly,
+          memoryWriteProvenance,
+        });
         base.push(workspaceOnly ? wrapToolWorkspaceRootGuard(wrapped, codingRoot) : wrapped);
         continue;
       }
@@ -881,6 +906,7 @@ export function createOpenClawCodingTools(options?: {
               ? { root: sandboxRoot, bridge: sandboxFsBridge! }
               : undefined,
           workspaceOnly: applyPatchWorkspaceOnly,
+          memoryWriteProvenance,
         });
   options?.recordToolPrepStage?.("shell-tools");
   const ownerOnlyCoreToolDenylist =
@@ -961,22 +987,38 @@ export function createOpenClawCodingTools(options?: {
         ? [
             workspaceOnly
               ? wrapToolWorkspaceRootGuardWithOptions(
-                  createSandboxedEditTool({ root: sandboxRoot, bridge: sandboxFsBridge! }),
+                  createSandboxedEditTool({
+                    root: sandboxRoot,
+                    bridge: sandboxFsBridge!,
+                    memoryWriteProvenance,
+                  }),
                   sandboxRoot,
                   {
                     containerWorkdir: sandbox.containerWorkdir,
                   },
                 )
-              : createSandboxedEditTool({ root: sandboxRoot, bridge: sandboxFsBridge! }),
+              : createSandboxedEditTool({
+                  root: sandboxRoot,
+                  bridge: sandboxFsBridge!,
+                  memoryWriteProvenance,
+                }),
             workspaceOnly
               ? wrapToolWorkspaceRootGuardWithOptions(
-                  createSandboxedWriteTool({ root: sandboxRoot, bridge: sandboxFsBridge! }),
+                  createSandboxedWriteTool({
+                    root: sandboxRoot,
+                    bridge: sandboxFsBridge!,
+                    memoryWriteProvenance,
+                  }),
                   sandboxRoot,
                   {
                     containerWorkdir: sandbox.containerWorkdir,
                   },
                 )
-              : createSandboxedWriteTool({ root: sandboxRoot, bridge: sandboxFsBridge! }),
+              : createSandboxedWriteTool({
+                  root: sandboxRoot,
+                  bridge: sandboxFsBridge!,
+                  memoryWriteProvenance,
+                }),
           ]
         : []
       : []),
@@ -1061,6 +1103,7 @@ export function createOpenClawCodingTools(options?: {
           wrapToolMemoryFlushAppendOnlyWrite(tool, {
             root: memoryFlushWriteRoot,
             relativePath: memoryFlushWritePath,
+            memoryWriteProvenance,
             containerWorkdir: sandbox?.containerWorkdir,
             sandbox:
               sandboxRoot && sandboxFsBridge
@@ -1192,7 +1235,30 @@ export function createOpenClawCodingTools(options?: {
     allocateToolOutcomeOrdinal: options?.allocateToolOutcomeOrdinal,
   };
   const hookOptions = { emitDiagnostics: options?.emitBeforeToolCallDiagnostics };
-  const withHooks = normalized.map((tool) =>
+  const provenanceBoundTools = normalized.map((tool) => {
+    const isCoreMutation =
+      !getPluginToolMeta(tool) && ["write", "edit", "apply_patch"].includes(tool.name);
+    if (isCoreMutation) {
+      return tool;
+    }
+    // Rebuild prewrapped sources once below; wrapping their execute directly would
+    // duplicate policy hooks and could lose the provenance observer on rewrap.
+    const taggedTool = tool as unknown as Record<symbol, unknown>;
+    const source = taggedTool[BEFORE_TOOL_CALL_SOURCE_TOOL];
+    const sourceTool = source && typeof source === "object" ? (source as AnyAgentTool) : tool;
+    const wrapped = Object.assign({}, tool, {
+      execute: (...args: Parameters<AnyAgentTool["execute"]>) => {
+        memoryTurnProvenance.markTainted();
+        return sourceTool.execute(...args);
+      },
+    });
+    delete (wrapped as unknown as Record<symbol, unknown>)[BEFORE_TOOL_CALL_WRAPPED];
+    copyPluginToolMeta(tool, wrapped);
+    copyChannelAgentToolMeta(tool as never, wrapped as never);
+    copyToolTerminalPresentation(tool, wrapped);
+    return wrapped;
+  });
+  const withHooks = provenanceBoundTools.map((tool) =>
     isToolWrappedWithBeforeToolCallHook(tool)
       ? rewrapToolWithBeforeToolCallHook(tool, hookContext, hookOptions)
       : wrapToolWithBeforeToolCallHook(tool, hookContext, hookOptions),

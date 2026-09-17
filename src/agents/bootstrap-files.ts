@@ -7,6 +7,10 @@ import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { AgentContextInjection } from "../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import {
+  isMemoryArtifactEligibleForAutomaticContext,
+  normalizeMemoryArtifactRelativePath,
+} from "../memory/memory-artifact-provenance.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveAgentConfig, resolveSessionAgentIds } from "./agent-scope.js";
 import { getOrLoadBootstrapFiles } from "./bootstrap-cache.js";
@@ -288,6 +292,33 @@ async function isWorkspaceSetupCompletedForContext(workspaceDir: string): Promis
   }
 }
 
+async function filterMemoryBootstrapFiles(
+  files: WorkspaceBootstrapFile[],
+  workspaceDir: string,
+): Promise<WorkspaceBootstrapFile[]> {
+  const kept: WorkspaceBootstrapFile[] = [];
+  for (const file of files) {
+    const relativePath = path
+      .relative(path.resolve(workspaceDir), path.resolve(workspaceDir, file.path))
+      .replaceAll(path.sep, "/");
+    const isMemory =
+      normalizeMemoryArtifactRelativePath(relativePath) ||
+      ["MEMORY.md", "memory.md", "USER.md"].includes(file.name);
+    if (
+      !isMemory ||
+      file.missing ||
+      (await isMemoryArtifactEligibleForAutomaticContext({
+        workspaceDir,
+        relativePath,
+        content: file.content,
+      }))
+    ) {
+      kept.push(file);
+    }
+  }
+  return kept;
+}
+
 /** Resolves hook-adjusted, session-filtered bootstrap files for a run. */
 export async function resolveBootstrapFilesForRun(params: {
   workspaceDir: string;
@@ -319,7 +350,7 @@ export async function resolveBootstrapFilesForRun(params: {
   });
 
   const updated = await applyBootstrapHookOverrides({
-    files: bootstrapFiles,
+    files: await filterMemoryBootstrapFiles(bootstrapFiles, params.workspaceDir),
     workspaceDir: params.workspaceDir,
     config: params.config,
     sessionKey: params.sessionKey,
@@ -331,10 +362,13 @@ export async function resolveBootstrapFilesForRun(params: {
     workspaceSetupCompleted,
     params.workspaceDir,
   );
-  return sanitizeBootstrapFiles(
-    filterHeartbeatBootstrapFile(filteredUpdated, excludeHeartbeatBootstrapFile),
+  return filterMemoryBootstrapFiles(
+    sanitizeBootstrapFiles(
+      filterHeartbeatBootstrapFile(filteredUpdated, excludeHeartbeatBootstrapFile),
+      params.workspaceDir,
+      params.warn,
+    ),
     params.workspaceDir,
-    params.warn,
   );
 }
 

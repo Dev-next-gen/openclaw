@@ -9,6 +9,8 @@ import type {
 import { getRegisteredDetachedTaskLifecycleRuntime } from "./detached-task-runtime-state.js";
 import {
   cancelTaskById,
+  hasAuthoritativeTaskBacking,
+  resolveManagedTaskBackingDetail,
   createTaskRecord,
   getTaskById,
   isParentFlowLinkError,
@@ -370,7 +372,32 @@ export function runTaskInFlow(params: RunTaskInFlowParams): RunTaskInFlowResult 
     };
   }
 
+  const childSessionKey = params.childSessionKey?.trim();
+  const runId = params.runId?.trim();
+  const managedBackingDetail =
+    childSessionKey && runId && (params.runtime === "acp" || params.runtime === "subagent")
+      ? resolveManagedTaskBackingDetail({
+          runtime: params.runtime,
+          scopeKind: "session",
+          ownerKey: flow.ownerKey,
+          childSessionKey,
+          runId,
+        })
+      : undefined;
+  if (
+    childSessionKey &&
+    (params.runtime === "acp" || params.runtime === "subagent") &&
+    !managedBackingDetail
+  ) {
+    return {
+      found: true,
+      created: false,
+      reason: "Task backing ownership could not be verified.",
+      flow,
+    };
+  }
   const common = {
+    ...(managedBackingDetail !== undefined ? { detail: managedBackingDetail } : {}),
     runtime: params.runtime,
     sourceId: params.sourceId,
     ownerKey: flow.ownerKey,
@@ -512,6 +539,17 @@ export async function cancelFlowById(params: {
       tasks: listTasksForFlowId(flow.flowId),
     };
   }
+  const linkedTasks = listTasksForFlowId(flow.flowId);
+  const activeTasks = linkedTasks.filter(isTaskFlowCancellationPending);
+  if (activeTasks.some((task) => !hasAuthoritativeTaskBacking(task))) {
+    return {
+      found: true,
+      cancelled: false,
+      reason: "Child task ownership could not be verified; no cancellation was performed.",
+      flow,
+      tasks: linkedTasks,
+    };
+  }
   const cancelRequestedFlow = markFlowCancelRequested(flow);
   if ("reason" in cancelRequestedFlow) {
     return {
@@ -522,8 +560,6 @@ export async function cancelFlowById(params: {
       tasks: listTasksForFlowId(flow.flowId),
     };
   }
-  const linkedTasks = listTasksForFlowId(flow.flowId);
-  const activeTasks = linkedTasks.filter(isTaskFlowCancellationPending);
   for (const task of activeTasks) {
     await cancelDetachedTaskRunById({
       cfg: params.cfg,

@@ -18,6 +18,7 @@ import {
 import type { ExecCommandSegment } from "./exec-approvals-analysis.js";
 import type { ExecAllowlistEntry } from "./exec-approvals.types.js";
 import type { ExecAuthorizationPlan } from "./exec-authorization-plan.js";
+import { isCwdBoundHashedArgPattern } from "./exec-command-resolution.js";
 import {
   extractBindableShellWrapperInlineCommand,
   isShellWrapperInvocation,
@@ -30,6 +31,7 @@ import {
   hasPosixLoginStartupBeforeInlineCommand,
   POSIX_INLINE_COMMAND_FLAGS,
 } from "./shell-inline-command.js";
+export * from "./exec-approvals-generated-migration.js";
 export * from "./exec-approvals-analysis.js";
 export * from "./exec-approvals-allowlist.js";
 export type { ExecAllowlistEntry } from "./exec-approvals.types.js";
@@ -1470,7 +1472,18 @@ export function addAllowlistEntry(
   const target = agentId ?? DEFAULT_AGENT_ID;
   const agents = approvals.agents ?? {};
   const existing = agents[target] ?? {};
-  const allowlist = Array.isArray(existing.allowlist) ? existing.allowlist : [];
+  const previousAllowlist = Array.isArray(existing.allowlist) ? existing.allowlist : [];
+  const allowlist =
+    options?.source === "allow-always" && isCwdBoundHashedArgPattern(options.argPattern)
+      ? previousAllowlist.filter(
+          (entry) =>
+            !(
+              entry.pattern === pattern.trim() &&
+              entry.source === "allow-always" &&
+              !isCwdBoundHashedArgPattern(entry.argPattern)
+            ),
+        )
+      : previousAllowlist;
   const trimmed = pattern.trim();
   if (!trimmed) {
     return;
@@ -1479,7 +1492,11 @@ export function addAllowlistEntry(
   const existingEntry = allowlist.find(
     (entry) => entry.pattern === trimmed && (entry.argPattern ?? undefined) === trimmedArgPattern,
   );
-  if (existingEntry && (!options?.source || existingEntry.source === options.source)) {
+  if (
+    existingEntry &&
+    (!options?.source || existingEntry.source === options.source) &&
+    allowlist.length === previousAllowlist.length
+  ) {
     return;
   }
   const now = Date.now();

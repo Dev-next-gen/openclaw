@@ -261,7 +261,15 @@ const conversationHookNameSet = new Set<PluginHookName>(CONVERSATION_HOOK_NAMES)
 export const isConversationHookName = (hookName: PluginHookName): boolean =>
   conversationHookNameSet.has(hookName);
 
+export type PluginHookToolAuthority = {
+  readonly fingerprint: string;
+  allows(toolName: string): boolean;
+  assertActive(): void;
+};
+
 export type PluginHookAgentContext = {
+  /** Host-issued, scoped to finalized tools for this prompt dispatch only. */
+  toolAuthority?: PluginHookToolAuthority;
   runId?: string;
   jobId?: string;
   trace?: DiagnosticTraceContext;

@@ -1,5 +1,6 @@
-// Defines task registry records, statuses, delivery state, and parser helpers.
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
+// Defines task registry records, statuses, delivery state, and parser helpers.
+import type { JsonValue } from "./task-flow-registry.types.js";
 
 /** Runtime family that owns a task run lifecycle. */
 export type TaskRuntime = "subagent" | "acp" | "cli" | "cron";
@@ -114,6 +115,8 @@ export type TaskDeliveryState = {
 };
 
 export type TaskRecord = {
+  /** Owner-minted canonical runtime instance; never derived from a managed action. */
+  detail?: JsonValue;
   taskId: string;
   runtime: TaskRuntime;
   taskKind?: string;

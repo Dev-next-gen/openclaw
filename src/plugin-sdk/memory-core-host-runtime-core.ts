@@ -52,3 +52,5 @@ export {
 } from "../plugins/memory-state.js";
 export type { OpenClawPluginApi } from "../plugins/types.js";
 export { parseAgentSessionKey } from "../routing/session-key.js";
+
+export { isMemoryArtifactEligibleForAutomaticContext } from "../memory/memory-artifact-provenance.js";

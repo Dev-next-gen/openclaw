@@ -8,6 +8,7 @@ import {
   failTaskRunByRunId,
   startTaskRunByRunId,
 } from "../../tasks/detached-task-runtime.js";
+import { createNextAcpTaskBackingDetail } from "../../tasks/runtime-internal.js";
 import { resolveRequiredCompletionTerminalResult } from "../../tasks/task-completion-contract.js";
 import type { DeliveryContext } from "../../utils/delivery-context.js";
 import { AcpRuntimeError } from "../runtime/errors.js";
@@ -128,6 +129,7 @@ export function resolveBackgroundTaskContext(params: {
 export function createBackgroundTaskRecord(
   context: BackgroundTaskContext,
   startedAt: number,
+  instanceId: string,
 ): void {
   try {
     const task = createRunningTaskRun({
@@ -141,6 +143,10 @@ export function createBackgroundTaskRecord(
       label: context.label,
       task: context.task,
       startedAt,
+      detail: createNextAcpTaskBackingDetail({
+        childSessionKey: context.childSessionKey,
+        instanceId,
+      }),
     });
     if (!task) {
       logVerbose(

@@ -27,6 +27,83 @@ describe("resolveAgentScopedOutboundMediaAccess", () => {
     channelPluginMocks.getLoadedChannelPlugin.mockReset();
   });
 
+  it.each([
+    {
+      name: "global sender id",
+      cfg: {
+        tools: {
+          allow: ["read"],
+          toolsBySender: { "id:attacker": { deny: ["read"] } },
+        },
+      } as OpenClawConfig,
+      identity: { messageProvider: "requestchat", requesterSenderId: "attacker" },
+    },
+    {
+      name: "agent sender username",
+      cfg: {
+        tools: { allow: ["read"] },
+        agents: {
+          list: [
+            {
+              id: "restricted",
+              workspace: "/tmp/restricted-workspace",
+              tools: {
+                toolsBySender: { "username:blocked-user": { deny: ["read"] } },
+              },
+            },
+          ],
+        },
+      } as OpenClawConfig,
+      identity: {
+        agentId: "restricted",
+        messageProvider: "requestchat",
+        requesterSenderUsername: "blocked-user",
+      },
+    },
+    {
+      name: "session-derived channel sender id",
+      cfg: {
+        tools: {
+          allow: ["read"],
+          toolsBySender: { "channel:requestchat:attacker": { deny: ["read"] } },
+        },
+      } as OpenClawConfig,
+      identity: {
+        sessionKey: "agent:main:requestchat:group:ops",
+        requesterSenderId: "attacker",
+      },
+    },
+    {
+      name: "sender wildcard",
+      cfg: {
+        tools: {
+          allow: ["read"],
+          toolsBySender: { "*": { deny: ["read"] } },
+        },
+      } as OpenClawConfig,
+      identity: { messageProvider: "requestchat", requesterSenderId: "attacker" },
+    },
+    {
+      name: "sender wildcard without identity",
+      cfg: {
+        tools: {
+          allow: ["read"],
+          toolsBySender: { "*": { deny: ["read"] } },
+        },
+      } as OpenClawConfig,
+      identity: { messageProvider: "requestchat" },
+    },
+  ])("does not enable host reads for $name policy", ({ cfg, identity }) => {
+    const result = resolveAgentScopedOutboundMediaAccess({
+      cfg,
+      ...identity,
+      mediaSources: ["/Users/peter/Pictures/photo.png"],
+    });
+
+    expect(result.readFile).toBeUndefined();
+    expect(result.localRoots).not.toContain("/Users/peter/Pictures");
+  });
+
   it("preserves caller-provided workspaceDir from mediaAccess", () => {
     const result = resolveAgentScopedOutboundMediaAccess({
       cfg: {} as OpenClawConfig,

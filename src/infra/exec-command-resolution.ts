@@ -1,4 +1,5 @@
 // Resolves command executables and wrapper policy paths for exec approvals.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
@@ -301,7 +302,48 @@ function stripTrailingRedirections(value: string): string {
   }
 }
 
-function matchArgPattern(argPattern: string, argv: string[], platform?: string | null): boolean {
+const LEGACY_HASHED_ARG_PATTERN_PREFIX = "sha256:argv:";
+const CWD_BOUND_HASHED_ARG_PATTERN_PREFIX = "sha256:cwd-argv:v1:";
+
+export function isCwdBoundHashedArgPattern(value: string | null | undefined): boolean {
+  return typeof value === "string" && value.startsWith(CWD_BOUND_HASHED_ARG_PATTERN_PREFIX);
+}
+
+function renderGeneratedHashedArgPatternSubject(argv: string[]): string {
+  const argsSlice = argv.slice(1);
+  return `${argsSlice.length}\x00${argsSlice
+    .map((arg) => `${Buffer.byteLength(arg, "utf8")}\x00${arg}\x00`)
+    .join("")}`;
+}
+
+function normalizeGrantCwd(cwd: string, platform?: string | null): string {
+  const effectivePlatform = normalizeLowercaseStringOrEmpty(platform ?? process.platform);
+  const pathApi = effectivePlatform.startsWith("win") ? path.win32 : path.posix;
+  return pathApi.normalize(cwd).replaceAll("\\", "/");
+}
+
+export function buildCwdBoundHashedArgPattern(
+  argv: string[],
+  cwd: string,
+  platform?: string | null,
+): string {
+  const normalizedCwd = normalizeGrantCwd(cwd, platform);
+  const subject = `${Buffer.byteLength(normalizedCwd, "utf8")}\x00${normalizedCwd}\x00${renderGeneratedHashedArgPatternSubject(argv)}`;
+  const digest = crypto.createHash("sha256").update(subject, "utf8").digest("hex");
+  return `${CWD_BOUND_HASHED_ARG_PATTERN_PREFIX}${digest}`;
+}
+
+function matchArgPattern(
+  argPattern: string,
+  argv: string[],
+  cwd: string | undefined,
+  platform?: string | null,
+): boolean {
+  if (argPattern.startsWith(CWD_BOUND_HASHED_ARG_PATTERN_PREFIX)) {
+    return cwd !== undefined && argPattern === buildCwdBoundHashedArgPattern(argv, cwd, platform);
+  }
+  if (argPattern.startsWith(LEGACY_HASHED_ARG_PATTERN_PREFIX)) return false;
+
   // Patterns built by buildArgPatternFromArgv use \x00 as the argument separator and
   // always include a trailing \x00 sentinel so that every auto-generated pattern
   // (including zero-arg "^\x00\x00$" and single-arg "^hello world\x00$") contains at
@@ -385,6 +427,7 @@ export function matchAllowlist(
   resolution: ExecutableResolution | null,
   argv?: string[],
   platform?: string | null,
+  cwd?: string,
 ): ExecAllowlistEntry | null {
   if (!entries.length) {
     return null;
@@ -392,7 +435,9 @@ export function matchAllowlist(
   // A bare "*" wildcard allows any parsed executable command.
   // Check it before the resolvedPath guard so unresolved PATH lookups still
   // match (for example platform-specific executables without known extensions).
-  const bareWild = entries.find((e) => e.pattern?.trim() === "*" && !e.argPattern);
+  const bareWild = entries.find(
+    (e) => e.pattern?.trim() === "*" && !e.argPattern && e.source !== "allow-always",
+  );
   if (bareWild && resolution) {
     return bareWild;
   }
@@ -415,6 +460,7 @@ export function matchAllowlist(
     if (!patternMatches) {
       continue;
     }
+    if (entry.source === "allow-always" && !isCwdBoundHashedArgPattern(entry.argPattern)) continue;
     if (!entry.argPattern) {
       if (!pathOnlyMatch) {
         pathOnlyMatch = entry;
@@ -422,7 +468,7 @@ export function matchAllowlist(
       continue;
     }
     // Entry has argPattern — check argv match.
-    if (argv && matchArgPattern(entry.argPattern, argv, platform)) {
+    if (argv && matchArgPattern(entry.argPattern, argv, cwd, platform)) {
       return entry;
     }
   }

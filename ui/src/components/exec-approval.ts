@@ -122,12 +122,15 @@ ${active.pluginDescription}</pre
   `;
 }
 
-function approvalDecisionLabel(decision: ExecApprovalDecision): string {
+function approvalDecisionLabel(
+  decision: ExecApprovalDecision,
+  kind: ExecApprovalRequest["kind"],
+): string {
   switch (decision) {
     case "allow-once":
       return t("execApproval.allowOnce");
     case "allow-always":
-      return t("execApproval.alwaysAllow");
+      return t(kind === "exec" ? "execApproval.alwaysAllowHere" : "execApproval.alwaysAllow");
     case "deny":
       return t("execApproval.deny");
   }
@@ -214,7 +217,7 @@ function renderExecApprovalPrompt(props: ExecApprovalProps) {
                 ?disabled=${props.busy}
                 @click=${() => props.onDecision(decision)}
               >
-                ${approvalDecisionLabel(decision)}
+                ${approvalDecisionLabel(decision, active.kind)}
               </button>
             `,
           )}

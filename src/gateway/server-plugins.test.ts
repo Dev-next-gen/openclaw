@@ -1113,6 +1113,20 @@ describe("loadGatewayPlugins", () => {
     expect(getLastDispatchedClientInternal().pluginRuntimeOwnerId).toBe("workboard");
   });
 
+  test("enforces disableTools through host-private subagent metadata", async () => {
+    const runtime = await createSubagentRuntime(serverPluginsModule);
+    serverPluginsModule.setFallbackGatewayContext(createTestContext("tool-free-helper"));
+    await runtime.run({ sessionKey: "tool-free-helper", message: "summarize", disableTools: true });
+    expect(getLastDispatchedClientInternal()).toMatchObject({
+      agentRunTracking: "plugin_subagent",
+      pluginSubagentToolsAllow: [],
+    });
+    expect(getRequiredLastDispatchedParams()).not.toHaveProperty("disableTools");
+    expect(getRequiredLastDispatchedParams()).not.toHaveProperty("toolsAllow");
+    await runtime.run({ sessionKey: "normal-helper", message: "continue" });
+    expect(getLastDispatchedClientInternal()).not.toHaveProperty("pluginSubagentToolsAllow");
+  });
+
   test("forwards lightContext as lightweight bootstrap context on subagent run", async () => {
     const serverPlugins = serverPluginsModule;
     const runtime = await createSubagentRuntime(serverPlugins);

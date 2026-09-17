@@ -629,6 +629,74 @@ describe("killSubagentRunAdmin", () => {
     );
   });
 
+  it.each([
+    { expectedRunId: "foreign-run" },
+    { expectedGeneration: 1 },
+    { expectedOwnerKey: "agent:main:foreign" },
+  ])("rejects stale task cancellation authority %j", async (authority) => {
+    const childSessionKey = "agent:main:subagent:task-bound";
+    addSubagentRunForTests({
+      runId: "current-run",
+      taskRunId: "canonical-run",
+      generation: 2,
+      childSessionKey,
+      requesterSessionKey: "agent:main:owner",
+      requesterDisplayKey: "owner",
+      task: "work",
+      cleanup: "keep",
+      createdAt: 10,
+      startedAt: 10,
+    });
+    const abort = vi.fn(() => true);
+    const clear = vi.fn(() => ({ followupCleared: 0, laneCleared: 0, keys: [] }));
+    setSubagentControlDepsForTest({ abortEmbeddedAgentRun: abort, clearSessionQueues: clear });
+    await expect(
+      killSubagentRunAdmin({
+        cfg: cfgWithSessionStore(),
+        sessionKey: childSessionKey,
+        expectedRunId: "canonical-run",
+        expectedGeneration: 2,
+        expectedOwnerKey: "agent:main:owner",
+        ...authority,
+      }),
+    ).rejects.toThrow("authoritative run");
+    expect(abort).not.toHaveBeenCalled();
+    expect(clear).not.toHaveBeenCalled();
+  });
+
+  it("revalidates task authority after runtime resolution yields", async () => {
+    const childSessionKey = "agent:main:subagent:replacement-race";
+    const storePath = writeSessionStoreFixture("task-replacement-race", {
+      [childSessionKey]: { sessionId: "race-session", updatedAt: Date.now() },
+    });
+    const record = {
+      runId: "same-run",
+      generation: 1,
+      childSessionKey,
+      requesterSessionKey: "agent:main:owner",
+      requesterDisplayKey: "owner",
+      task: "work",
+      cleanup: "keep" as const,
+      createdAt: 10,
+      startedAt: 10,
+    };
+    addSubagentRunForTests(record);
+    const abort = vi.fn(() => true);
+    const clear = vi.fn(() => ({ followupCleared: 0, laneCleared: 0, keys: [] }));
+    setSubagentControlDepsForTest({ abortEmbeddedAgentRun: abort, clearSessionQueues: clear });
+    const cancellation = killSubagentRunAdmin({
+      cfg: cfgWithSessionStore(storePath),
+      sessionKey: childSessionKey,
+      expectedRunId: "same-run",
+      expectedGeneration: 1,
+      expectedOwnerKey: "agent:main:owner",
+    });
+    addSubagentRunForTests({ ...record, generation: 2, createdAt: 20 });
+    await expect(cancellation).rejects.toThrow("authoritative run");
+    expect(abort).not.toHaveBeenCalled();
+    expect(clear).not.toHaveBeenCalled();
+  });
+
   it("returns found=false when the session key is not tracked as a subagent run", async () => {
     const result = await killSubagentRunAdmin({
       cfg: cfgWithSessionStore(),

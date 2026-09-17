@@ -39,7 +39,7 @@ export const MemoryGetSchema = Type.Object({
 });
 
 function resolveMemoryToolContext(options: MemoryToolOptions) {
-  const cfg = options.getConfig?.() ?? options.config;
+  const cfg = options.getConfig ? options.getConfig() : options.config;
   if (!cfg) {
     return null;
   }
@@ -103,7 +103,13 @@ export function createMemoryTool(params: {
     description: params.description,
     parameters: params.parameters,
     execute: async (toolCallId, toolParams) => {
-      const latestCtx = resolveMemoryToolContext(params.options) ?? ctx;
+      const latestCtx = params.options.getConfig ? resolveMemoryToolContext(params.options) : ctx;
+      // A live getter makes missing or disabled current config a revocation.
+      if (!latestCtx) {
+        throw new Error(
+          "Memory is disabled for this agent. Enable memory search for this agent, then retry.",
+        );
+      }
       return await params.execute(latestCtx)(toolCallId, toolParams);
     },
   };

@@ -123,7 +123,7 @@ struct ExecHostRequest: Codable {
     var approvalDecision: ExecApprovalDecision?
 }
 
-private struct ExecHostRunResult: Codable {
+struct ExecHostRunResult: Codable {
     var exitCode: Int?
     var timedOut: Bool
     var success: Bool
@@ -156,7 +156,7 @@ struct ExecHostError: Codable, Error {
     var reason: String?
 }
 
-private struct ExecHostResponse: Codable {
+struct ExecHostResponse: Codable {
     var type: String
     var id: String
     var ok: Bool
@@ -364,7 +364,7 @@ enum ExecApprovalsPromptPresenter {
         case .allowOnce:
             "Allow Once"
         case .allowAlways:
-            "Always Allow"
+            "Always Allow Here"
         case .deny:
             "Don't Allow"
         }
@@ -496,10 +496,17 @@ private enum ExecHostExecutor {
             return self.errorResponse(error)
         }
 
+        let effectiveCwd = ExecCommandResolution.canonicalApprovalCwd(request.cwd)
+        guard let cwdSnapshot = ExecCommandResolution.captureApprovalCwdSnapshot(effectiveCwd) else {
+            return self.errorResponse(code: "UNAVAILABLE",
+                message: "SYSTEM_RUN_DENIED: approval requires an existing canonical cwd", reason: "approval-required")
+        }
+
         let context = await self.buildContext(
             request: request,
             command: validatedRequest.command,
-            rawCommand: validatedRequest.evaluationRawCommand)
+            rawCommand: validatedRequest.evaluationRawCommand,
+            cwd: effectiveCwd)
 
         switch ExecHostRequestEvaluator.evaluate(
             context: context,
@@ -513,7 +520,7 @@ private enum ExecHostExecutor {
             guard let decision = ExecApprovalsPromptPresenter.prompt(
                 ExecApprovalPromptRequest(
                     command: context.displayCommand,
-                    cwd: request.cwd,
+                    cwd: effectiveCwd,
                     host: "node",
                     security: context.security.rawValue,
                     ask: context.ask.rawValue,
@@ -581,20 +588,22 @@ private enum ExecHostExecutor {
 
         return await self.runCommand(
             command: validatedRequest.command,
-            cwd: request.cwd,
+            cwd: effectiveCwd,
             env: context.env,
-            timeoutMs: request.timeoutMs)
+            timeoutMs: request.timeoutMs,
+            cwdSnapshot: cwdSnapshot)
     }
 
     private static func buildContext(
         request: ExecHostRequest,
         command: [String],
-        rawCommand: String?) async -> ExecApprovalContext
+        rawCommand: String?,
+        cwd: String) async -> ExecApprovalContext
     {
         await ExecApprovalEvaluator.evaluate(
             command: command,
             rawCommand: rawCommand,
-            cwd: request.cwd,
+            cwd: cwd,
             envOverrides: request.env,
             agentId: request.agentId)
     }
@@ -604,9 +613,10 @@ private enum ExecHostExecutor {
         context: ExecApprovalContext)
     {
         guard decision == .allowAlways, context.security == .allowlist else { return }
-        var seenPatterns = Set<String>()
+        var seenPatterns = Set<ExecAllowAlwaysPattern>()
         for pattern in context.allowAlwaysPatterns where seenPatterns.insert(pattern).inserted {
-            ExecApprovalsStore.addAllowlistEntry(agentId: context.agentId, pattern: pattern)
+            ExecApprovalsStore.addAllowlistEntry(agentId: context.agentId, pattern: pattern.pattern,
+                source: "allow-always", argPattern: pattern.argPattern)
         }
     }
 
@@ -625,7 +635,8 @@ private enum ExecHostExecutor {
         command: [String],
         cwd: String?,
         env: [String: String]?,
-        timeoutMs: Int?) async -> ExecHostResponse
+        timeoutMs: Int?,
+        cwdSnapshot: ExecApprovalCwdSnapshot) async -> ExecHostResponse
     {
         let timeoutSec = timeoutMs.flatMap { Double($0) / 1000.0 }
         let result = await Task.detached { () -> ShellExecutor.ShellResult in
@@ -633,8 +644,13 @@ private enum ExecHostExecutor {
                 command: command,
                 cwd: cwd,
                 env: env,
-                timeout: timeoutSec)
+                timeout: timeoutSec,
+                beforeSpawn: { ExecCommandResolution.revalidateApprovalCwdSnapshot(cwdSnapshot)
+                    ? nil : ExecCommandResolution.approvalCwdDriftDeniedMessage })
         }.value
+        if let message = result.preflightError {
+            return self.errorResponse(code: "UNAVAILABLE", message: message, reason: "approval-required")
+        }
         let payload = ExecHostRunResult(
             exitCode: result.exitCode,
             timedOut: result.timedOut,

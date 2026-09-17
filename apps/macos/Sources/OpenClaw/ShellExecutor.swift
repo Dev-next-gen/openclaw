@@ -9,6 +9,7 @@ enum ShellExecutor {
         var timedOut: Bool
         var success: Bool
         var errorMessage: String?
+        var preflightError: String? = nil
     }
 
     private final class CompletionBox: @unchecked Sendable {
@@ -49,7 +50,8 @@ enum ShellExecutor {
         command: [String],
         cwd: String?,
         env: [String: String]?,
-        timeout: Double?) async -> ShellResult
+        timeout: Double?,
+        beforeSpawn: (@Sendable () -> String?)? = nil) async -> ShellResult
     {
         guard !command.isEmpty else {
             return ShellResult(
@@ -90,6 +92,13 @@ enum ShellExecutor {
                     }
                 }
 
+                if let message = beforeSpawn?() {
+                    stdoutPipe.fileHandleForWriting.closeFile()
+                    stderrPipe.fileHandleForWriting.closeFile()
+                    completion.finish(ShellResult(stdout: "", stderr: "", exitCode: nil,
+                        timedOut: false, success: false, errorMessage: message, preflightError: message))
+                    return
+                }
                 do {
                     try process.run()
                 } catch {
@@ -119,6 +128,12 @@ enum ShellExecutor {
             }
         }
 
+        if let message = beforeSpawn?() {
+            stdoutPipe.fileHandleForWriting.closeFile()
+            stderrPipe.fileHandleForWriting.closeFile()
+            return ShellResult(stdout: "", stderr: "", exitCode: nil,
+                timedOut: false, success: false, errorMessage: message, preflightError: message)
+        }
         do {
             try process.run()
         } catch {

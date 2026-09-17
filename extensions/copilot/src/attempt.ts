@@ -715,6 +715,10 @@ export async function runCopilotAttempt(
           developerInstructions: originalDeveloperInstructions,
           messages,
           ctx: hookContext,
+          toolAuthority: {
+            activeToolNames: sdkTools.map((tool) => tool.name),
+            signal: params.abortSignal,
+          },
           bootstrapContextRunKind: input.bootstrapContextRunKind,
           ...("beforeAgentStartResult" in input
             ? { beforeAgentStartResult: input.beforeAgentStartResult }

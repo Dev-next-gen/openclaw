@@ -301,7 +301,9 @@ describe("memory-core dreaming phases", () => {
     const workspaceDir = await createDreamingWorkspace();
     const now = new Date("2026-04-15T12:00:00.000Z");
     const snippet = "Use bounded retries for provider requests.";
-    const sourcePath = "memory/.dreams/session-corpus/2026-04-14.txt";
+    // Timestamp ranking operates on eligible daily memory; quarantined session
+    // corpora intentionally cannot contribute dreaming signals.
+    const sourcePath = "memory/2026-01-14.md";
     await fs.mkdir(path.dirname(path.join(workspaceDir, sourcePath)), { recursive: true });
     await fs.writeFile(path.join(workspaceDir, sourcePath), `${snippet}\n`, "utf-8");
     const entry = {

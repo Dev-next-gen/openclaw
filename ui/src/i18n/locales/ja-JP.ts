@@ -451,6 +451,7 @@ export const ja_JP: TranslationMap = {
     pending: "{count} pending",
     allowOnce: "Allow once",
     alwaysAllow: "Always allow",
+    alwaysAllowHere: "Always allow here",
     allowAlwaysUnavailable:
       "有効な承認ポリシーでは毎回承認が必要なため、Allow Always は利用できません。",
     deny: "Deny",

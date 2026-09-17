@@ -48,6 +48,7 @@ type TaskRegistryDatabase = {
 // SQLite-backed task store mirrors task records and delivery state into openclaw-state.db.
 const TASK_RUN_SELECT_COLUMNS = [
   "task_id",
+  "detail_json",
   "runtime",
   "task_kind",
   "source_id",
@@ -94,6 +95,7 @@ function rowToTaskRecord(row: TaskRegistryRow): TaskRecord {
     scopeKind === "system" ? "" : row.requester_session_key?.trim() || row.owner_key;
   return {
     taskId: row.task_id,
+    ...(row.detail_json ? { detail: JSON.parse(row.detail_json) as TaskRecord["detail"] } : {}),
     runtime: parseTaskRuntime(row.runtime),
     ...(row.task_kind ? { taskKind: row.task_kind } : {}),
     ...(row.source_id ? { sourceId: row.source_id } : {}),
@@ -136,6 +138,7 @@ function rowToTaskDeliveryState(row: TaskDeliveryStateRow): TaskDeliveryState {
 function bindTaskRecordBase(record: TaskRecord): Insertable<TaskRunsTable> {
   return {
     task_id: record.taskId,
+    detail_json: serializeJson(record.detail),
     runtime: record.runtime,
     task_kind: record.taskKind ?? null,
     source_id: record.sourceId ?? null,
@@ -225,6 +228,7 @@ function upsertTaskRow(db: DatabaseSync, row: Insertable<TaskRunsTable>): void {
       .values(row)
       .onConflict((conflict) =>
         conflict.column("task_id").doUpdateSet({
+          detail_json: (eb) => eb.ref("excluded.detail_json"),
           runtime: (eb) => eb.ref("excluded.runtime"),
           task_kind: (eb) => eb.ref("excluded.task_kind"),
           source_id: (eb) => eb.ref("excluded.source_id"),

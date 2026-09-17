@@ -1722,16 +1722,20 @@ describe("VoiceCallWebhookServer classic response routing", () => {
     const params = requireFirstMockCall(
       mocks.generateVoiceResponse.mock.calls,
       "classic voice response",
-    )[0] as { agentId?: string; voiceConfig?: VoiceCallConfig } | undefined;
+    )[0] as
+      | { agentId?: string; senderIsOwner?: boolean; voiceConfig?: VoiceCallConfig }
+      | undefined;
     expect(params?.voiceConfig?.agentId).toBe("top");
     expect(params?.agentId).toBe("support");
+    expect(params).toHaveProperty("senderIsOwner", undefined);
     expect(speak).toHaveBeenCalledWith(call.callId, "Hello back", {
       listenAfterPlayback: true,
     });
   });
 
-  it("does not replay a completed response after early playback", async () => {
+  it("marks inbound calls as non-owners and does not replay an early response", async () => {
     const call = createCall(Date.now());
+    call.direction = "inbound";
     const speak = vi.fn(async () => ({ success: true }));
     const manager = {
       getCall: (callId: string) => (callId === call.callId ? call : undefined),
@@ -1762,6 +1766,7 @@ describe("VoiceCallWebhookServer classic response routing", () => {
     expect(speak.mock.calls).toEqual([
       [call.callId, "Spoken before compaction. Final detail.", { listenAfterPlayback: true }],
     ]);
+    expect(mocks.generateVoiceResponse.mock.calls[0]?.[0]).toHaveProperty("senderIsOwner", false);
   });
 
   it("logs only char counts for inbound user text, early AI text, and final AI text", async () => {

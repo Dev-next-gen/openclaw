@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import * as memoryProvenance from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { createPluginStateKeyedStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -206,6 +207,50 @@ describe("short-term promotion", () => {
 
       expect(live).toHaveLength(2);
       expect(statSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("rejects newly quarantined sources when rehydrating a previously ranked promotion", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      await writeDailyMemoryNote(workspaceDir, "2026-04-03", ["Prefer concise replies."]);
+      await recordGroundedShortTermCandidates({
+        workspaceDir,
+        query: "preferences",
+        nowMs: Date.parse("2026-04-03T10:00:00Z"),
+        items: [
+          {
+            path: "memory/2026-04-03.md",
+            startLine: 1,
+            endLine: 1,
+            snippet: "Prefer concise replies.",
+            score: 0.95,
+            signalCount: 3,
+            query: "preferences",
+            dayBucket: "2026-04-03",
+          },
+        ],
+      });
+      const candidates = await rankShortTermPromotionCandidates({
+        workspaceDir,
+        minScore: 0,
+        minRecallCount: 0,
+        minUniqueQueries: 0,
+        nowMs: Date.parse("2026-04-03T10:00:00Z"),
+      });
+      expect(candidates.length).toBeGreaterThan(0);
+      vi.spyOn(memoryProvenance, "isMemoryArtifactEligibleForAutomaticContext").mockResolvedValue(
+        false,
+      );
+      const result = await applyShortTermPromotions({
+        workspaceDir,
+        candidates,
+        minRecallCount: 0,
+        minUniqueQueries: 0,
+        minScore: 0,
+        nowMs: Date.parse("2026-04-03T10:00:00Z"),
+      });
+      expect(result.applied).toBe(0);
+      await expect(fs.access(path.join(workspaceDir, "MEMORY.md"))).rejects.toThrow();
     });
   });
 

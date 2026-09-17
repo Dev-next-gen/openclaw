@@ -1127,6 +1127,12 @@ export async function runCodexAppServerAttempt(
       developerInstructions,
       messages: codexModelInputHistoryMessages,
       ctx: hookContext,
+      toolAuthority: {
+        activeToolNames: flattenCodexDynamicToolFunctions(toolBridge.availableSpecs).map(
+          (tool) => tool.name,
+        ),
+        signal: runAbortController.signal,
+      },
       bootstrapContextRunKind: params.bootstrapContextRunKind,
       ...("beforeAgentStartResult" in params
         ? { beforeAgentStartResult: params.beforeAgentStartResult }

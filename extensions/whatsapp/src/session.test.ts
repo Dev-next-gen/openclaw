@@ -280,6 +280,22 @@ describe("web session", () => {
     openMock.restore();
   });
 
+  it("rejects credential updates after login authority is revoked", async () => {
+    const authDir = createTempAuthDir("openclaw-wa-revoked");
+    let active = true;
+    await createWaSocket(false, false, {
+      authDir,
+      beforeCredentialPersistence: async () => {
+        if (!active) {
+          throw new Error("login revoked");
+        }
+      },
+    });
+    active = false;
+    await emitCredsUpdate(authDir);
+    expect(fsSync.existsSync(path.join(authDir, "creds.json"))).toBe(false);
+  });
+
   it("prints compact terminal QR output when requested", async () => {
     const authDir = createTempAuthDir("openclaw-wa-terminal-qr");
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});

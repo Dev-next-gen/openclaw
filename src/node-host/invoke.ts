@@ -35,6 +35,11 @@ import {
   sanitizeSystemRunEnvOverrides,
 } from "../infra/host-env-security.js";
 import {
+  ApprovedCwdDriftError,
+  revalidateApprovedCwdSnapshot,
+  type ApprovedCwdSnapshot,
+} from "../infra/system-run-cwd-binding.js";
+import {
   decodeWindowsOutputBuffer,
   resolveWindowsConsoleEncoding,
 } from "../infra/windows-encoding.js";
@@ -275,6 +280,7 @@ async function runCommand(
   cwd: string | undefined,
   env: Record<string, string> | undefined,
   timeoutMs: number | undefined,
+  approvedCwdSnapshot?: ApprovedCwdSnapshot,
 ): Promise<RunResult> {
   return await new Promise((resolve) => {
     const stdoutChunks: Buffer[] = [];
@@ -285,6 +291,11 @@ async function runCommand(
     let settled = false;
     const windowsEncoding = resolveWindowsConsoleEncoding();
 
+    // Companion fallback and argv resolution can await after policy approval.
+    // Recheck the original directory object at the final synchronous spawn boundary.
+    if (approvedCwdSnapshot && !revalidateApprovedCwdSnapshot(approvedCwdSnapshot)) {
+      throw new ApprovedCwdDriftError();
+    }
     const child = spawn(argv[0], argv.slice(1), {
       cwd,
       env,

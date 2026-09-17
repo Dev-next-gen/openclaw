@@ -8,6 +8,7 @@ import {
   makeMockExecutableResolution,
 } from "./exec-approvals-test-helpers.js";
 import type { ExecApprovalsFile } from "./exec-approvals.js";
+import { buildCwdBoundHashedArgPattern } from "./exec-command-resolution.js";
 
 vi.unmock("./exec-approvals.js");
 vi.unmock("./exec-approvals-effective.js");
@@ -358,7 +359,11 @@ describe("exec approvals policy helpers", () => {
       hasDurableExecApproval({
         analysisOk: true,
         segmentAllowlistEntries: [
-          { pattern: "/usr/bin/echo", source: "allow-always" },
+          {
+            pattern: "/usr/bin/echo",
+            source: "allow-always",
+            argPattern: buildCwdBoundHashedArgPattern(["/usr/bin/echo", "ok"], "/tmp"),
+          },
           { pattern: "/usr/bin/printf", source: "allow-always" },
         ],
         allowlist: [],
@@ -398,7 +403,13 @@ describe("exec approvals policy helpers", () => {
           },
         ],
       },
-      allowlist: [{ pattern: "/usr/bin/echo", source: "allow-always" }],
+      allowlist: [
+        {
+          pattern: "/usr/bin/echo",
+          source: "allow-always",
+          argPattern: buildCwdBoundHashedArgPattern(["/usr/bin/echo", "ok"], "/tmp"),
+        },
+      ],
       safeBins: new Set(),
       cwd: "/tmp",
       platform: process.platform,
@@ -412,7 +423,13 @@ describe("exec approvals policy helpers", () => {
       hasDurableExecApproval({
         analysisOk: true,
         segmentAllowlistEntries: result.segmentAllowlistEntries,
-        allowlist: [{ pattern: "/usr/bin/echo", source: "allow-always" }],
+        allowlist: [
+          {
+            pattern: "/usr/bin/echo",
+            source: "allow-always",
+            argPattern: buildCwdBoundHashedArgPattern(["/usr/bin/echo", "ok"], "/tmp"),
+          },
+        ],
       }),
     ).toBe(false);
   });

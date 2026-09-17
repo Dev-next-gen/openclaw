@@ -274,6 +274,11 @@ export interface ConfigHealthEntries {
   updated_at_ms: number;
 }
 
+export interface ConfigRevisionKeys {
+  hmac_key: Uint8Array;
+  id: Generated<number>;
+}
+
 export interface CronJobs {
   agent_id: string | null;
   anchor_ms: number | null;
@@ -937,6 +942,7 @@ export interface TaskRuns {
   cleanup_after: number | null;
   created_at: number;
   delivery_status: string;
+  detail_json: string | null;
   ended_at: number | null;
   error: string | null;
   label: string | null;
@@ -1076,6 +1082,7 @@ export interface DB {
   command_log_entries: CommandLogEntries;
   commitments: Commitments;
   config_health_entries: ConfigHealthEntries;
+  config_revision_keys: ConfigRevisionKeys;
   cron_jobs: CronJobs;
   cron_run_logs: CronRunLogs;
   current_conversation_bindings: CurrentConversationBindings;

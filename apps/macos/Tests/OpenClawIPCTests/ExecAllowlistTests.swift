@@ -59,6 +59,62 @@ struct ExecAllowlistTests {
             cwd: nil)
     }
 
+    @Test func `approval cwd snapshot rejects directory replacement`() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclaw-approval-cwd-\(UUID().uuidString)", isDirectory: true)
+        let approved = root.appendingPathComponent("approved", isDirectory: true)
+        let moved = root.appendingPathComponent("moved", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: approved, withIntermediateDirectories: true)
+        let snapshot = try #require(ExecCommandResolution.captureApprovalCwdSnapshot(approved.path))
+
+        #expect(ExecCommandResolution.revalidateApprovalCwdSnapshot(snapshot))
+        try FileManager.default.moveItem(at: approved, to: moved)
+        try FileManager.default.createDirectory(at: approved, withIntermediateDirectories: false)
+        #expect(!ExecCommandResolution.revalidateApprovalCwdSnapshot(snapshot))
+    }
+
+    @Test func `generated approvals bind argv and canonical cwd`() throws {
+        let cwd = FileManager.default.temporaryDirectory.path
+        let command = ["/usr/bin/printf", "safe"]
+        let generated = try #require(ExecCommandResolution.resolveAllowAlwaysPatterns(
+            command: command, cwd: cwd, env: nil).first)
+        let entry = ExecAllowlistEntry(pattern: generated.pattern, source: "allow-always",
+            argPattern: generated.argPattern)
+        let same = ExecCommandResolution.resolveForAllowlist(command: command, rawCommand: nil, cwd: cwd, env: nil)
+        let changedArgs = ExecCommandResolution.resolveForAllowlist(command: ["/usr/bin/printf", "changed"],
+            rawCommand: "/usr/bin/printf safe", cwd: cwd, env: nil)
+        let changedCwd = ExecCommandResolution.resolveForAllowlist(command: command, rawCommand: nil,
+            cwd: "/", env: nil)
+        #expect(ExecAllowlistMatcher.match(entries: [entry], resolution: same.first) != nil)
+        #expect(ExecAllowlistMatcher.match(entries: [entry], resolution: changedArgs.first) == nil)
+        #expect(ExecAllowlistMatcher.match(entries: [entry], resolution: changedCwd.first) == nil)
+        let old = ExecAllowlistEntry(pattern: generated.pattern, source: "allow-always",
+            argPattern: "sha256:argv:obsolete")
+        #expect(ExecAllowlistMatcher.match(entries: [old], resolution: same.first) == nil)
+    }
+
+    @Test func `generated approval cannot reuse expanded shell or changed env cwd`() throws {
+        let cwd = FileManager.default.currentDirectoryPath
+        let command = ["/usr/bin/printf", "$HOME"]
+        let generated = try #require(ExecCommandResolution.resolveAllowAlwaysPatterns(
+            command: command, cwd: cwd, env: nil).first)
+        let entry = ExecAllowlistEntry(pattern: generated.pattern, source: "allow-always",
+            argPattern: generated.argPattern)
+        for wrapped in [
+            ["/bin/sh", "-c", "/usr/bin/printf $HOME"],
+            ["/usr/bin/env", "--chdir=/", "/usr/bin/printf", "$HOME"],
+        ] {
+            let resolutions = ExecCommandResolution.resolveForAllowlist(
+                command: wrapped, rawCommand: nil, cwd: cwd, env: nil)
+            #expect(ExecAllowlistMatcher.matchAll(entries: [entry], resolutions: resolutions).isEmpty)
+            #expect(ExecCommandResolution.resolveAllowAlwaysPatterns(
+                command: wrapped, cwd: cwd, env: nil).isEmpty)
+        }
+        #expect(ExecCommandResolution.cwdBoundArgPattern(argv: ["printf", ""], cwd: cwd) !=
+            ExecCommandResolution.cwdBoundArgPattern(argv: ["printf"], cwd: cwd))
+    }
+
     @Test func `match uses resolved path`() {
         let entry = ExecAllowlistEntry(pattern: "/opt/homebrew/bin/rg")
         let resolution = Self.homebrewRGResolution()
@@ -460,13 +516,13 @@ struct ExecAllowlistTests {
         #expect(evaluation.allowlistResolutions[0].executableName == "printf")
     }
 
-    @Test func `allow always patterns unwrap env wrapper modifiers to the inner executable`() {
+    @Test func `allow always patterns reject env modifier authority loss`() {
         let patterns = ExecCommandResolution.resolveAllowAlwaysPatterns(
             command: ["/usr/bin/env", "FOO=bar", "/usr/bin/printf", "ok"],
             cwd: nil,
             env: ["PATH": "/usr/bin:/bin"])
 
-        #expect(patterns == ["/usr/bin/printf"])
+        #expect(patterns.isEmpty)
     }
 
     @Test func `allow always patterns fail closed for env modified shell wrappers`() {
@@ -492,7 +548,7 @@ struct ExecAllowlistTests {
             env: ["PATH": "/usr/bin:/bin"],
             rawCommand: "/usr/bin/printf safe_marker")
 
-        #expect(patterns == ["/usr/bin/printf"])
+        #expect(patterns.map(\.pattern) == ["/usr/bin/printf"])
     }
 
     @Test func `match all requires every segment to match`() {

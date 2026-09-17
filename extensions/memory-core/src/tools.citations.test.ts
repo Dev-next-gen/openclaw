@@ -148,6 +148,23 @@ describe("memory search citations", () => {
 });
 
 describe("memory tools", () => {
+  it.each(["missing", "disabled"])(
+    "revokes a retained search tool when live config is %s",
+    async (mode) => {
+      const config = createDefaultMemoryToolConfig();
+      let live: typeof config | undefined = config;
+      const tool = createMemorySearchToolOrThrow({ config, getConfig: () => live });
+      await tool.execute("before", { query: "hello" });
+      const before = getMemorySearchManagerMockCalls();
+      live =
+        mode === "missing"
+          ? undefined
+          : { agents: { defaults: { memorySearch: { enabled: false } } } };
+      await expect(tool.execute("after", { query: "hello" })).rejects.toThrow("Memory is disabled");
+      expect(getMemorySearchManagerMockCalls()).toBe(before);
+    },
+  );
+
   it("returns unavailable details when memory_search fails (e.g. embeddings 429)", async () => {
     setMemorySearchImpl(async () => {
       throw new Error("openai embeddings failed: 429 insufficient_quota");

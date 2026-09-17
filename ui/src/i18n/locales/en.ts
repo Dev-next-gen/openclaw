@@ -443,6 +443,7 @@ export const en: TranslationMap = {
     pending: "{count} pending",
     allowOnce: "Allow once",
     alwaysAllow: "Always allow",
+    alwaysAllowHere: "Always allow here",
     allowAlwaysUnavailable:
       "The effective approval policy requires approval every time, so Allow Always is unavailable.",
     deny: "Deny",

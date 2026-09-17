@@ -744,3 +744,38 @@ describe("runExecProcess POSIX command wrapper", () => {
     expect(commandStr).toContain("echo test");
   });
 });
+
+describe("exec approval final spawn boundary", () => {
+  it.each([false, true])(
+    "does not spawn after final authorization denial (pty=%s)",
+    async (usePty) => {
+      const beforeSpawn = vi.fn(async () => ({
+        content: [{ type: "text" as const, text: "directory replaced" }],
+        details: {
+          status: "failed" as const,
+          exitCode: null,
+          durationMs: 0,
+          aggregated: "directory replaced",
+          timedOut: false,
+          cwd: process.cwd(),
+        },
+      }));
+      await expect(
+        runExecProcess({
+          command: "echo test",
+          workdir: process.cwd(),
+          env: { PATH: process.env.PATH ?? "" },
+          usePty,
+          warnings: [],
+          maxOutput: 1000,
+          pendingMaxOutput: 1000,
+          notifyOnExit: false,
+          timeoutSec: null,
+          beforeSpawn,
+        }),
+      ).rejects.toThrow("exec denied by final preflight");
+      expect(beforeSpawn).toHaveBeenCalledTimes(1);
+      expect(supervisorMock.spawn).not.toHaveBeenCalled();
+    },
+  );
+});

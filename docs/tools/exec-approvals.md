@@ -388,12 +388,20 @@ argv matching. Prefer the UI or approval flow to regenerate those entries
 instead of hand-editing the encoded value. If OpenClaw cannot parse argv
 for a command segment, entries with `argPattern` do not match.
 
+Generated `allow-always` entries bind the command's exact arguments and the
+working directory where it was approved. **Always allow here** does not authorize
+the same command in another directory. Tagged generated entries without this
+binding are inactive; run `openclaw doctor --fix`, then approve affected workflows
+again in their intended directory. Manual allowlist rules remain unchanged.
+Historical native entries without a source tag cannot be distinguished from
+manual rules; review and replace any such rules that should be directory-scoped.
+
 Each allowlist entry supports:
 
 | Field              | Meaning                                                       |
 | ------------------ | ------------------------------------------------------------- |
 | `pattern`          | Resolved binary path glob or bare command-name glob           |
-| `argPattern`       | Optional argv regex; omitted entries are path-only            |
+| `argPattern`       | Manual argv regex or generated cwd-bound digest               |
 | `id`               | Stable UUID used for UI identity                              |
 | `source`           | Entry source, such as `allow-always`                          |
 | `commandText`      | Command text captured when an approval flow created the entry |

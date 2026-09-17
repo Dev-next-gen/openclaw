@@ -25,6 +25,7 @@ const hookMocks = vi.hoisted(() => ({
 
 let cfg: Record<string, unknown> = {};
 let lastCreateOpenClawToolsContext: Record<string, unknown> | undefined;
+let lastToolSignal: AbortSignal | undefined;
 
 // Perf: keep this suite pure unit. Mock heavyweight config/session modules.
 vi.mock("../config/config.js", () => ({
@@ -97,7 +98,11 @@ vi.mock("../agents/openclaw-tools.js", () => {
     {
       name: "agents_list",
       parameters: { type: "object", properties: { action: { type: "string" } } },
-      execute: async () => ({ ok: true, result: [] }),
+      execute: async (_id: string, _args: unknown, signal?: AbortSignal) => {
+        lastToolSignal = signal;
+        expect(signal?.aborted).toBe(false);
+        return { ok: true, result: [] };
+      },
     },
     {
       name: "sessions_spawn",
@@ -277,6 +282,7 @@ beforeEach(() => {
   pluginHttpHandlers = [];
   cfg = {};
   lastCreateOpenClawToolsContext = undefined;
+  lastToolSignal = undefined;
   pluginToolMetaState.clear();
   pluginToolMetaState.set("plugin_doctor", { pluginId: "test-plugin", optional: true });
   hookMocks.resolveToolLoopDetectionConfig.mockClear();
@@ -448,6 +454,14 @@ const setMainAllowedTools = (params: {
 };
 
 describe("POST /tools/invoke", () => {
+  it("revokes the execution signal when the HTTP tool request completes", async () => {
+    allowAgentsListForMain();
+    const response = await invokeAgentsListAuthed({ sessionKey: "main" });
+    await expectOkInvokeResponse(response);
+    expect(lastToolSignal).toBeInstanceOf(AbortSignal);
+    expect(lastToolSignal?.aborted).toBe(true);
+  });
+
   it("invokes a tool and returns {ok:true,result}", async () => {
     allowAgentsListForMain();
     const res = await invokeAgentsListAuthed({ sessionKey: "main" });

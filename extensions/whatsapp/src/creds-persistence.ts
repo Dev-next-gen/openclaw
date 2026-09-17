@@ -20,7 +20,9 @@ export async function writeWebCredsRawAtomically(params: {
   filePath: string;
   content: string;
   tempPrefix: string;
+  beforeCredentialPersistence?: () => Promise<void>;
 }): Promise<void> {
+  await params.beforeCredentialPersistence?.();
   await assertWebCredsPathRegularFileOrMissing(params.filePath);
   await replaceFileAtomic({
     filePath: params.filePath,
@@ -32,15 +34,21 @@ export async function writeWebCredsRawAtomically(params: {
     syncParentDir: true,
     beforeRename: async ({ filePath }) => {
       await assertWebCredsPathRegularFileOrMissing(filePath);
+      await params.beforeCredentialPersistence?.();
     },
   });
 }
 
-export async function writeCredsJsonAtomically(authDir: string, creds: unknown): Promise<void> {
+export async function writeCredsJsonAtomically(
+  authDir: string,
+  creds: unknown,
+  beforeCredentialPersistence?: () => Promise<void>,
+): Promise<void> {
   await writeWebCredsRawAtomically({
     filePath: resolveWebCredsPath(authDir),
     content: await stringifyCreds(creds),
     tempPrefix: ".creds",
+    beforeCredentialPersistence,
   });
 }
 

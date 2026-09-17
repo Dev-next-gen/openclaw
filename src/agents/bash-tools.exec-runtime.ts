@@ -64,6 +64,19 @@ import { getShellConfig, sanitizeBinaryOutput } from "./shell-utils.js";
 
 export { execSchema } from "./bash-tools.schemas.js";
 
+export class ExecProcessPreflightError extends Error {
+  constructor(readonly result: AgentToolResult<ExecToolDetails>) {
+    super("exec denied by final preflight");
+  }
+
+  static unwrap(error: unknown): AgentToolResult<ExecToolDetails> {
+    if (error instanceof ExecProcessPreflightError) {
+      return error.result;
+    }
+    throw error;
+  }
+}
+
 const SMKX = "\x1b[?1h";
 const RMKX = "\x1b[?1l";
 
@@ -609,6 +622,7 @@ export async function runExecProcess(opts: {
   eventRouting?: EventSessionRoutingPolicy;
   notifyDeliveryContext?: DeliveryContext;
   timeoutSec: number | null;
+  beforeSpawn?: () => Promise<AgentToolResult<ExecToolDetails> | undefined>;
   onUpdate?: (partialResult: AgentToolResult<ExecToolDetails>) => void;
 }): Promise<ExecProcessHandle> {
   const startedAt = Date.now();
@@ -829,6 +843,13 @@ export async function runExecProcess(opts: {
     handleStdout(chunk);
   };
 
+  const assertPreSpawnAuthorized = async () => {
+    const denied = await opts.beforeSpawn?.();
+    if (denied) {
+      throw new ExecProcessPreflightError(denied);
+    }
+  };
+
   try {
     const spawnBase = {
       runId: sessionId,
@@ -842,6 +863,7 @@ export async function runExecProcess(opts: {
       onStdout: onSupervisorStdout,
       onStderr: handleStderr,
     };
+    await assertPreSpawnAuthorized();
     managedRun =
       spawnSpec.mode === "pty"
         ? await supervisor.spawn({
@@ -856,7 +878,7 @@ export async function runExecProcess(opts: {
             stdinMode: spawnSpec.stdinMode,
           });
   } catch (err) {
-    if (spawnSpec.mode === "pty") {
+    if (spawnSpec.mode === "pty" && !(err instanceof ExecProcessPreflightError)) {
       const warning = `Warning: PTY spawn failed (${String(err)}); retrying without PTY for \`${opts.command}\`.`;
       logWarn(
         `exec: PTY spawn failed (${String(err)}); retrying without PTY for "${opts.command}".`,
@@ -864,6 +886,7 @@ export async function runExecProcess(opts: {
       opts.warnings.push(warning);
       usingPty = false;
       try {
+        await assertPreSpawnAuthorized();
         managedRun = await supervisor.spawn({
           runId: sessionId,
           sessionId: opts.sessionKey?.trim() || sessionId,

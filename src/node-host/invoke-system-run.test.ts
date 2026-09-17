@@ -27,6 +27,7 @@ import {
 } from "../infra/exec-approvals.js";
 import type { ExecAutoReviewer } from "../infra/exec-auto-review.js";
 import type { ExecHostResponse } from "../infra/exec-host.js";
+import { ApprovedCwdDriftError } from "../infra/system-run-cwd-binding.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { buildSystemRunApprovalPlan } from "./invoke-system-run-plan.js";
 import { handleSystemRunInvoke } from "./invoke-system-run.js";
@@ -370,9 +371,10 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
   }) {
     expect(params.runCommand).toHaveBeenCalledWith(
       [params.expected, ...params.commandTail],
-      params.cwd,
+      params.cwd ?? process.cwd(),
       undefined,
       undefined,
+      expect.objectContaining({ cwd: params.cwd ?? process.cwd(), stat: expect.anything() }),
     );
   }
 
@@ -1087,6 +1089,22 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
         });
       },
     });
+  });
+
+  it("reports final cwd drift as denied rather than completed execution", async () => {
+    const { runCommand, sendInvokeResult, sendExecFinishedEvent } = await runSystemInvoke({
+      preferMacAppExecHost: false,
+      command: [process.execPath, "--version"],
+      approved: true,
+      security: "full",
+      ask: "off",
+      runCommand: async () => {
+        throw new ApprovedCwdDriftError();
+      },
+    });
+    expect(runCommand).toHaveBeenCalledOnce();
+    expectInvokeErrorMessage(sendInvokeResult, { message: "approval cwd changed" });
+    expect(sendExecFinishedEvent).not.toHaveBeenCalled();
   });
 
   it.runIf(process.platform !== "win32")(

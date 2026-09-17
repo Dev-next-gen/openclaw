@@ -76,7 +76,10 @@ function isValidJson(raw: string): boolean {
   }
 }
 
-export async function restoreCredsFromBackupIfNeeded(authDir: string): Promise<boolean> {
+export async function restoreCredsFromBackupIfNeeded(
+  authDir: string,
+  options: { beforeCredentialPersistence?: () => Promise<void> } = {},
+): Promise<boolean> {
   const logger = getChildLogger({ module: "web-session" });
   try {
     const credsPath = resolveWebCredsPath(authDir);
@@ -99,6 +102,7 @@ export async function restoreCredsFromBackupIfNeeded(authDir: string): Promise<b
       filePath: credsPath,
       content: backupRaw,
       tempPrefix: ".creds.restore",
+      beforeCredentialPersistence: options.beforeCredentialPersistence,
     });
     logger.warn({ credsPath }, "restored corrupted WhatsApp creds.json from backup");
     return true;
@@ -219,7 +223,10 @@ function isBaileysAuthFileName(name: string): boolean {
   return /^(app-state-sync|session|sender-key|pre-key)-/.test(name);
 }
 
-async function clearBaileysAuthFiles(authDir: string) {
+async function clearBaileysAuthFiles(
+  authDir: string,
+  beforeCredentialPersistence?: () => Promise<void>,
+) {
   const rootStats = await fs.lstat(authDir).catch(() => null);
   if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) {
     return;
@@ -233,6 +240,7 @@ async function clearBaileysAuthFiles(authDir: string) {
       if (!isBaileysAuthFileName(entry.name)) {
         return;
       }
+      await beforeCredentialPersistence?.();
       await fs.rm(path.join(authDir, entry.name), { force: true });
     }),
   );
@@ -326,6 +334,7 @@ async function classifyWebAuthDirOwnership(authDir: string): Promise<WebAuthDirO
 }
 
 export async function logoutWeb(params: {
+  beforeCredentialPersistence?: () => Promise<void>;
   authDir?: string;
   isLegacyAuthDir?: boolean;
   runtime?: RuntimeEnv;
@@ -349,10 +358,11 @@ export async function logoutWeb(params: {
       );
       return false;
     }
-    await clearBaileysAuthFiles(resolvedAuthDir);
+    await clearBaileysAuthFiles(resolvedAuthDir, params.beforeCredentialPersistence);
   } else {
     const ownership = await classifyWebAuthDirOwnership(resolvedAuthDir);
     if (ownership.kind === "owned") {
+      await params.beforeCredentialPersistence?.();
       await fs.rm(ownership.authDir, { recursive: true, force: true });
     } else if (ownership.kind === "unsafe-owned") {
       runtime.log(

@@ -53,6 +53,8 @@ describe("generateSlugViaLLM", () => {
     const options = requireFirstRunOptions();
     expect(options.timeoutMs).toBe(15_000);
     expect(options.cleanupBundleMcpOnRunEnd).toBe(true);
+    expect(options.disableTools).toBe(true);
+    expect(options.toolsAllow).toEqual([]);
   });
 
   it("marks the run lane-local so internal-helper failures do not poison shared profile health (#71709)", async () => {

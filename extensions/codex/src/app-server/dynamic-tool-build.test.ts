@@ -964,6 +964,7 @@ describe("Codex app-server dynamic tool build", () => {
     const params = createParams(sessionFile, workspaceDir);
     params.disableTools = false;
     params.senderIsOwner = true;
+    params.memoryTurnProvenance = { isTainted: () => true, markTainted: vi.fn() };
     params.runtimePlan = createCodexRuntimePlanFixture();
     const factoryOptions: unknown[] = [];
     setOpenClawCodingToolsFactoryForTests((options) => {
@@ -973,7 +974,10 @@ describe("Codex app-server dynamic tool build", () => {
 
     await buildDynamicToolsForTest(params, workspaceDir, { sandbox: null as never });
 
-    expect(factoryOptions[0]).toMatchObject({ senderIsOwner: true });
+    expect(factoryOptions[0]).toMatchObject({
+      senderIsOwner: true,
+      memoryTurnProvenance: params.memoryTurnProvenance,
+    });
   });
 
   it("passes native and routable channel targets into Codex dynamic tools", async () => {

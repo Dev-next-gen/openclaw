@@ -9,6 +9,8 @@ type PluginRuntimeChannel = import("./types-channel.js").PluginRuntimeChannel;
 // ── Subagent runtime types ──────────────────────────────────────────
 
 export type SubagentRunParams = {
+  /** Enforce a host-private empty tool allowlist for this helper run. */
+  disableTools?: boolean;
   sessionKey: string;
   message: string;
   provider?: string;

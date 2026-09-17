@@ -72,6 +72,7 @@ import {
   resolveApprovalRunningNoticeMs,
   buildExecRuntimeErrorOutcome,
   runExecProcess,
+  ExecProcessPreflightError,
   execSchema,
 } from "./bash-tools.exec-runtime.js";
 import type { ExecToolDefaults, ExecToolDetails } from "./bash-tools.exec-types.js";
@@ -1897,6 +1898,9 @@ export function createExecTool(
           throw new Error("exec internal error: local execution requires a resolved workdir");
         }
 
+        let revalidateBeforeExecution:
+          | (() => Promise<AgentToolResult<ExecToolDetails> | undefined>)
+          | undefined;
         if (host === "gateway" && !bypassApprovals) {
           const gatewayResult = await processGatewayAllowlist({
             command: params.command,
@@ -1943,6 +1947,7 @@ export function createExecTool(
           if (gatewayResult.deniedResult) {
             return gatewayResult.deniedResult;
           }
+          revalidateBeforeExecution = gatewayResult.revalidateBeforeExecution;
           execCommandOverride = gatewayResult.execCommandOverride;
           if (gatewayResult.allowWithoutEnforcedCommand) {
             execCommandOverride = undefined;
@@ -1971,6 +1976,7 @@ export function createExecTool(
         run = await runExecProcess({
           command: params.command,
           execCommand: execCommandOverride,
+          beforeSpawn: revalidateBeforeExecution,
           workdir,
           env,
           pathPrepend: defaultPathPrepend,
@@ -1994,7 +2000,7 @@ export function createExecTool(
         discardPreparedSandboxWorkdir = null;
       } catch (error) {
         discardPreparedSandboxWorkdir?.();
-        throw error;
+        return ExecProcessPreflightError.unwrap(error);
       }
 
       let yielded = false;

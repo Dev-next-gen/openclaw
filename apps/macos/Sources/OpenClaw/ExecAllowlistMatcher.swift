@@ -1,4 +1,5 @@
 import Foundation
+import JavaScriptCore
 
 enum ExecAllowlistMatcher {
     static func match(entries: [ExecAllowlistEntry], resolution: ExecCommandResolution?) -> ExecAllowlistEntry? {
@@ -7,6 +8,7 @@ enum ExecAllowlistMatcher {
         let resolvedPath = resolution.resolvedPath
 
         for entry in entries {
+            guard self.matchesArguments(entry: entry, resolution: resolution) else { continue }
             switch ExecApprovalHelpers.validateAllowlistPattern(entry.pattern) {
             case let .valid(pattern):
                 if ExecApprovalHelpers.patternHasPathSelector(pattern) {
@@ -23,6 +25,33 @@ enum ExecAllowlistMatcher {
             }
         }
         return nil
+    }
+
+    private static func matchesArguments(entry: ExecAllowlistEntry, resolution: ExecCommandResolution) -> Bool {
+        let pattern = entry.pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pattern.hasPrefix("=command:"), !pattern.hasPrefix("=node-command:") else { return false }
+        guard let argPattern = entry.argPattern, !argPattern.isEmpty else {
+            return entry.source != "allow-always"
+        }
+        let cwdPrefix = "sha256:cwd-argv:v1:"
+        if entry.source == "allow-always", !argPattern.hasPrefix(cwdPrefix) { return false }
+        guard resolution.reusableArgumentsSafe, let argv = resolution.argv else { return false }
+        if argPattern.hasPrefix(cwdPrefix) {
+            guard let cwd = resolution.cwd else { return false }
+            return argPattern == ExecCommandResolution.cwdBoundArgPattern(argv: argv, cwd: cwd)
+        }
+        if argPattern.hasPrefix("sha256:argv:") { return false }
+        let arguments = Array(argv.dropFirst())
+        let nul = "\0"
+        let subject = argPattern.contains(nul)
+            ? (arguments.isEmpty ? nul + nul : arguments.joined(separator: nul) + nul)
+            : arguments.joined(separator: " ")
+        // Shared manual arg patterns use JavaScript RegExp, not ICU semantics.
+        guard let context = JSContext(), let constructor = context.objectForKeyedSubscript("RegExp"),
+              let regex = constructor.construct(withArguments: [argPattern]), context.exception == nil,
+              let result = regex.invokeMethod("test", withArguments: [subject]), context.exception == nil
+        else { return false }
+        return result.toBool()
     }
 
     static func matchAll(

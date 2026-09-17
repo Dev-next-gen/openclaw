@@ -270,11 +270,13 @@ async function killSubagentRun(params: {
   cfg: OpenClawConfig;
   entry: SubagentRunRecord;
   cache: Map<string, Record<string, SessionEntry>>;
+  revalidate?: () => void;
 }): Promise<{
   killed: boolean;
   sessionId?: string;
   targetState?: SubagentKillTargetState;
 }> {
+  params.revalidate?.();
   const initialTargetState = resolveSubagentKillTargetState(params.entry);
   if (initialTargetState) {
     if (
@@ -300,6 +302,8 @@ async function killSubagentRun(params: {
   });
   const sessionId = resolved.entry?.sessionId;
   const runtime = await resolveSubagentControlRuntime();
+  // Lazy runtime loading may overlap a replacement run in the same session.
+  params.revalidate?.();
   const targetStateAfterRuntimeLoad = resolveSubagentKillTargetState(params.entry);
   if (targetStateAfterRuntimeLoad) {
     if (
@@ -333,6 +337,7 @@ async function killSubagentRun(params: {
       abortedLastRun,
     });
   await persistAbortedLastRun(true);
+  params.revalidate?.();
   const targetState = resolveSubagentKillTargetState(params.entry);
   if (targetState) {
     const killedTarget =
@@ -405,6 +410,19 @@ async function cascadeKillChildren(params: {
         cfg: params.cfg,
         entry: run,
         cache: params.cache,
+        revalidate: () => {
+          const current = getLatestSubagentRunByChildSessionKey(childKey);
+          const controller =
+            current?.controllerSessionKey?.trim() || current?.requesterSessionKey?.trim();
+          if (
+            !current ||
+            current.runId !== run.runId ||
+            current.generation !== run.generation ||
+            controller !== params.parentChildSessionKey
+          ) {
+            throw new Error("Subagent descendant is no longer controlled by this run.");
+          }
+        },
       });
       if (stopResult.killed) {
         killed += 1;
@@ -552,7 +570,13 @@ export async function killControlledSubagentRun(params: {
 }
 
 /** Admin kill path for a subagent session key, bypassing caller ownership checks. */
-export async function killSubagentRunAdmin(params: { cfg: OpenClawConfig; sessionKey: string }) {
+export async function killSubagentRunAdmin(params: {
+  cfg: OpenClawConfig;
+  sessionKey: string;
+  expectedRunId?: string;
+  expectedGeneration?: number;
+  expectedOwnerKey?: string;
+}) {
   const targetSessionKey = params.sessionKey.trim();
   if (!targetSessionKey) {
     return { found: false as const, killed: false };
@@ -562,12 +586,39 @@ export async function killSubagentRunAdmin(params: { cfg: OpenClawConfig; sessio
     return { found: false as const, killed: false };
   }
 
+  const requireAuthority = () => {
+    const current = getLatestSubagentRunByChildSessionKey(targetSessionKey);
+    if (
+      !current ||
+      current.runId !== entry.runId ||
+      current.generation !== entry.generation ||
+      (params.expectedRunId?.trim() &&
+        (current.taskRunId ?? current.runId) !== params.expectedRunId.trim()) ||
+      (params.expectedGeneration !== undefined &&
+        current.generation !== params.expectedGeneration) ||
+      (params.expectedOwnerKey?.trim() &&
+        current.requesterSessionKey !== params.expectedOwnerKey.trim())
+    ) {
+      throw new Error("Subagent task is no longer the authoritative run.");
+    }
+  };
+  const taskScoped =
+    params.expectedRunId !== undefined ||
+    params.expectedGeneration !== undefined ||
+    params.expectedOwnerKey !== undefined;
+  if (taskScoped) {
+    requireAuthority();
+  }
   const killCache = new Map<string, Record<string, SessionEntry>>();
   const stopResult = await killSubagentRun({
     cfg: params.cfg,
     entry,
     cache: killCache,
+    ...(taskScoped ? { revalidate: requireAuthority } : {}),
   });
+  if (taskScoped) {
+    requireAuthority();
+  }
   const seenChildSessionKeys = new Set<string>([targetSessionKey]);
   const cascade = await cascadeKillChildren({
     cfg: params.cfg,

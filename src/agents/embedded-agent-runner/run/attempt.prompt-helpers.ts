@@ -9,6 +9,7 @@ import type {
 } from "../../../context-engine/types.js";
 import { drainPluginNextTurnInjectionContext } from "../../../plugins/host-hook-state.js";
 import { buildPluginAgentTurnPrepareContext } from "../../../plugins/host-hooks.js";
+import type { PromptToolAuthorityInput } from "../../../plugins/prompt-tool-authority.js";
 import type {
   PluginAgentTurnPrepareResult,
   PluginNextTurnInjectionRecord,
@@ -18,6 +19,7 @@ import type {
 } from "../../../plugins/types.js";
 import { isCronSessionKey, isSubagentSessionKey } from "../../../routing/session-key.js";
 import { joinPresentTextSegments } from "../../../shared/text/join-segments.js";
+import { truncateUtf16Safe } from "../../../utils.js";
 import { resolveProcessToolScopeKey } from "../../agent-tools.js";
 import { listActiveProcessSessionReferences } from "../../bash-process-references.js";
 import { resolveHeartbeatPromptForSystemPrompt } from "../../heartbeat-system-prompt.js";
@@ -30,7 +32,6 @@ import { buildActiveVideoGenerationTaskPromptContextForSession } from "../../vid
 import { buildEmbeddedCompactionRuntimeContext } from "../compaction-runtime-context.js";
 import { resolveContextEngineCapabilities } from "../context-engine-capabilities.js";
 import { log } from "../logger.js";
-import { truncateUtf16Safe } from "../../../utils.js";
 import { shouldInjectHeartbeatPromptForTrigger } from "./trigger-policy.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
@@ -57,6 +58,7 @@ type PromptBuildHookRunner = {
   runBeforePromptBuild: (
     event: { prompt: string; messages: unknown[] },
     ctx: PluginHookAgentContext,
+    toolAuthority?: PromptToolAuthorityInput,
   ) => Promise<PluginHookBeforePromptBuildResult | undefined>;
   runBeforeAgentStart: (
     event: { prompt: string; messages: unknown[] },
@@ -107,6 +109,7 @@ export async function resolvePromptBuildHookResult(params: {
   prompt: string;
   messages: unknown[];
   hookCtx: PluginHookAgentContext;
+  toolAuthority?: PromptToolAuthorityInput;
   hookRunner?: PromptBuildHookRunner | null;
   beforeAgentStartResult?: PluginHookBeforeAgentStartResult;
   bootstrapContextRunKind?: EmbeddedRunAttemptParams["bootstrapContextRunKind"];
@@ -178,6 +181,7 @@ export async function resolvePromptBuildHookResult(params: {
             messages: params.messages,
           },
           params.hookCtx,
+          params.toolAuthority,
         )
         .catch((hookErr: unknown) => {
           log.warn(`before_prompt_build hook failed: ${String(hookErr)}`);

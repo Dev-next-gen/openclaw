@@ -317,6 +317,7 @@ export async function buildDynamicTools(input: DynamicToolBuildParams) {
       toolBuildStages.mark(name);
     },
     onToolOutcome: params.onToolOutcome,
+    memoryTurnProvenance: params.memoryTurnProvenance,
     allocateToolOutcomeOrdinal: params.allocateToolOutcomeOrdinal,
   });
   toolBuildStages.mark("create-openclaw-coding-tools");

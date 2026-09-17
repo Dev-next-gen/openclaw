@@ -4,6 +4,7 @@ import {
   applyPluginAutoEnable,
   materializePluginAutoEnableCandidates,
 } from "../../config/plugin-auto-enable.js";
+import { repairObsoleteGeneratedExecApprovals } from "../../infra/exec-approvals-generated-migration.js";
 import {
   collectOpenAICodexAuthProfileStoreIdMap,
   maybeMigrateAuthProfileJsonStoresToSqlite,
@@ -57,6 +58,13 @@ export async function runDoctorRepairSequence(params: {
   const warningNotes: string[] = [];
   const env = params.env ?? process.env;
   const sanitizeLines = (lines: string[]) => lines.map((line) => sanitizeForLog(line)).join("\n");
+
+  const removedExecApprovals = repairObsoleteGeneratedExecApprovals();
+  if (removedExecApprovals > 0) {
+    changeNotes.push(
+      `Exec approvals updated: removed ${removedExecApprovals} older generated ${removedExecApprovals === 1 ? "approval" : "approvals"} that were not tied to a working directory. Manual allowlist rules were not changed. Rerun affected workflows and choose "Always allow here" when prompted.`,
+    );
+  }
 
   const applyMutation = (mutation: {
     config: DoctorConfigMutationState["candidate"];

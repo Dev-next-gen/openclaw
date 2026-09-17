@@ -8,7 +8,6 @@ import {
   createDefaultChannelRuntimeState,
 } from "openclaw/plugin-sdk/status-helpers";
 import { resolveWhatsAppAccount, type ResolvedWhatsAppAccount } from "./accounts.js";
-import { createWhatsAppLoginTool } from "./agent-tools-login.js";
 import { whatsappApprovalCapability } from "./approval-native.js";
 import type { WebChannelStatus } from "./auto-reply/types.js";
 import {
@@ -94,7 +93,6 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
           return (await channelRuntime.readWebAuthState(account.authDir)) === "linked";
         },
       }),
-      agentTools: () => [createWhatsAppLoginTool()],
       allowlist: buildDmGroupAccountAllowlistAdapter({
         channelId: "whatsapp",
         resolveAccount: resolveWhatsAppAccount,

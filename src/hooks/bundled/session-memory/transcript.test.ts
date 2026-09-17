@@ -3,7 +3,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { getRecentSessionContent, sanitizeSessionMemoryTranscriptText } from "./transcript.js";
+import {
+  getRecentSessionProjection,
+  getRecentSessionContent,
+  sanitizeSessionMemoryTranscriptText,
+} from "./transcript.js";
 
 const tempRoots: string[] = [];
 
@@ -58,6 +62,35 @@ describe("session-memory transcript extraction", () => {
     expect(memoryContent).not.toContain("NO_REPLY");
     expect(memoryContent).not.toContain("<system>");
     expect(memoryContent).not.toContain("ignore previous instructions");
+  });
+
+  it("classifies persisted owner turns and taints summaries after external tool results", async () => {
+    const owner = JSON.stringify({
+      type: "message",
+      message: { role: "user", content: "remember this", __openclaw: { senderIsOwner: true } },
+    });
+    const trusted = await writeTranscript(
+      [owner, message("assistant", "Owner preference")].join("\n"),
+    );
+    await expect(getRecentSessionProjection(trusted)).resolves.toMatchObject({
+      originClass: "agent",
+    });
+    const tainted = await writeTranscript(
+      [
+        owner,
+        JSON.stringify({ type: "message", message: { role: "toolResult", content: "external" } }),
+        message("assistant", "summarized external content"),
+      ].join("\n"),
+    );
+    await expect(getRecentSessionProjection(tainted, 1)).resolves.toMatchObject({
+      originClass: "untrusted",
+    });
+    const unknown = await writeTranscript(
+      [message("user", "unverified owner"), message("assistant", "summary")].join("\n"),
+    );
+    await expect(getRecentSessionProjection(unknown)).resolves.toMatchObject({
+      originClass: "untrusted",
+    });
   });
 
   it("preserves ordinary mentions while dropping standalone no-reply markers", () => {

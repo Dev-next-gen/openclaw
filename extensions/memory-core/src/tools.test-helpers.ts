@@ -13,12 +13,14 @@ export function createDefaultMemoryToolConfig(): OpenClawConfig {
 
 export function createMemorySearchToolOrThrow(params?: {
   config?: OpenClawConfig;
+  getConfig?: () => OpenClawConfig | undefined;
   agentId?: string;
   agentSessionKey?: string;
   oneShotCliRun?: boolean;
 }) {
   const tool = createMemorySearchTool({
     config: params?.config ?? createDefaultMemoryToolConfig(),
+    ...(params?.getConfig ? { getConfig: params.getConfig } : {}),
     ...(params?.agentId ? { agentId: params.agentId } : {}),
     ...(params?.agentSessionKey ? { agentSessionKey: params.agentSessionKey } : {}),
     ...(params?.oneShotCliRun ? { oneShotCliRun: params.oneShotCliRun } : {}),

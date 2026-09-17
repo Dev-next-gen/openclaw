@@ -177,6 +177,52 @@ struct ExecApprovalsStoreRefactorTests {
     }
 
     @Test
+    func `store preserves distinct generated bindings when recording usage`() async throws {
+        try await self.withTempStateDir { _ in
+            for argPattern in ["sha256:cwd-argv:v1:one", "sha256:cwd-argv:v1:two"] {
+                ExecApprovalsStore.addAllowlistEntry(agentId: "main", pattern: "/usr/bin/printf",
+                    source: "allow-always", argPattern: argPattern)
+            }
+            ExecApprovalsStore.recordAllowlistUse(agentId: "main", pattern: "/usr/bin/printf",
+                command: "printf safe", resolvedPath: "/usr/bin/printf")
+            let entries = try #require(ExecApprovalsStore.loadFile().agents?["main"]?.allowlist)
+            #expect(entries.count == 2)
+            #expect(entries.allSatisfy { $0.source == "allow-always" })
+            #expect(Set(entries.compactMap(\.argPattern)) ==
+                Set(["sha256:cwd-argv:v1:one", "sha256:cwd-argv:v1:two"]))
+        }
+    }
+
+    @Test
+    func `cleanup removes obsolete generated approvals but preserves manual and current rules`() async throws {
+        try await self.withTempStateDir { _ in
+            ExecApprovalsStore.saveFile(ExecApprovalsFile(version: 1, agents: ["main": ExecApprovalsAgent(allowlist: [
+                    ExecAllowlistEntry(pattern: "/usr/bin/git", source: "allow-always"),
+                    ExecAllowlistEntry(
+                        pattern: "/usr/bin/curl",
+                        source: "allow-always",
+                        argPattern: "sha256:argv:obsolete"),
+                    ExecAllowlistEntry(
+                        pattern: "/usr/bin/rg",
+                        source: "allow-always",
+                        argPattern: "sha256:cwd-argv:v1:current"),
+                    ExecAllowlistEntry(pattern: "/usr/bin/python3", argPattern: #"^script\.py$"#),
+                    ExecAllowlistEntry(pattern: "=node-command:marker", source: "allow-always"),
+                ])]))
+
+            let removed = ExecApprovalsStore.removeObsoleteGeneratedAllowAlwaysEntries()
+            let entries = try #require(ExecApprovalsStore.loadFile().agents?["main"]?.allowlist)
+
+            #expect(removed == 2)
+            #expect(entries.map(\.pattern) == [
+                "/usr/bin/rg",
+                "/usr/bin/python3",
+                "=node-command:marker",
+            ])
+        }
+    }
+
+    @Test
     func `ensure file hardens state directory permissions`() async throws {
         try await self.withTempStateDir { stateDir in
             try FileManager().createDirectory(at: stateDir, withIntermediateDirectories: true)

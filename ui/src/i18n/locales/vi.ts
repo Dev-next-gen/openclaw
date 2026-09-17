@@ -445,6 +445,7 @@ export const vi: TranslationMap = {
     pending: "{count} đang chờ",
     allowOnce: "Cho phép một lần",
     alwaysAllow: "Luôn cho phép",
+    alwaysAllowHere: "Always allow here",
     allowAlwaysUnavailable:
       "Chính sách phê duyệt có hiệu lực yêu cầu phê duyệt mọi lần, vì vậy Không cho phép Luôn cho phép.",
     deny: "Từ chối",

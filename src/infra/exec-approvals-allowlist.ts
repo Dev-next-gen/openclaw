@@ -17,6 +17,7 @@ import {
 import {
   isWindowsPlatform,
   matchAllowlist,
+  buildCwdBoundHashedArgPattern,
   resolveExecutableTrustPath,
   resolveExecutionTargetCandidatePath,
   resolveExecutionTargetResolution,
@@ -54,7 +55,10 @@ import {
 } from "./exec-wrapper-resolution.js";
 import { resolveExecWrapperTrustPlan } from "./exec-wrapper-trust-plan.js";
 import { expandHomePrefix } from "./home-dir.js";
-import { resolveKnownPackageManagerExecInvocation } from "./package-manager-exec-wrapper.js";
+import {
+  hasKnownPackageManagerExecContextOptions,
+  resolveKnownPackageManagerExecInvocation,
+} from "./package-manager-exec-wrapper.js";
 import {
   POSIX_INLINE_COMMAND_FLAGS,
   isDirectShellPositionalCarrierCommand,
@@ -317,6 +321,13 @@ function resolvePackageManagerTrustTargetArgv(
     }
     current = dispatchPlan.argv;
     const packageManagerExec = resolveKnownPackageManagerExecInvocation(current);
+    // Context-changing wrappers cannot inherit a grant captured for the outer cwd.
+    if (
+      packageManagerExec.kind === "unwrapped" &&
+      hasKnownPackageManagerExecContextOptions(current)
+    ) {
+      return { kind: "blocked" };
+    }
     if (packageManagerExec.kind === "unsafe-exec") {
       return { kind: "blocked" };
     }
@@ -357,6 +368,7 @@ function matchExecutableAllowlistForSegment(params: {
   candidateResolution: ExecutableResolution | null;
   effectiveArgv: string[];
   platform?: string | null;
+  cwd?: string;
   inlineCommand: string | null;
   isShellWrapperInvocation: boolean;
   isPositionalCarrierInvocation: boolean;
@@ -370,6 +382,7 @@ function matchExecutableAllowlistForSegment(params: {
     params.candidateResolution,
     params.effectiveArgv,
     params.platform,
+    params.cwd,
   );
   const hasBoundArgPattern =
     typeof match?.argPattern === "string" && match.argPattern.trim().length > 0;
@@ -523,6 +536,7 @@ function resolveSegmentAllowlistMatch(params: {
     candidateResolution,
     effectiveArgv: matchArgv,
     platform: params.context.platform,
+    cwd: params.context.cwd,
     inlineCommand,
     isShellWrapperInvocation,
     isPositionalCarrierInvocation,
@@ -531,26 +545,29 @@ function resolveSegmentAllowlistMatch(params: {
       matchExecutionResolution ?? executionResolution,
     ),
   });
-  const shellPositionalArgvCandidatePath =
+  const shellPositionalArgvCandidate =
     inlineCommand !== null
-      ? resolveShellWrapperPositionalArgvCandidatePath({
+      ? resolveShellWrapperPositionalArgvCandidate({
           segment: allowlistSegment,
           cwd: params.context.cwd,
           env: params.context.env,
           platform: params.context.platform,
         })
       : undefined;
-  const shellPositionalArgvMatch = shellPositionalArgvCandidatePath
+  const shellPositionalArgvMatch = shellPositionalArgvCandidate
     ? matchAllowlist(
-        params.context.allowlist,
+        shellPositionalArgvCandidate.durable
+          ? params.context.allowlist
+          : params.context.allowlist.filter((entry) => entry.argPattern === undefined),
         {
-          rawExecutable: shellPositionalArgvCandidatePath,
-          resolvedPath: shellPositionalArgvCandidatePath,
-          resolvedRealPath: resolveCandidateTrustPath(shellPositionalArgvCandidatePath),
-          executableName: path.basename(shellPositionalArgvCandidatePath),
+          rawExecutable: shellPositionalArgvCandidate.path,
+          resolvedPath: shellPositionalArgvCandidate.path,
+          resolvedRealPath: resolveCandidateTrustPath(shellPositionalArgvCandidate.path),
+          executableName: path.basename(shellPositionalArgvCandidate.path),
         },
-        undefined,
+        shellPositionalArgvCandidate.argv,
         params.context.platform,
+        params.context.cwd,
       )
     : null;
   const shellScriptCandidatePath =
@@ -581,6 +598,7 @@ function resolveSegmentAllowlistMatch(params: {
           },
           shellScriptArgv,
           params.context.platform,
+          params.context.cwd,
         )
       : null;
   return {
@@ -1063,12 +1081,40 @@ function resolveShellWrapperScriptCandidatePath(params: {
   return path.resolve(base, expanded);
 }
 
-function resolveShellWrapperPositionalArgvCandidatePath(params: {
+type ShellWrapperPositionalArgvCandidate = {
+  path: string;
+  argv: string[];
+  durable: boolean;
+};
+
+function isDurableShellPositionalCarrierCommand(command: string, tailArgv: string[]): boolean {
+  const trimmed = command.trim();
+  if (trimmed.length === 0) {
+    return false;
+  }
+
+  const shellWhitespace = String.raw`[^\S\r\n]+`;
+  const positionalZero = String.raw`(?:\$(?:0|\{0\})|"\$(?:0|\{0\})")`;
+  if (tailArgv.length === 0) {
+    return new RegExp(
+      `^(?:exec${shellWhitespace}(?:--${shellWhitespace})?)?${positionalZero}$`,
+      "u",
+    ).test(trimmed);
+  }
+
+  const positionalAll = String.raw`(?:\$(?:@|\{@\})|"\$(?:@|\{@\})")`;
+  return new RegExp(
+    `^(?:exec${shellWhitespace}(?:--${shellWhitespace})?)?${positionalZero}${shellWhitespace}${positionalAll}$`,
+    "u",
+  ).test(trimmed);
+}
+
+function resolveShellWrapperPositionalArgvCandidate(params: {
   segment: ExecCommandSegment;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   platform?: string | null;
-}): string | undefined {
+}): ShellWrapperPositionalArgvCandidate | undefined {
   if (!isShellWrapperSegment(params.segment)) {
     return undefined;
   }
@@ -1093,13 +1139,19 @@ function resolveShellWrapperPositionalArgvCandidatePath(params: {
     return undefined;
   }
 
-  const carriedExecutable = argv
+  const carriedOffset = argv
     .slice(inlineMatch.valueTokenIndex + 1)
-    .map((token) => token.trim())
-    .find((token) => token.length > 0);
+    .findIndex((token) => token.trim().length > 0);
+  if (carriedOffset === -1) {
+    return undefined;
+  }
+  const carriedIndex = inlineMatch.valueTokenIndex + 1 + carriedOffset;
+  const carriedExecutable = argv[carriedIndex]?.trim() ?? "";
   if (!carriedExecutable) {
     return undefined;
   }
+  const carriedTailArgv = argv.slice(carriedIndex + 1);
+  const durable = isDurableShellPositionalCarrierCommand(inlineMatch.command, carriedTailArgv);
 
   const carriedName = normalizeExecutableToken(carriedExecutable);
   if (isDispatchWrapperExecutable(carriedName) || isShellWrapperExecutable(carriedName)) {
@@ -1112,7 +1164,16 @@ function resolveShellWrapperPositionalArgvCandidatePath(params: {
     params.env,
     (params.platform ?? undefined) as NodeJS.Platform | undefined,
   );
-  return resolveExecutionTargetCandidatePath(resolution, params.cwd);
+  const candidatePath = resolveExecutionTargetCandidatePath(resolution, params.cwd);
+  if (!candidatePath) {
+    return undefined;
+  }
+  const trustPath = resolveCandidateTrustPath(candidatePath) ?? candidatePath;
+  return {
+    path: candidatePath,
+    argv: [trustPath, ...carriedTailArgv],
+    durable,
+  };
 }
 
 export type AllowAlwaysPattern = {
@@ -1120,19 +1181,12 @@ export type AllowAlwaysPattern = {
   argPattern?: string;
 };
 
-function escapeRegExpLiteral(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function buildScriptArgPatternFromArgv(
   argv: string[],
   scriptPath: string,
   cwd?: string,
   platform?: string | null,
 ): string | undefined {
-  if (!isWindowsPlatform(platform ?? process.platform)) {
-    return undefined;
-  }
   const scriptBase = normalizeLowercaseStringOrEmpty(path.basename(scriptPath));
   const base = cwd && cwd.trim() ? cwd.trim() : process.cwd();
   const resolveArgPath = (arg: string): string =>
@@ -1144,24 +1198,11 @@ function buildScriptArgPatternFromArgv(
     );
   }
   const scriptArgs = scriptIdx !== -1 ? argv.slice(scriptIdx + 1) : [];
-  const normalized = scriptArgs.map((a) => a.replace(/\//g, "\\"));
-  if (normalized.length === 0) {
-    return "^\x00\x00$";
-  }
-  return `^${normalized.map(escapeRegExpLiteral).join("\x00")}\x00$`;
+  return buildCwdBoundHashedArgPattern([scriptPath, ...scriptArgs], base, platform);
 }
 
-function buildArgPatternFromArgv(argv: string[], platform?: string | null): string | undefined {
-  if (!isWindowsPlatform(platform ?? process.platform)) {
-    return undefined;
-  }
-  const args = argv.slice(1);
-  const normalized = args.map((a) => a.replace(/\//g, "\\"));
-  if (normalized.length === 0) {
-    return "^\x00\x00$";
-  }
-  const joined = normalized.join("\x00");
-  return `^${escapeRegExpLiteral(joined)}\x00$`;
+function buildArgPatternFromArgv(argv: string[], cwd: string, platform?: string | null): string {
+  return buildCwdBoundHashedArgPattern(argv, cwd, platform);
 }
 
 function addAllowAlwaysPattern(
@@ -1253,7 +1294,11 @@ function collectAllowAlwaysPatterns(params: {
     }
   }
   if (!trustPlan.shellWrapperExecutable) {
-    const argPattern = buildArgPatternFromArgv(segment.argv, params.platform);
+    const argPattern = buildArgPatternFromArgv(
+      segment.argv,
+      params.cwd ?? process.cwd(),
+      params.platform,
+    );
     addAllowAlwaysPattern(params.out, candidatePath, argPattern);
     return;
   }
@@ -1262,20 +1307,27 @@ function collectAllowAlwaysPatterns(params: {
     cwd: params.cwd,
   });
   const inlineCommand = powerShellFileScriptArgv ? null : trustPlan.shellInlineCommand;
-  const positionalArgvPath =
+  const positionalArgvCandidate =
     inlineCommand !== null
-      ? resolveShellWrapperPositionalArgvCandidatePath({
+      ? resolveShellWrapperPositionalArgvCandidate({
           segment,
           cwd: params.cwd,
           env: params.env,
           platform: params.platform,
         })
       : undefined;
-  if (positionalArgvPath) {
-    addAllowAlwaysPattern(
-      params.out,
-      resolveCandidateTrustPath(positionalArgvPath) ?? positionalArgvPath,
+  if (positionalArgvCandidate) {
+    if (!positionalArgvCandidate.durable) {
+      return;
+    }
+    const positionalTrustPath =
+      resolveCandidateTrustPath(positionalArgvCandidate.path) ?? positionalArgvCandidate.path;
+    const argPattern = buildArgPatternFromArgv(
+      positionalArgvCandidate.argv,
+      params.cwd ?? process.cwd(),
+      params.platform,
     );
+    addAllowAlwaysPattern(params.out, positionalTrustPath, argPattern);
     return;
   }
   if (!inlineCommand) {

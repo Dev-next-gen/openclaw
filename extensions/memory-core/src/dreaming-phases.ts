@@ -9,6 +9,7 @@ import {
   parseUsageCountedSessionIdFromFileName,
   sessionPathForFile,
 } from "openclaw/plugin-sdk/memory-core-host-engine-qmd";
+import { isMemoryArtifactEligibleForAutomaticContext } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import type { MemorySearchResult } from "openclaw/plugin-sdk/memory-core-host-runtime-files";
 import {
   formatMemoryDreamingDay,
@@ -1229,6 +1230,15 @@ async function collectDailyIngestionBatches(params: {
     if (!raw) {
       continue;
     }
+    if (
+      !(await isMemoryArtifactEligibleForAutomaticContext({
+        workspaceDir: params.workspaceDir,
+        relativePath,
+        content: raw,
+      }))
+    ) {
+      continue;
+    }
     const lines = stripManagedDailyDreamingLines(raw.split(/\r?\n/));
     const chunks = buildDailySnippetChunks(lines, perFileCap);
     const results: MemorySearchResult[] = [];
@@ -1389,6 +1399,16 @@ export async function seedHistoricalDailyMemorySignals(params: {
       throw err;
     });
     if (!raw) {
+      continue;
+    }
+    if (
+      !(await isMemoryArtifactEligibleForAutomaticContext({
+        workspaceDir: params.workspaceDir,
+        relativePath: entry.relativePath,
+        content: raw,
+      }))
+    ) {
+      skippedPaths.push(entry.filePath);
       continue;
     }
     const lines = stripManagedDailyDreamingLines(raw.split(/\r?\n/));

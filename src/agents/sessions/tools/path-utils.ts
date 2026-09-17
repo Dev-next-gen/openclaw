@@ -5,7 +5,7 @@
  */
 import { accessSync, constants } from "node:fs";
 import * as os from "node:os";
-import { isAbsolute, resolve as resolvePath } from "node:path";
+import { basename, isAbsolute, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
@@ -43,7 +43,7 @@ function normalizeAtPrefix(filePath: string): string {
 }
 
 function expandPath(filePath: string): string {
-  const normalized = normalizeUnicodeSpaces(normalizeAtPrefix(filePath));
+  const normalized = normalizeAtPrefix(filePath);
   if (normalized.startsWith("file://")) {
     try {
       return fileURLToPath(normalized);
@@ -79,26 +79,34 @@ export function resolveReadPath(filePath: string, cwd: string): string {
     return resolved;
   }
 
-  // Try macOS AM/PM variant (narrow no-break space before AM/PM)
-  const amPmVariant = tryMacOSScreenshotPath(resolved);
+  // Only vary the filename: the parent may already have passed the workspace
+  // guard, so normalization must not select a different directory.
+  const filename = basename(resolved);
+  const parentPrefix = resolved.slice(0, resolved.length - filename.length);
+  const asciiFilename = normalizeUnicodeSpaces(filename);
+  const asciiVariant = parentPrefix + asciiFilename;
+  if (asciiVariant !== resolved && fileExists(asciiVariant)) {
+    return asciiVariant;
+  }
+  const amPmVariant = parentPrefix + tryMacOSScreenshotPath(asciiFilename);
   if (amPmVariant !== resolved && fileExists(amPmVariant)) {
     return amPmVariant;
   }
 
   // Try NFD variant (macOS stores filenames in NFD form)
-  const nfdVariant = tryNFDVariant(resolved);
+  const nfdVariant = parentPrefix + tryNFDVariant(asciiFilename);
   if (nfdVariant !== resolved && fileExists(nfdVariant)) {
     return nfdVariant;
   }
 
   // Try curly quote variant (macOS uses U+2019 in screenshot names)
-  const curlyVariant = tryCurlyQuoteVariant(resolved);
+  const curlyVariant = parentPrefix + tryCurlyQuoteVariant(asciiFilename);
   if (curlyVariant !== resolved && fileExists(curlyVariant)) {
     return curlyVariant;
   }
 
   // Try combined NFD + curly quote (for French macOS screenshots like "Capture d'écran")
-  const nfdCurlyVariant = tryCurlyQuoteVariant(nfdVariant);
+  const nfdCurlyVariant = parentPrefix + tryCurlyQuoteVariant(tryNFDVariant(asciiFilename));
   if (nfdCurlyVariant !== resolved && fileExists(nfdCurlyVariant)) {
     return nfdCurlyVariant;
   }

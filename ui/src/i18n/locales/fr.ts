@@ -450,6 +450,7 @@ export const fr: TranslationMap = {
     pending: "{count} pending",
     allowOnce: "Allow once",
     alwaysAllow: "Always allow",
+    alwaysAllowHere: "Always allow here",
     allowAlwaysUnavailable:
       "La politique d’approbation effective exige une approbation à chaque fois, donc Autoriser toujours n’est pas disponible.",
     deny: "Deny",
