@@ -11,10 +11,9 @@
       "sessionKey": "agent:main:main"
     },
     "invalid": {
-      "id": "invoke-1",
+      "id": "",
       "nodeId": "node-1",
-      "command": "example.duplex",
-      "unexpected": true
+      "command": "example.duplex"
     }
   },
   "input": {
@@ -45,6 +44,12 @@
       "nodeId": "node-1",
       "seq": 1,
       "chunk": "é"
+    },
+    "invalid": {
+      "invokeId": "invoke-1",
+      "nodeId": "node-1",
+      "seq": -1,
+      "chunk": "invalid"
     }
   },
   "results": {
@@ -64,6 +69,11 @@
         "code": "LOCAL_POLICY_DENIED",
         "message": "command is outside the embedding's current local policy"
       }
+    },
+    "invalid": {
+      "id": "invoke-1",
+      "nodeId": "node-1",
+      "ok": "true"
     }
   },
   "cancel": {

@@ -2,25 +2,12 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import type { NodeInvokeRequestPayload } from "./invoke-types.js";
 
 const MAX_INVOKE_INPUT_BYTES = 16 * 1024;
-const NODE_INVOKE_REQUEST_FIELDS = new Set([
-  "id",
-  "nodeId",
-  "command",
-  "paramsJSON",
-  "params",
-  "timeoutMs",
-  "idempotencyKey",
-  "sessionKey",
-]);
 
 export function coerceNodeInvokePayload(payload: unknown): NodeInvokeRequestPayload | null {
   if (!payload || typeof payload !== "object") {
     return null;
   }
   const obj = payload as Record<string, unknown>;
-  if (Object.keys(obj).some((key) => !NODE_INVOKE_REQUEST_FIELDS.has(key))) {
-    return null;
-  }
   const id = typeof obj.id === "string" ? obj.id.trim() : "";
   const nodeId = typeof obj.nodeId === "string" ? obj.nodeId.trim() : "";
   const command = typeof obj.command === "string" ? obj.command.trim() : "";

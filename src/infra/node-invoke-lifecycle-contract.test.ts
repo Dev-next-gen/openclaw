@@ -90,6 +90,7 @@ describe("node invocation lifecycle contract", () => {
       }),
     ).toEqual(request);
     expect(coerceNodeInvokePayload(request)).toEqual(request);
+    expect(coerceNodeInvokePayload({ ...request, unexpected: true })).toEqual(request);
     expect(coerceNodeInvokePayload(fixture.request.invalid)).toBeNull();
   });
 
@@ -120,9 +121,11 @@ describe("node invocation lifecycle contract", () => {
 
   it("matches progress and result validation", () => {
     expect(validateNodeInvokeProgressParams(fixture.progress.canonical)).toBe(true);
+    expect(fixture.progress.invalid).toBeDefined();
     expect(validateNodeInvokeProgressParams(fixture.progress.invalid)).toBe(false);
     expect(validateNodeInvokeResultParams(fixture.results.success)).toBe(true);
     expect(validateNodeInvokeResultParams(fixture.results.failure)).toBe(true);
+    expect(fixture.results.invalid).toBeDefined();
     expect(validateNodeInvokeResultParams(fixture.results.invalid)).toBe(false);
   });
 });
