@@ -19,7 +19,7 @@ describe.skipIf(process.platform === "win32")("brokered process lifecycle owners
 
   it("retains relay control and lineage through root exit and tree cancellation", async () => {
     await runWithSpawnBroker(broker, async () => {
-      const adapter = await createServiceChildRelayAdapter({
+      const { adapter, ready } = await createServiceChildRelayAdapter({
         command: process.execPath,
         args: [
           "-e",
@@ -49,6 +49,7 @@ describe.skipIf(process.platform === "win32")("brokered process lifecycle owners
         () => {},
       );
       try {
+        await ready;
         await expect(adapter.wait()).resolves.toEqual({ code: 0, signal: null });
         expect(extinct).toBe(false);
         const anchorPid = Number(output);

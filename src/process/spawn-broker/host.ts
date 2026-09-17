@@ -75,6 +75,7 @@ export class SpawnBrokerHost {
   private closePromise: Promise<void> | undefined;
   private restartTimer: NodeJS.Timeout | undefined;
   private generation = 0;
+  private consecutiveFailures = 0;
   private sequence = 0;
   private requests = new Map<number, Request>();
   private readonly cleanups = new Set<ReturnType<typeof terminateLostBrokerChild>>();
@@ -250,7 +251,7 @@ export class SpawnBrokerHost {
         this.readiness.reject(error);
         return;
       }
-      const delay = RESTART_DELAYS[generation];
+      const delay = RESTART_DELAYS[this.consecutiveFailures++];
       if (delay === undefined) {
         this.readiness.reject(error);
         return;
@@ -289,6 +290,7 @@ export class SpawnBrokerHost {
       const message = decoded as BrokerResponse;
       if (message.type === "ready") {
         clearTimeout(startupTimer);
+        this.consecutiveFailures = 0;
         this.available = true;
         this.readiness.resolve();
         this.options.onReady?.(message.pid, generation > 0);

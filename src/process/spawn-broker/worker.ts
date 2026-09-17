@@ -293,10 +293,15 @@ async function launch(
       connected: child.connected,
       stdioLength: streams.length,
     });
-    current.announced = true;
-    for (const value of current.events.splice(0)) {
+    // Keep new arrivals behind earlier startup events while their IPC writes drain.
+    for (;;) {
+      const value = current.events.shift();
+      if (value === undefined) {
+        break;
+      }
       await report(value);
     }
+    current.announced = true;
     forget(message.id, current);
   } catch (error) {
     disposeFailedChild(spawnedChild);
