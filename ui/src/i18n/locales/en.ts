@@ -253,22 +253,6 @@ export const en: TranslationMap & {
   },
   filePreview: {
     bundle: {},
-    label: "Support files",
-    listLabel: "Files",
-    searchPlaceholder: "Search files…",
-    readOnly: "read-only",
-    emptyTitle: "No files match",
-    emptySubtitle: "Try another file name or content search.",
-    copyFile: "Copy file",
-    fileCount: "{count} files",
-    filteredFileCount: "{count}/{total} files",
-    noMatches: "No files match.",
-    navigate: "navigate",
-    kind: {
-      text: "Text",
-      shell: "Shell",
-      file: "File",
-    },
   },
   mcpApp: {
     title: "MCP App",
