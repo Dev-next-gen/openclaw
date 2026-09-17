@@ -1,6 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
-import { githubApiToken } from "../../../extensions/github/api.js";
 import {
   ErrorCodes,
   errorShape,
@@ -20,6 +19,7 @@ import {
   hasExplicitSessionName,
   resolveExplicitSessionName,
 } from "../dashboard-session-title.js";
+import { gitHubPublicApi } from "../github-public-api.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
 import type {
   PrepareGatewaySessionLifecycle,
@@ -271,7 +271,7 @@ export async function prepareSessionWorkspace(params: {
     const project = gitUrl
       ? await materializeProjectClone(
           { cfg, gitUrl },
-          { signal, token: githubApiToken(process.env, cfg) },
+          { signal, token: gitHubPublicApi.githubApiToken(process.env, cfg) },
         )
       : undefined;
     assertRunOwnership();
@@ -333,7 +333,7 @@ export async function prepareSessionWorkspace(params: {
         ) {
           await refreshProjectClone(project, {
             signal,
-            token: githubApiToken(process.env, cfg),
+            token: gitHubPublicApi.githubApiToken(process.env, cfg),
           });
           assertRunOwnership();
           resolved = await resolveSessionWorktreeBase(directory, pending.baseRef, signal);

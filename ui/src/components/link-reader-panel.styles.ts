@@ -189,7 +189,7 @@ export const linkReaderPanelStyles = css`
     background: color-mix(in srgb, var(--text) 4%, transparent);
   }
   .lr-filename {
-    font-family: var(--font-mono, monospace);
+    font-family: var(--mono);
     font-size: 12px;
   }
   .lr-stats {
@@ -209,7 +209,7 @@ export const linkReaderPanelStyles = css`
   .lr-diff {
     margin: 0;
     overflow: auto;
-    font-family: var(--font-mono, monospace);
+    font-family: var(--mono);
     font-size: 11px;
     line-height: 1.7;
     tab-size: 2;
@@ -267,7 +267,7 @@ export const linkReaderPanelStyles = css`
     background: color-mix(in srgb, var(--text) 5%, transparent);
   }
   .lr-markdown code {
-    font-family: var(--font-mono, monospace);
+    font-family: var(--mono);
     font-size: 0.9em;
   }
   .lr-markdown :not(pre) > code {

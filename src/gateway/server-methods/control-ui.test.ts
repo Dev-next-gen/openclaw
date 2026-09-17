@@ -1,6 +1,5 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ControlUiGitHubError } from "../../../extensions/github/api.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import * as githubIdentity from "../../agents/github-tool-identity.js";
 import {
@@ -17,7 +16,8 @@ import {
   setActiveDegradedSecretOwners,
 } from "../../secrets/runtime-degraded-state.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import type { ControlUiGitHubPreview, ControlUiSessionPreview } from "../control-ui-contract.js";
+import type { ControlUiSessionPreview } from "../control-ui-contract.js";
+import { gitHubPublicApi } from "../github-public-api.js";
 import { createControlUiHandlers } from "./control-ui.js";
 import { identifiedClient } from "./sessions-sharing.test-support.js";
 import type { RespondFn } from "./types.js";
@@ -272,7 +272,7 @@ describe("controlUi.githubPreview", () => {
   it.each(["unchanged", "agent", "system"])(
     "delivers public metadata only while its fallback identity remains selected: %s",
     async (selection) => {
-      const preview: ControlUiGitHubPreview = {
+      const preview = {
         comments: 4,
         createdAt: "2026-07-05T08:00:00Z",
         kind: "issue",
@@ -286,7 +286,7 @@ describe("controlUi.githubPreview", () => {
       };
       let cfg: OpenClawConfig = { agents: { entries: { main: {} } } };
       const started = createDeferred();
-      const pending = createDeferred<ControlUiGitHubPreview>();
+      const pending = createDeferred<typeof preview>();
       const loadPreview = vi.fn(() => {
         started.resolve();
         return pending.promise;
@@ -331,7 +331,7 @@ describe("controlUi.githubPreview", () => {
   );
 
   it("forwards an explicit refresh through the same identity adapter", async () => {
-    const preview: ControlUiGitHubPreview = {
+    const preview = {
       kind: "issue",
       owner: "openclaw",
       repo: "openclaw",
@@ -387,7 +387,7 @@ describe("controlUi.githubPreview", () => {
   it.each([
     {
       failure: "GitHub quota",
-      error: new ControlUiGitHubError(429, "rate limited"),
+      error: new gitHubPublicApi.ControlUiGitHubError(429, "rate limited"),
       message: "GitHub API rate limit exceeded (HTTP 429). Wait and retry.",
       retryable: true,
     },

@@ -4,11 +4,11 @@ import {
   errorShape,
   type GatewayRequestHandlerOptions,
 } from "openclaw/plugin-sdk/gateway-runtime";
-import { loadGitHubDetail } from "./src/detail.js";
-import { ControlUiGitHubError, formatControlUiGitHubPreviewError } from "./src/github-api.js";
-import { isControlUiGitHubPreview } from "./src/preview-contract.js";
-import { parseGitHubLinkParams } from "./src/targets.js";
-import { githubPreviewView } from "./src/view-model.js";
+import { loadGitHubDetail } from "./detail.js";
+import { ControlUiGitHubError, formatControlUiGitHubPreviewError } from "./github-api.js";
+import { isControlUiGitHubPreview } from "./preview-contract.js";
+import { parseGitHubLinkParams } from "./targets.js";
+import { githubPreviewView } from "./view-model.js";
 
 type ReaderMethod = "github.preview" | "github.detail";
 

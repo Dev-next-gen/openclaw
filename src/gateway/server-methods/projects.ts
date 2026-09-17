@@ -1,10 +1,6 @@
 import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
-  CONTROL_UI_GITHUB_CREDENTIAL_UNAVAILABLE_MESSAGE,
-  githubApiToken,
-} from "../../../extensions/github/api.js";
-import {
   ErrorCodes,
   GatewayErrorDetailCodes,
   errorShape,
@@ -42,6 +38,7 @@ import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { isTrustedSecretSurfaceUnavailableError } from "../../secrets/runtime-degraded-state.js";
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
 import { listProfiles, resolveUserProfileId } from "../../state/user-profiles.js";
+import { gitHubPublicApi } from "../github-public-api.js";
 import { WRITE_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
 import { searchRemoteProjects } from "../project-github-search.js";
 import { createSessionListEntryFilter } from "../session-sharing.js";
@@ -548,7 +545,7 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
           true,
           await materializeProjectClone(
             { cfg: context.getRuntimeConfig(), gitUrl: params.gitUrl, name: params.name },
-            { signal, token: githubApiToken() },
+            { signal, token: gitHubPublicApi.githubApiToken() },
           ),
           undefined,
         );
@@ -557,13 +554,17 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
           respond(
             false,
             undefined,
-            errorShape(ErrorCodes.UNAVAILABLE, CONTROL_UI_GITHUB_CREDENTIAL_UNAVAILABLE_MESSAGE, {
-              details: {
-                code: GatewayErrorDetailCodes.PROJECT_CLONE_FAILED,
-                cause: "auth_required",
+            errorShape(
+              ErrorCodes.UNAVAILABLE,
+              gitHubPublicApi.CONTROL_UI_GITHUB_CREDENTIAL_UNAVAILABLE_MESSAGE,
+              {
+                details: {
+                  code: GatewayErrorDetailCodes.PROJECT_CLONE_FAILED,
+                  cause: "auth_required",
+                },
+                retryable: false,
               },
-              retryable: false,
-            }),
+            ),
           );
           return;
         }
@@ -604,7 +605,7 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
       } catch (error) {
         const credentialUnavailable = isTrustedSecretSurfaceUnavailableError(error);
         const message = credentialUnavailable
-          ? CONTROL_UI_GITHUB_CREDENTIAL_UNAVAILABLE_MESSAGE
+          ? gitHubPublicApi.CONTROL_UI_GITHUB_CREDENTIAL_UNAVAILABLE_MESSAGE
           : "GitHub project search is unavailable. Retry shortly.";
         respond(
           false,

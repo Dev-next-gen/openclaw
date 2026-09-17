@@ -42,10 +42,12 @@ vi.mock("../commands/doctor-bootstrap-size.js", () => ({
     obs.events.push("bootstrap-size-advice");
   },
 }));
-vi.mock("../../extensions/github/api.js", () => ({
-  hasConfiguredGitHubApiCredential: () => {
-    obs.events.push("github-credential-advice");
-    return false;
+vi.mock("../gateway/github-public-api.js", () => ({
+  gitHubPublicApi: {
+    hasConfiguredGitHubApiCredential: () => {
+      obs.events.push("github-credential-advice");
+      return false;
+    },
   },
 }));
 vi.mock("../commands/doctor/shared/active-tool-schema-warnings.js", () => ({

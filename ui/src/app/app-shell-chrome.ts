@@ -27,6 +27,7 @@ import type { BoardFace } from "../lib/board/settings.ts";
 import { canCallGatewayMethod } from "../lib/gateway-methods.ts";
 import {
   KEYBOARD_SHORTCUT_COMBOS,
+  type KeyboardShortcutsDialogElement,
   matchesShortcutCombo,
 } from "../lib/keyboard-shortcut-contract.ts";
 import { readSessionMethodAccess } from "../lib/session-method-access.ts";
@@ -70,11 +71,6 @@ import {
 import { isHomePanelAvailable } from "./panel-availability.ts";
 import { NAV_WIDTH_MAX, NAV_WIDTH_MIN } from "./settings.ts";
 import { retryStaleChunkReloadWhenReachable } from "./stale-chunk-reload.ts";
-
-type KeyboardShortcutsDialogElement = HTMLElement & {
-  isOpen: boolean;
-  toggle: () => void;
-};
 
 let nativeCommandsOwner: AbortController | undefined;
 

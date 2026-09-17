@@ -13,7 +13,6 @@ import {
   readBoundedResponse,
   readGitHubJsonResponse,
   requiredString,
-  resolveGitHubApiCredentialScope,
   withOptionalGitHubAuth,
 } from "./github-api.js";
 import type { ControlUiGitHubPreview } from "./preview-contract.js";
@@ -41,6 +40,8 @@ export type ControlUiGitHubPreviewTarget = GitHubItemTarget;
 export type ControlUiGitHubPreviewIdentity = {
   token: string | undefined;
   cacheScope: string;
+  /** Host service/env credentials may retry a stale HTTP 401 anonymously. */
+  optionalAuth?: true;
   revalidate: () => Promise<void>;
   assertSelected: () => void;
 };
@@ -321,7 +322,7 @@ export async function loadControlUiGitHubPreview(
 ): Promise<ControlUiGitHubPreview> {
   await identity?.revalidate();
   identity?.assertSelected();
-  const { token, cacheScope } = identity ?? resolveGitHubApiCredentialScope();
+  const { token, cacheScope } = identity ?? { token: undefined, cacheScope: "anonymous" };
   const key = cacheKey(target, cacheScope);
   const now = Date.now();
   let entry = previewCache.get(key);
@@ -334,11 +335,12 @@ export async function loadControlUiGitHubPreview(
     previewCache.set(key, entry);
   } else {
     const successCacheMs = token ? AUTHENTICATED_SUCCESS_CACHE_MS : ANONYMOUS_SUCCESS_CACHE_MS;
-    const request = identity
-      ? fetchPreview(target, fetchImpl, token, identity)
-      : withOptionalGitHubAuth(token, (requestToken) =>
-          fetchPreview(target, fetchImpl, requestToken),
-        );
+    const request =
+      identity && !identity.optionalAuth
+        ? fetchPreview(target, fetchImpl, token, identity)
+        : withOptionalGitHubAuth(token, (requestToken) =>
+            fetchPreview(target, fetchImpl, requestToken, identity),
+          );
     const pending: CacheEntry<ControlUiGitHubPreview> = {
       expiresAt: now + successCacheMs,
       promise: request.then(

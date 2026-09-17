@@ -3,14 +3,6 @@ import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { stableStringify } from "@openclaw/normalization-core/stable-stringify";
 import {
-  discardResponse,
-  fetchGitHubApi,
-  GITHUB_API_ORIGIN,
-  GitHubGraphQLUnavailableError,
-  readGitHubGraphQLResponse,
-  readGitHubJsonResponse,
-} from "../../../extensions/github/api.js";
-import {
   captureAgentLifecycleBinding,
   matchesAgentLifecycleBinding,
 } from "../../agents/agent-lifecycle-registry.js";
@@ -22,6 +14,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { parseProjectGitUrl } from "../../projects/project-git-url.js";
 import { getActiveSecretsRuntimeConfigSnapshot } from "../../secrets/runtime-state.js";
 import { requestCurrentGitHubOAuthRefresh } from "../github-oauth-lifecycle.js";
+import { gitHubPublicApi } from "../github-public-api.js";
 import {
   readRepositoryWorkerProjectSnapshot,
   type RepositoryWorkerProjectSnapshot,
@@ -141,7 +134,7 @@ export async function prepareRepositoryWorkerProjectSource(params: AdmissionRequ
     identity.assertSelected();
   };
   const repositoryPath = new URL(url).pathname.replace(/\.git$/u, "");
-  const endpoint = `${GITHUB_API_ORIGIN}/repos${repositoryPath}`;
+  const endpoint = `${gitHubPublicApi.GITHUB_API_ORIGIN}/repos${repositoryPath}`;
   const read = async (
     suffix: string,
     readIdentity: typeof identity,
@@ -150,8 +143,8 @@ export async function prepareRepositoryWorkerProjectSource(params: AdmissionRequ
     graphql?: { query: string; variables: Record<string, string> },
   ): Promise<unknown> => {
     assertOwner();
-    const response = await fetchGitHubApi(
-      graphql ? `${GITHUB_API_ORIGIN}/graphql` : endpoint + suffix,
+    const response = await gitHubPublicApi.fetchGitHubApi(
+      graphql ? `${gitHubPublicApi.GITHUB_API_ORIGIN}/graphql` : endpoint + suffix,
       fetch,
       readIdentity.token,
       async () => sourceChanged(),
@@ -165,10 +158,15 @@ export async function prepareRepositoryWorkerProjectSource(params: AdmissionRequ
       assertOwner();
       value =
         graphql && readIdentity.token
-          ? await readGitHubGraphQLResponse(response, fetch, readIdentity.token, METADATA_MAX_BYTES)
-          : await readGitHubJsonResponse(response, METADATA_MAX_BYTES);
+          ? await gitHubPublicApi.readGitHubGraphQLResponse(
+              response,
+              fetch,
+              readIdentity.token,
+              METADATA_MAX_BYTES,
+            )
+          : await gitHubPublicApi.readGitHubJsonResponse(response, METADATA_MAX_BYTES);
     } finally {
-      await discardResponse(response);
+      await gitHubPublicApi.discardResponse(response);
     }
     await readIdentity.revalidate();
     assertOwner();
@@ -216,7 +214,7 @@ export async function prepareRepositoryWorkerProjectSource(params: AdmissionRequ
     } catch (error) {
       // Native classic tokens can read public REST metadata without the
       // public_repo scope required by GraphQL. Preserve the full REST fence.
-      if (!(error instanceof GitHubGraphQLUnavailableError)) {
+      if (!(error instanceof gitHubPublicApi.GitHubGraphQLUnavailableError)) {
         throw error;
       }
       await readIdentity.revalidate();

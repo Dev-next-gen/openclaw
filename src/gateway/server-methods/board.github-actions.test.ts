@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
-import { readGitHubJsonResponse } from "../../../extensions/github/api.js";
 import type {
   BoardSnapshot,
   BoardWidgetDeclared,
@@ -22,6 +21,7 @@ import {
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
 import { toRequestUrl } from "../../test-utils/provider-usage-fetch.js";
+import { gitHubPublicApi } from "../github-public-api.js";
 import { createBoardHarness } from "./board.test-support.js";
 import type { GatewayRequestHandlerOptions, RespondFn } from "./types.js";
 
@@ -519,7 +519,7 @@ describe("board authenticated GitHub Actions", () => {
     }));
     const raw = { total_count: 30, workflow_runs: runs };
     expect(Buffer.byteLength(JSON.stringify(raw))).toBeGreaterThan(256 * 1024);
-    await expect(readGitHubJsonResponse(json(raw))).rejects.toMatchObject({
+    await expect(gitHubPublicApi.readGitHubJsonResponse(json(raw))).rejects.toMatchObject({
       statusCode: 502,
       message: expect.stringContaining("size limit"),
     });

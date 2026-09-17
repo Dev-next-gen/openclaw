@@ -13,8 +13,6 @@ export const CONTROL_UI_SESSION_PULL_REQUESTS_CHANGED_EVENT =
 /** Maximum session keys retained by one Control UI PR subscription. */
 export const CONTROL_UI_SESSION_PULL_REQUESTS_MAX_KEYS = 200;
 
-export type { ControlUiGitHubPreview } from "../../extensions/github/api.js";
-
 /** Bounded session metadata rendered by Control UI session-link hover cards. */
 export type ControlUiSessionPreview =
   | {

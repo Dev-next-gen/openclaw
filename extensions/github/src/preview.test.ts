@@ -1,7 +1,10 @@
-import { clearRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ControlUiGitHubError } from "./github-api.js";
-import { loadControlUiGitHubPreview, parseControlUiGitHubPreviewTarget } from "./preview.js";
+import {
+  loadControlUiGitHubPreview as loadPluginPreview,
+  parseControlUiGitHubPreviewTarget,
+  type ControlUiGitHubPreviewIdentity,
+} from "./preview.js";
 
 // List endpoints such as /pulls/{n}/commits return arrays, not objects.
 function githubJson(body: unknown, status = 200): Response {
@@ -57,6 +60,15 @@ function managedIdentity(cacheScope: string, assertSelected: () => void = vi.fn(
   };
 }
 
+let fixtureIdentity: ControlUiGitHubPreviewIdentity | undefined;
+function selectFixtureToken(token: string) {
+  fixtureIdentity = { ...managedIdentity("fixture-" + token), token, optionalAuth: true };
+}
+function loadControlUiGitHubPreview(...args: Parameters<typeof loadPluginPreview>) {
+  const [target, identity = fixtureIdentity, fetchImpl, refresh] = args;
+  return loadPluginPreview(target, identity, fetchImpl, refresh);
+}
+
 describe("parseControlUiGitHubPreviewTarget", () => {
   const target = { kind: "issue", number: 1, owner: "openclaw", repo: "openclaw" };
 
@@ -100,13 +112,12 @@ describe("parseControlUiGitHubPreviewTarget", () => {
 
 describe("loadControlUiGitHubPreview", () => {
   beforeEach(() => {
-    clearRuntimeConfigSnapshot();
-    vi.stubEnv("GH_TOKEN", "");
+    fixtureIdentity = undefined;
+    vi.stubEnv("GH_TOKEN", "ignored-ambient-preview-token");
     vi.stubEnv("GITHUB_TOKEN", "");
   });
 
   afterEach(() => {
-    clearRuntimeConfigSnapshot();
     vi.unstubAllEnvs();
   });
 
@@ -396,7 +407,7 @@ describe("loadControlUiGitHubPreview", () => {
     ).toHaveLength(0);
   });
 
-  it("does not reuse cached previews after the GitHub credential scope changes", async () => {
+  it("does not reuse cached previews after the prepared credential scope changes", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
       const url = requestUrl(input);
       if (!url.includes("/issues/")) {
@@ -417,10 +428,10 @@ describe("loadControlUiGitHubPreview", () => {
       owner: "openclaw",
       repo: "credential-scope",
     };
-    vi.stubEnv("GH_TOKEN", "preview-token-a");
+    selectFixtureToken("preview-token-a");
 
     const first = await loadControlUiGitHubPreview(target, undefined, fetchMock);
-    vi.stubEnv("GH_TOKEN", "preview-token-b");
+    selectFixtureToken("preview-token-b");
     const second = await loadControlUiGitHubPreview(target, undefined, fetchMock);
 
     expect(first.login).toBe("token-a");
@@ -472,7 +483,7 @@ describe("loadControlUiGitHubPreview", () => {
   });
 
   it("returns token-backed metadata only after public repository proofs", async () => {
-    vi.stubEnv("GH_TOKEN", "github-test-token");
+    selectFixtureToken("github-test-token");
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(githubJson({ private: false }))
@@ -501,7 +512,7 @@ describe("loadControlUiGitHubPreview", () => {
   });
 
   it("retries stale optional authentication anonymously for public previews", async () => {
-    vi.stubEnv("GH_TOKEN", "stale-github-token");
+    selectFixtureToken("stale-github-token");
     let itemCalls = 0;
     const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (input) => {
       const url = requestUrl(input);
@@ -530,7 +541,7 @@ describe("loadControlUiGitHubPreview", () => {
   });
 
   it("follows GitHub API redirects for renamed public repositories", async () => {
-    vi.stubEnv("GH_TOKEN", "github-test-token");
+    selectFixtureToken("github-test-token");
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(githubJson({ private: false }))
@@ -574,7 +585,7 @@ describe("loadControlUiGitHubPreview", () => {
   });
 
   it("rejects cross-origin GitHub API redirects before forwarding credentials", async () => {
-    vi.stubEnv("GH_TOKEN", "github-test-token");
+    selectFixtureToken("github-test-token");
     const redirectResponse = new Response("discard me", {
       status: 301,
       headers: { Location: "https://example.com/repos/openclaw/private" },
@@ -597,7 +608,7 @@ describe("loadControlUiGitHubPreview", () => {
   });
 
   it("re-checks visibility when the commits request is redirected into another repository", async () => {
-    vi.stubEnv("GH_TOKEN", "github-test-token");
+    selectFixtureToken("github-test-token");
     const visibilityChecks: string[] = [];
     const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (input) => {
       const url = requestUrl(input);
@@ -645,7 +656,7 @@ describe("loadControlUiGitHubPreview", () => {
   });
 
   it("stops private and missing repositories before fetching item metadata", async () => {
-    vi.stubEnv("GH_TOKEN", "github-test-token");
+    selectFixtureToken("github-test-token");
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(githubJson({ private: true }))
@@ -672,7 +683,7 @@ describe("loadControlUiGitHubPreview", () => {
   });
 
   it("does not expose metadata transferred into a private repository", async () => {
-    vi.stubEnv("GITHUB_TOKEN", "github-test-token");
+    selectFixtureToken("github-test-token");
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(githubJson({ private: false }))
@@ -703,7 +714,7 @@ describe("loadControlUiGitHubPreview", () => {
   });
 
   it("rechecks public visibility for every authenticated preview cache miss", async () => {
-    vi.stubEnv("GH_TOKEN", "github-test-token");
+    selectFixtureToken("github-test-token");
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(githubJson({ private: false }))

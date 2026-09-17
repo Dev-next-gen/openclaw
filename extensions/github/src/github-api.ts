@@ -3,15 +3,6 @@ import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
 import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import { parseRetryAfterHeaderSeconds } from "openclaw/plugin-sdk/retry-runtime";
 import {
-  getRuntimeConfigSnapshot,
-  type OpenClawConfig,
-} from "openclaw/plugin-sdk/runtime-config-snapshot";
-import {
-  assertPluginCapabilitySecretAvailable,
-  isTrustedSecretSurfaceUnavailableError,
-  SecretSurfaceUnavailableError,
-} from "openclaw/plugin-sdk/secret-input-runtime";
-import {
   asFiniteNumber,
   isRecord,
   parseStrictNonNegativeInteger,
@@ -81,9 +72,6 @@ export function formatControlUiGitHubPreviewError(error: unknown): {
   retryable: boolean;
   retryAfterMs?: number;
 } {
-  if (isTrustedSecretSurfaceUnavailableError(error)) {
-    return { message: CONTROL_UI_GITHUB_CREDENTIAL_UNAVAILABLE_MESSAGE, retryable: false };
-  }
   if (error instanceof ControlUiGitHubTransportError) {
     return { message: `${error.message}. Retry or check GitHub availability.`, retryable: true };
   }
@@ -131,52 +119,6 @@ export function formatControlUiGitHubPreviewError(error: unknown): {
   return {
     message: "GitHub preview could not be loaded. Retry or check the server logs.",
     retryable: false,
-  };
-}
-
-export function githubApiToken(
-  env: NodeJS.ProcessEnv = process.env,
-  config: OpenClawConfig | null = getRuntimeConfigSnapshot(),
-): string | undefined {
-  const configured = config?.gateway?.controlUi?.github?.token;
-  if (configured !== undefined) {
-    assertPluginCapabilitySecretAvailable("control-ui-github");
-    const token = typeof configured === "string" ? configured.trim() : "";
-    if (!token) {
-      throw new SecretSurfaceUnavailableError({
-        ownerKind: "capability",
-        ownerId: "control-ui-github",
-        state: "unavailable",
-        paths: ["gateway.controlUi.github.token"],
-        refKeys: [],
-        reason: "secret reference was not materialized by the active runtime",
-      });
-    }
-    return token;
-  }
-  return env.GH_TOKEN?.trim() || env.GITHUB_TOKEN?.trim() || undefined;
-}
-
-/** Raw-config inspection for doctor; it never consults process-global runtime degradation state. */
-export function hasConfiguredGitHubApiCredential(
-  env: NodeJS.ProcessEnv,
-  config: OpenClawConfig,
-): boolean {
-  return (
-    config.gateway?.controlUi?.github?.token !== undefined ||
-    Boolean(env.GH_TOKEN?.trim() || env.GITHUB_TOKEN?.trim())
-  );
-}
-
-/** Captures the effective token and a non-secret cache scope from the same env snapshot. */
-export function resolveGitHubApiCredentialScope(env: NodeJS.ProcessEnv = process.env): {
-  token: string | undefined;
-  cacheScope: string;
-} {
-  const token = githubApiToken(env);
-  return {
-    token,
-    cacheScope: githubApiCredentialCacheScope(token),
   };
 }
 

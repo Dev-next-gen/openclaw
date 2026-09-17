@@ -2,7 +2,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { createServer as createNetServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { HelloOk } from "@openclaw/gateway-protocol";
@@ -27,6 +26,7 @@ import { normalizeControlUiBuildInfo } from "../build-info-normalizers.ts";
 import type { ControlUiBuildInfo } from "../build-info.ts";
 import { createControlUiE2eArtifactDir } from "./control-ui-e2e-artifacts.ts";
 import { createControlUiE2eBuildPublication } from "./control-ui-e2e-build-publication.ts";
+import { resolveAvailableLoopbackPort } from "./control-ui-e2e-port.ts";
 import type { NativeControlUiPluginFixture } from "./control-ui-plugin-fixture.ts";
 import {
   createControlUiSessionFixtures,
@@ -1129,27 +1129,6 @@ export async function startProductionControlUiE2eServer(
 ): Promise<ControlUiE2eProductionServer> {
   await buildProductionControlUiE2e(outDir, buildId);
   return startBuiltControlUiE2eServer(outDir, bootstrapConfig);
-}
-
-async function resolveAvailableLoopbackPort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const probe = createNetServer();
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", () => {
-      const address = probe.address();
-      if (!address || typeof address === "string") {
-        probe.close(() => reject(new Error("Could not reserve a loopback port")));
-        return;
-      }
-      probe.close((err) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        resolve(address.port);
-      });
-    });
-  });
 }
 
 function resolveServerBaseUrl(server: ViteDevServer | PreviewServer): string {

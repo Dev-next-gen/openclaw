@@ -40,7 +40,7 @@ export const linkReaderContentStyles = css`
     font-size: 11px;
   }
   .lr-review-location a {
-    font-family: var(--font-mono, monospace);
+    font-family: var(--mono);
   }
   .lr-review-diff {
     margin-top: 8px;

@@ -11,8 +11,6 @@ export {
   GITHUB_REQUEST_TIMEOUT_MS,
   GitHubGraphQLUnavailableError,
   githubApiCredentialCacheScope,
-  githubApiToken,
-  hasConfiguredGitHubApiCredential,
   isRecord,
   optionalNumber,
   readBoundedResponse,
@@ -20,7 +18,6 @@ export {
   readGitHubJsonResponse,
   readOptionalGitHubString,
   requiredString,
-  resolveGitHubApiCredentialScope,
   withOptionalGitHubAuth,
 } from "./src/github-api.js";
 export { loadControlUiGitHubPreview, parseControlUiGitHubPreviewTarget } from "./src/preview.js";

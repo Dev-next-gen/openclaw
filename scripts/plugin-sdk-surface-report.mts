@@ -378,8 +378,7 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: approved process-diagnostics predicate and lightweight subsystem logger.
       // +1: approved shared native-command argument-menu applicability predicate.
       // +6: passive link-reader descriptor, metadata, document, preview, and request types.
-      // +2: typed unavailable-secret error and trusted-brand guard for plugin-owned transports.
-      4490,
+      4488,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -519,8 +518,7 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +4: runtime-neutral WebSocket client/server and stream constructors.
       // +2: approved process-diagnostics predicate and lightweight subsystem logger.
       // +1: approved shared native-command argument-menu applicability predicate.
-      // +1: trusted unavailable-secret error classification without string-based fallbacks.
-      2647,
+      2646,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

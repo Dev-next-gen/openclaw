@@ -50,6 +50,7 @@ import {
   notifyGatewayObservers,
 } from "./gateway-observers.ts";
 import { readSuspensionPhase } from "./gateway-readiness.ts";
+import { readHelloPluginCapabilities } from "./plugin-capabilities.ts";
 import {
   loadGatewaySessionSelection,
   loadSettings,
@@ -460,15 +461,7 @@ export function createApplicationGateway(
           restartPending: false,
           suspensionPhase: readSuspensionPhase(asOptionalRecord(hello.snapshot)?.suspension),
           hello,
-          pluginCapabilities: {
-            ok: true,
-            descriptors: [],
-            methods: hello.features?.methods ?? [],
-            controlUiTabs: hello.controlUiTabs ?? [],
-            controlUiWidgetKinds: hello.controlUiWidgetKinds ?? [],
-            controlUiLinkReaders: hello.controlUiLinkReaders ?? [],
-            pluginSurfaceUrls: hello.pluginSurfaceUrls ?? {},
-          },
+          pluginCapabilities: readHelloPluginCapabilities(hello),
           canvasPluginSurfaceUrl,
           // Trim guards a whitespace-only defaultId from becoming a truthy selection.
           assistantAgentId: sessionDefaults?.defaultAgentId?.trim() || null,

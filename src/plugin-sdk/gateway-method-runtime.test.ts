@@ -90,7 +90,9 @@ describe("plugin-sdk/gateway-method-runtime", () => {
         register(api) {
           api.registerGatewayMethod(
             "reader.preview",
-            async () => await dispatchGatewayMethod("health", {}),
+            async () => {
+              await dispatchGatewayMethod("health", {});
+            },
             { scope: "operator.read" },
           );
         },

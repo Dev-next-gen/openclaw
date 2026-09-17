@@ -467,7 +467,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     { normalizePluginsConfig },
   ] = await Promise.all([
     import("./doctor/shared/plugin-tool-allowlist-warnings.js"),
-    import("../../extensions/github/api.js"),
+    import("../gateway/github-public-api.js").then(({ gitHubPublicApi }) => gitHubPublicApi),
     import("../plugins/config-state.js"),
   ]);
   const pluginToolAllowlistWarnings = runWithCurrentPluginMetadata(state.candidate, () =>

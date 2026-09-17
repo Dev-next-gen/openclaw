@@ -1,8 +1,11 @@
+import {
+  normalizePluginsConfig,
+  resolveEffectiveEnableState,
+} from "openclaw/plugin-sdk/plugin-config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { describe, expect, it } from "vitest";
-import { collectGitHubUpgradeWarnings } from "../../extensions/github/api.js";
-import githubManifest from "../../extensions/github/openclaw.plugin.json";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { normalizePluginsConfig, resolveEffectiveEnableState } from "../plugins/config-state.js";
+import githubManifest from "../openclaw.plugin.json";
+import { collectGitHubUpgradeWarnings } from "./upgrade.js";
 
 function evaluate(config: OpenClawConfig) {
   const policy = normalizePluginsConfig(config.plugins);

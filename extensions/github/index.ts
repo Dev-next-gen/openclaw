@@ -33,7 +33,7 @@ export default definePluginEntry({
       api.registerGatewayMethod(
         method,
         async (options) => {
-          const { githubHandlers } = await import("./runtime-api.js");
+          const { githubHandlers } = await import("./src/handlers.js");
           await githubHandlers[method](options);
         },
         // Public GitHub data does not depend on the caller's user profile.
