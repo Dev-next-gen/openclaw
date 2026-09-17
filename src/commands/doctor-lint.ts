@@ -10,7 +10,7 @@ import {
   registerBundledHealthChecks,
   resolveBundledHealthCheckPluginStateMode,
 } from "../flows/bundled-health-checks.js";
-import { configValidationIssuesToHealthFindings } from "../flows/doctor-core-checks.js";
+import { configValidationIssuesToHealthFindings } from "../flows/doctor-config-validation-findings.js";
 import { scrubDoctorErrorMessage } from "../flows/doctor-error-message.js";
 import { resolveDoctorContributionHealthChecks } from "../flows/doctor-health-contributions.js";
 import {
@@ -228,14 +228,14 @@ async function executeDoctorLint(
     allowExecSecretRefs: opts.allowExec === true,
     ...(snapshot.path !== undefined ? { configPath: snapshot.path } : {}),
   };
-  registerBundledHealthChecks({
+  const availabilityFindings = registerBundledHealthChecks({
     cfg: snapshot.config,
     cwd: ctx.cwd,
     env: stateView.pluginMetadataEnv,
     runWithPluginStateSnapshot: stateView.runWithPluginStateSnapshot,
     updateReadiness: opts.updateReadiness,
   });
-  const registeredExtensionChecks = listExtensionHealthChecksForDoctor([]);
+  const registeredExtensionChecks = listExtensionHealthChecksForDoctor([], availabilityFindings);
   const onlyRegisteredExtensionChecks =
     opts.onlyIds !== undefined &&
     opts.onlyIds.length > 0 &&
@@ -245,7 +245,7 @@ async function executeDoctorLint(
     : await resolveDoctorContributionHealthChecks();
   const extensionChecks = onlyRegisteredExtensionChecks
     ? registeredExtensionChecks
-    : listExtensionHealthChecksForDoctor(coreChecks);
+    : listExtensionHealthChecksForDoctor(coreChecks, availabilityFindings);
   const runWithPrivateStateSnapshot: DoctorLintStateRunner = async (run) =>
     await stateView.runWithPluginStateSnapshot(async () => await run());
   // Update readiness keeps every declared check private until restart.
@@ -259,7 +259,7 @@ async function executeDoctorLint(
   };
 
   const checks = [
-    ...coreChecks.map((check) => withCoreLintContext(check, coreCtx)),
+    ...coreChecks.map((check) => withCoreLintContext(check, coreCtx, availabilityFindings)),
     ...extensionChecks,
   ];
   const runOpts: DoctorLintRunOptions = {
@@ -471,11 +471,15 @@ function withCoreLintContext(
     readonly runWithPrivateStateSnapshot: DoctorLintStateRunner;
     readonly runWithSourceState: DoctorLintStateRunner;
   },
+  availabilityFindings: readonly HealthFinding[],
 ): HealthCheck {
   return {
     ...check,
     detect(_ctx, scope) {
-      const detect = async () => await check.detect(ctx, scope);
+      const detect = async () => [
+        ...(await check.detect(ctx, scope)),
+        ...availabilityFindings.filter((finding) => finding.checkId === check.id),
+      ];
       if (check.id === SKILLS_READINESS_CHECK_ID) {
         // Discovery needs source-profile eligibility; generated links use the private install roots.
         return ctx.runWithPrivateStateSnapshot(() => ctx.runWithSourceState(detect));
@@ -514,6 +518,7 @@ function toJsonFinding(f: HealthFinding): Record<string, unknown> {
     severity: f.severity,
     message: f.message,
     ...(f.source !== undefined ? { source: f.source } : {}),
+    ...(f.errorCode !== undefined ? { errorCode: f.errorCode } : {}),
     ...(f.path !== undefined ? { path: f.path } : {}),
     ...(f.line !== undefined ? { line: f.line } : {}),
     ...(f.column !== undefined ? { column: f.column } : {}),

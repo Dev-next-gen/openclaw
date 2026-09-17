@@ -103,7 +103,7 @@ function expectNoCpuFields(record: unknown, fields: readonly string[] = threadCp
   }
 }
 
-function controlProjectionWork(afterPreparation?: () => void) {
+function controlProjectionWork(hooks?: { afterPreparation?: () => void; afterRow?: () => void }) {
   vi.spyOn(performance, "now").mockImplementation(() => clock);
   const load = sessionUtils.loadCombinedSessionStoreForGatewayCore;
   vi.spyOn(sessionUtils, "loadCombinedSessionStoreForGatewayCore").mockImplementation((...args) => {
@@ -139,6 +139,7 @@ function controlProjectionWork(afterPreparation?: () => void) {
     } finally {
       cpu.user += 750;
       cpu.system += 250;
+      hooks?.afterRow?.();
     }
   });
   const read = titleReader.readSessionTitleFieldsFromTranscriptBatch;
@@ -152,7 +153,7 @@ function controlProjectionWork(afterPreparation?: () => void) {
         clock += 20;
         cpu.user += 1_250;
         cpu.system += 250;
-        afterPreparation?.();
+        hooks?.afterPreparation?.();
       }
     });
 }
@@ -354,10 +355,17 @@ test("separates producer CPU from registry readiness, yielded work, and follower
     const config = await seedSessions();
     const context = requestContext(config);
     const client = identifiedClient("owner@example.com");
-    const request = { agentId: "main", limit: 1, includeDerivedTitles: true };
+    const request = { agentId: "main", limit: 2, includeDerivedTitles: true };
     const catalog = vi.fn(async () => undefined);
     context.readPreparedGatewayModelCatalog = catalog;
-    const projection = controlProjectionWork();
+    let projectedRows = 0;
+    const rowsAtYield: number[] = [];
+    const projection = controlProjectionWork({
+      afterRow: () => {
+        projectedRows++;
+        clock += 20;
+      },
+    });
     context.workerPlacementDiskSpaceReader = {
       read: () => undefined,
       version: () => {
@@ -379,6 +387,7 @@ test("separates producer CPU from registry readiness, yielded work, and follower
       },
     );
     scheduler.onYield = async () => {
+      rowsAtYield.push(projectedRows);
       entered.resolve();
       await release.promise;
     };
@@ -410,6 +419,8 @@ test("separates producer CPU from registry readiness, yielded work, and follower
     const [owned, followed] = await Promise.all([owner, follower]);
     await unrelatedWork.promise;
     expect(followed).toBe(owned);
+    expect(rowsAtYield).toEqual([0, 1]);
+    expect(owned.sessions).toHaveLength(2);
     expect(projection).toHaveBeenCalledOnce();
     expect(records).toHaveLength(2);
     const ownerRecord = records.find((record) => record.trace?.traceId === ownerTrace.traceId);
@@ -426,14 +437,14 @@ test("separates producer CPU from registry readiness, yielded work, and follower
         prepareSyncMs: 20,
         storeLoadThreadCpuMs: 0.75,
         prepareThreadCpuMs: 1.5,
-        rowThreadCpuMs: 3,
+        rowThreadCpuMs: 6,
         cacheSelectionThreadCpuMs: 1.25,
         cachePublicationThreadCpuMs: 1.25,
-        rowSyncMs: 0,
+        rowSyncMs: 40,
         yieldWaitMs: 1_500,
-        yieldCount: 1,
+        yieldCount: 2,
         projectionPasses: 1,
-        selectedRowCount: 1,
+        selectedRowCount: 2,
       },
     });
     expect(followerRecord).toMatchObject({
@@ -441,7 +452,7 @@ test("separates producer CPU from registry readiness, yielded work, and follower
       fields: {
         cacheRole: "in-flight-follower",
         cacheSelectionThreadCpuMs: 1.25,
-        selectedRowCount: 1,
+        selectedRowCount: 2,
         workTraceId: ownerTrace.traceId,
         workSpanId: ownerTrace.spanId,
       },
@@ -465,7 +476,7 @@ test("separates producer CPU from registry readiness, yielded work, and follower
     expect(records).toHaveLength(3);
     expect(records[2]).toMatchObject({
       trace: hitTrace,
-      fields: { cacheRole: "completed-hit", selectedRowCount: 1 },
+      fields: { cacheRole: "completed-hit", selectedRowCount: 2 },
     });
     expect(records[2]?.fields).not.toHaveProperty("projectionPasses");
     expect(records[2]?.fields).not.toHaveProperty("workTraceId");
@@ -541,10 +552,12 @@ test.each([
     const context = requestContext(await seedSessions());
     threadCpuProbe.mockClear();
     const cpuThrows = mode === "cpu-start-throws" || mode === "cpu-finish-throws";
-    controlProjectionWork(() => {
-      if (mode === "cpu-finish-throws") {
-        cpuProbeFailure = new Error("synthetic CPU probe failure");
-      }
+    controlProjectionWork({
+      afterPreparation: () => {
+        if (mode === "cpu-finish-throws") {
+          cpuProbeFailure = new Error("synthetic CPU probe failure");
+        }
+      },
     });
     if (mode === "cpu-start-throws") {
       cpuProbeFailure = new Error("synthetic CPU probe failure");

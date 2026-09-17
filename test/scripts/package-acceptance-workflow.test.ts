@@ -200,6 +200,7 @@ const frozenAdmissionClosure = [
   "scripts/lib/docker-e2e-scenarios.mts",
   "scripts/lib/official-external-channel-catalog.json",
   "scripts/lib/upgrade-survivor-policy.mjs",
+  "scripts/lib/upgrade-survivor-scenarios.json",
   "scripts/lib/release-version.mjs",
   "scripts/lib/frozen-target-compat.sh",
   "scripts/resolve-frozen-codex-live-suite.mjs",
@@ -420,6 +421,15 @@ function reconstructAdmissionEvaluations(record: {
   });
 }
 
+function currentSurvivorScenarioFiles() {
+  return Object.fromEntries(
+    [
+      "scripts/e2e/lib/upgrade-survivor/assertions.mjs",
+      "scripts/lib/upgrade-survivor-scenarios.json",
+    ].map((path) => [path, readFileSync(path, "utf8")]),
+  );
+}
+
 function packageAdmissionBaselineFixture(
   inputs: Record<string, string | boolean | number>,
   failRegistry = false,
@@ -435,10 +445,7 @@ function packageAdmissionBaselineFixture(
     },
     {
       "package.json": '{"type":"module","version":"2026.9.9"}',
-      "scripts/e2e/lib/upgrade-survivor/assertions.mjs": readFileSync(
-        "scripts/e2e/lib/upgrade-survivor/assertions.mjs",
-        "utf8",
-      ),
+      ...currentSurvivorScenarioFiles(),
     },
     {},
     ["scripts/resolve-upgrade-survivor-baselines.mts", "scripts/lib/release-upgrade-baseline.mjs"],
@@ -984,6 +991,7 @@ describe("frozen admission workflow barriers", () => {
           "scripts/runtime-postbuild.mts",
           "src/cli/update-cli/update-command-plugin-preflight.ts",
           "scripts/e2e/lib/upgrade-survivor/assertions.mjs",
+          "scripts/lib/upgrade-survivor-scenarios.json",
           "extensions/codex/package.json",
         ].map((path) => [path, readFileSync(path, "utf8")]),
       );
@@ -1056,10 +1064,7 @@ describe("frozen admission workflow barriers", () => {
         },
         {
           "package.json": '{"type":"module","version":"2026.9.9"}',
-          "scripts/e2e/lib/upgrade-survivor/assertions.mjs": readFileSync(
-            "scripts/e2e/lib/upgrade-survivor/assertions.mjs",
-            "utf8",
-          ),
+          ...currentSurvivorScenarioFiles(),
         },
         { ADMISSION_BASELINES_RESOLVED: "true" },
       );
@@ -1742,12 +1747,7 @@ describe("frozen admission workflow barriers", () => {
       entry.file,
       entry.job,
       { ...common, ...entry.multiline },
-      {
-        "scripts/e2e/lib/upgrade-survivor/assertions.mjs": readFileSync(
-          "scripts/e2e/lib/upgrade-survivor/assertions.mjs",
-          "utf8",
-        ),
-      },
+      currentSurvivorScenarioFiles(),
       { ADMISSION_STAGE: "known-source", ADMISSION_BASELINES_RESOLVED: "true" },
     );
     const multilinePlan = fixture.selection();
@@ -2074,12 +2074,7 @@ describe("frozen admission workflow barriers", () => {
           include_live_suites: false,
           published_upgrade_survivor_baseline: "openclaw@latest",
         },
-        {
-          "scripts/e2e/lib/upgrade-survivor/assertions.mjs": readFileSync(
-            "scripts/e2e/lib/upgrade-survivor/assertions.mjs",
-            "utf8",
-          ),
-        },
+        currentSurvivorScenarioFiles(),
       );
       f.selection();
       const bin = join(f.root, "acquisition-bin");
@@ -2124,9 +2119,10 @@ describe("frozen admission workflow barriers", () => {
   );
 
   it.each(["published-upgrade-survivor", "update-migration"])(
-    "acquires the selected mobile-pairing blob before expanded %s admission",
+    "acquires selected upgrade metadata before expanded %s admission",
     (lane) => {
       const path = "src/gateway/node-command-policy.ts";
+      const scenarioCatalog = "scripts/lib/upgrade-survivor-scenarios.json";
       const inputs = {
         docker_lanes: lane,
         include_release_path_suites: false,
@@ -2143,15 +2139,13 @@ describe("frozen admission workflow barriers", () => {
         {
           "package.json": '{"type":"module","version":"2026.9.2"}',
           [path]: readFileSync(path, "utf8"),
-          "scripts/e2e/lib/upgrade-survivor/assertions.mjs": readFileSync(
-            "scripts/e2e/lib/upgrade-survivor/assertions.mjs",
-            "utf8",
-          ),
+          ...currentSurvivorScenarioFiles(),
         },
         { ADMISSION_BASELINES_RESOLVED: "true" },
       );
       const planned = fixture.selection();
       expect(planned.sourcePaths).toContain(path);
+      expect(planned.sourcePaths).toContain(scenarioCatalog);
       const origin = join(fixture.root, "origin.git");
       fixture.git("clone", "--bare", "--no-hardlinks", fixture.target, origin);
       fixture.git("-C", origin, "config", "uploadpack.allowFilter", "true");
@@ -2159,7 +2153,17 @@ describe("frozen admission workflow barriers", () => {
       fixture.git("config", "remote.origin.promisor", "true");
       fixture.git("config", "remote.origin.partialclonefilter", "blob:none");
       const oid = fixture.git("rev-parse", `${fixture.sha}:${path}`);
+      const scenarioCatalogOid = fixture.git("rev-parse", `${fixture.sha}:${scenarioCatalog}`);
       unlinkSync(join(fixture.target, ".git", "objects", oid.slice(0, 2), oid.slice(2)));
+      unlinkSync(
+        join(
+          fixture.target,
+          ".git",
+          "objects",
+          scenarioCatalogOid.slice(0, 2),
+          scenarioCatalogOid.slice(2),
+        ),
+      );
 
       const unavailable = fixture.admit();
       expect(unavailable.status).not.toBe(0);
@@ -2171,14 +2175,16 @@ describe("frozen admission workflow barriers", () => {
       const gitPath = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
       writeFileSync(
         join(acquisitionBin, "git"),
-        `#!/bin/sh\nif [ "$#" = 5 ] && [ "$3" = cat-file ] && [ "$4" = blob ] && [ "$5" = '${oid}' ]; then printf '%s\\n' "$5" >> '${requested}'; fi\nexec '${gitPath}' "$@"\n`,
+        `#!/bin/sh\nif [ "$#" = 5 ] && [ "$3" = cat-file ] && [ "$4" = blob ]; then printf '%s\\n' "$5" >> '${requested}'; fi\nexec '${gitPath}' "$@"\n`,
         { mode: 0o755 },
       );
       const acquired = fixture.run("Acquire selected contract objects", {
         PATH: `${acquisitionBin}:${process.env.PATH}`,
       });
       expect(acquired.status, acquired.stderr).toBe(0);
-      expect(readFileSync(requested, "utf8")).toBe(`${oid}\n`);
+      expect(readFileSync(requested, "utf8").trim().split("\n")).toEqual(
+        expect.arrayContaining([oid, scenarioCatalogOid]),
+      );
       const admitted = fixture.admit();
       expect(admitted.status, admitted.stderr).toBe(0);
       const record = JSON.parse(readFileSync(join(fixture.root, "frozen-admission.json"), "utf8"));
@@ -2462,12 +2468,7 @@ describe("frozen admission workflow barriers", () => {
         published_upgrade_survivor_baseline: "openclaw@latest",
         allow_frozen_target_scenario_omissions: false,
       },
-      {
-        "scripts/e2e/lib/upgrade-survivor/assertions.mjs": readFileSync(
-          "scripts/e2e/lib/upgrade-survivor/assertions.mjs",
-          "utf8",
-        ),
-      },
+      currentSurvivorScenarioFiles(),
     );
     expect(f.selection().obligations).toContainEqual(
       expect.objectContaining({ kind: "upgrade-baselines" }),
@@ -13920,6 +13921,7 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
       "scripts/lib/release-version.mjs",
       "scripts/lib/record-shared.mjs",
       "scripts/lib/upgrade-survivor-policy.mjs",
+      "scripts/lib/upgrade-survivor-scenarios.json",
     ]) {
       copyFileSync(source, join(root, source.replace(/^scripts\//u, "")));
     }
