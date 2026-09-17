@@ -421,7 +421,6 @@ src/config/validation-issues.ts
 src/config/validation-plugin-config.ts
 src/config/validation-plugin-registry.ts
 src/config/validation-plugin-rules.ts
-src/config/validation-plugin-registry.ts
 src/config/validation.ts
 src/config/version.ts
 src/config/web-search-legacy-provider-keys.ts
