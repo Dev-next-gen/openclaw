@@ -677,127 +677,182 @@ export async function finalizeManagedChild(
     onProcessGroupSignalError: recordSignalError,
   };
   const job = windowsJobs.get(child);
-  const termination: ManagedChildTermination | undefined =
-    !signal && job
-      ? observeWindowsTree(child)
-      : !signal &&
-          inspectManagedProcessGroup(child, {
-            deadlineAt: startedAt + forceDelay + drainTimeoutMs,
-            errorPolicy: "indeterminate",
-            platform,
-          }) === "dead"
-        ? { processTreeState: "terminated" }
-        : terminateManagedChild(child, signal ?? "SIGKILL", terminationOptions);
-  if (platform === "win32" && termination?.processTreeState !== "terminated" && !job) {
-    throw createManagedCommandCleanupError(
-      "Windows taskkill could not verify managed process tree exit",
-      child,
-      platform,
-      "indeterminate",
-      termination?.error,
-    );
-  }
-  // POSIX probes share the original budget; Windows retains its existing
-  // post-taskkill drainage allowance.
-  const forceAt = (platform === "win32" ? Date.now() : startedAt) + forceDelay;
-  const deadline = forceAt + drainTimeoutMs;
-  let forced = !signal || platform === "win32";
-  let groupState: "dead" | "indeterminate" | "live" = "indeterminate";
-  let survivingPids: number[] | undefined;
-  let observationError: Error | undefined;
-  let warned = false;
-  while (true) {
-    const exited = child.exitCode !== null || child.signalCode !== null;
-    // A snapshot cannot spend drainage time before escalation is due. Forced
-    // leader-exit cleanup skips snapshot work but still checks kernel existence.
-    const probeDeadline = forced
-      ? deadline
-      : forceKillOnLeaderExit && exited
-        ? Math.min(forceAt, Date.now())
-        : forceAt;
-    if (platform === "win32") {
-      const observed = observeWindowsTree(child);
-      survivingPids = observed.survivingPids;
-      observationError = observed.error;
-      groupState = observed.processTreeState === "terminated" ? "dead" : "indeterminate";
-      if (!warned && groupState !== "dead") {
-        warned = true;
-        process.emitWarning(
-          Object.assign(
-            createManagedCommandCleanupError(
-              `Windows process tree unresolved: ${JSON.stringify({ survivingPids: survivingPids ?? null, observationError: observed.error?.message })}`,
-              child,
-              platform,
-              "indeterminate",
-              termination?.error ?? observed.error,
-            ),
-            { survivingPids },
-          ),
-        );
-      }
-    } else {
-      groupState = inspectManagedProcessGroup(child, {
-        deadlineAt: probeDeadline,
+  let joined = false;
+  const failures: unknown[] = [];
+  try {
+    const termination: ManagedChildTermination | undefined =
+      !signal &&
+      inspectManagedProcessGroup(child, {
+        deadlineAt: startedAt + forceDelay + drainTimeoutMs,
         errorPolicy: "indeterminate",
         platform,
+      }) === "dead"
+        ? { processTreeState: "terminated" }
+        : terminateManagedChild(child, signal ?? "SIGKILL", terminationOptions);
+    if (platform === "win32" && termination?.processTreeState !== "terminated" && !job) {
+      throw createManagedCommandCleanupError(
+        "Windows taskkill could not verify managed process tree exit",
+        child,
+        platform,
+        "indeterminate",
+        termination?.error,
+      );
+    }
+    // POSIX probes share the original budget; Windows retains its existing
+    // post-taskkill drainage allowance.
+    const forceAt = (platform === "win32" ? Date.now() : startedAt) + forceDelay;
+    const deadline = forceAt + drainTimeoutMs;
+    let forced = !signal || platform === "win32";
+    let groupState: "dead" | "indeterminate" | "live" = "indeterminate";
+    let survivingPids: number[] | undefined;
+    let observationError: Error | undefined;
+    let warned = false;
+    while (true) {
+      const exited = child.exitCode !== null || child.signalCode !== null;
+      // A snapshot cannot spend drainage time before escalation is due. Forced
+      // leader-exit cleanup skips snapshot work but still checks kernel existence.
+      const probeDeadline = forced
+        ? deadline
+        : forceKillOnLeaderExit && exited
+          ? Math.min(forceAt, Date.now())
+          : forceAt;
+      if (platform === "win32") {
+        const observed = observeWindowsTree(child);
+        survivingPids = observed.survivingPids;
+        observationError = observed.error;
+        groupState = observed.processTreeState === "terminated" ? "dead" : "indeterminate";
+        if (!warned && groupState !== "dead") {
+          warned = true;
+          process.emitWarning(
+            Object.assign(
+              createManagedCommandCleanupError(
+                `Windows process tree unresolved: ${JSON.stringify({ survivingPids: survivingPids ?? null, observationError: observed.error?.message })}`,
+                child,
+                platform,
+                "indeterminate",
+                termination?.error ?? observed.error,
+              ),
+              { survivingPids },
+            ),
+          );
+        }
+      } else {
+        groupState = inspectManagedProcessGroup(child, {
+          deadlineAt: probeDeadline,
+          errorPolicy: "indeterminate",
+          platform,
+        });
+      }
+      const pipesClosed = [child.stdout, child.stderr].every((pipe) => !pipe || pipe.closed);
+      if (groupState === "dead" && exited && pipesClosed) {
+        joined = true;
+        // A missing group at signal time supersedes the earlier racy liveness probe.
+        if (!signal && platform !== "win32" && termination?.processTreeState !== "terminated") {
+          throw createManagedCommandCleanupError(
+            "Managed command exited while its process group remained active",
+            child,
+            platform,
+            "terminated",
+          );
+        }
+        break;
+      }
+      const now = Date.now();
+      // Bounded timeout callers can retire remaining descendants as soon as the
+      // leader exits. Other owners retain their configured graceful-drain window.
+      if (!forced && (now >= forceAt || (forceKillOnLeaderExit && exited))) {
+        forced = true;
+        if (groupState !== "dead") {
+          terminateManagedChild(child, "SIGKILL", terminationOptions);
+        }
+      }
+      if (now >= deadline) {
+        break;
+      }
+      await new Promise((resolve) => {
+        setTimeout(resolve, Math.min(PROCESS_GROUP_POLL_MS, (forced ? deadline : forceAt) - now));
       });
     }
-    const pipesClosed = [child.stdout, child.stderr].every((pipe) => !pipe || pipe.closed);
-    if (groupState === "dead" && exited && pipesClosed) {
-      if (job) {
-        job.close();
-        windowsJobs.delete(child);
-        windowsTerminations.set(child, { processTreeState: "terminated" });
+    if (!joined) {
+      // Stop owning pipe handles only after recording failure; never disguise an
+      // escaped descendant holding stdio as successful completion or cancellation.
+      if (!retainOutputOnFailure) {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
       }
-      onTerminated();
-      // A missing group at signal time supersedes the earlier racy liveness probe.
-      if (!signal && platform !== "win32" && termination?.processTreeState !== "terminated") {
-        throw createManagedCommandCleanupError(
-          "Managed command exited while its process group remained active",
+      throw Object.assign(
+        createManagedCommandCleanupError(
+          `Managed command cleanup could not verify child, process group, and output closure${platform === "win32" ? `: ${JSON.stringify({ survivingPids: survivingPids ?? null })}` : ""}`,
           child,
           platform,
-          "terminated",
-        );
-      }
-      return;
-    }
-    const now = Date.now();
-    // Bounded timeout callers can retire remaining descendants as soon as the
-    // leader exits. Other owners retain their configured graceful-drain window.
-    if (!forced && (now >= forceAt || (forceKillOnLeaderExit && exited))) {
-      forced = true;
-      if (groupState !== "dead") {
-        terminateManagedChild(child, "SIGKILL", terminationOptions);
-      }
-    }
-    if (now >= deadline) {
-      break;
-    }
-    await new Promise((resolve) => {
-      setTimeout(resolve, Math.min(PROCESS_GROUP_POLL_MS, (forced ? deadline : forceAt) - now));
-    });
-  }
-  // Stop owning pipe handles only after recording failure; never disguise an
-  // escaped descendant holding stdio as successful completion or cancellation.
-  if (!retainOutputOnFailure) {
-    child.stdout?.destroy();
-    child.stderr?.destroy();
-  }
-  throw Object.assign(
-    createManagedCommandCleanupError(
-      `Managed command cleanup could not verify child, process group, and output closure${platform === "win32" ? `: ${JSON.stringify({ survivingPids: survivingPids ?? null })}` : ""}`,
-      child,
-      platform,
-      groupState === "live" ? "live" : "indeterminate",
-      new AggregateError(
-        [termination?.error, observationError, ...signalErrors].filter(
-          (error) => error !== undefined,
+          groupState === "live" ? "live" : "indeterminate",
+          new AggregateError(
+            [termination?.error, observationError, ...signalErrors].filter(
+              (error) => error !== undefined,
+            ),
+            "Managed process termination or observation failed",
+          ),
         ),
-        "Managed process termination or observation failed",
-      ),
-    ),
-    { survivingPids },
-  );
+        { survivingPids },
+      );
+    }
+  } catch (error) {
+    failures.push(error);
+  }
+  if (job) {
+    // Closing a kill-on-close Job is recovery, not proof that its members exited.
+    // Retain the final outcome before relinquishing the native handle on every path.
+    const observed = joined ? undefined : observeWindowsTree(child);
+    if (!joined && !hasUnjoinedWork(failures[0])) {
+      failures[0] = Object.assign(
+        createManagedCommandCleanupError(
+          "Windows Job finalization remains unverified",
+          child,
+          platform,
+          "indeterminate",
+          failures[0],
+        ),
+        { survivingPids: observed?.survivingPids },
+      );
+    }
+    if (observed?.error) {
+      failures.push(observed.error);
+    }
+    const receipt: ManagedChildTermination = {
+      ...observed,
+      processTreeState: joined ? "terminated" : "indeterminate",
+      ...(failures.length
+        ? { error: new AggregateError(failures, "Managed command finalization failed") }
+        : {}),
+    };
+    windowsTerminations.set(child, receipt);
+    try {
+      job.close();
+      windowsJobs.delete(child);
+    } catch (error) {
+      joined = false;
+      failures.push(
+        createManagedCommandCleanupError(
+          "Windows Job handle closure failed",
+          child,
+          platform,
+          "indeterminate",
+          error,
+        ),
+      );
+      receipt.processTreeState = "indeterminate";
+      receipt.error = new AggregateError(failures, "Windows Job finalization failed");
+    }
+  }
+  if (joined) {
+    onTerminated();
+  }
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Managed command finalization failed");
+  }
 }
 
 function createManagedCommandSetupCleanupError(error: unknown, cleanupError: unknown) {

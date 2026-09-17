@@ -117,7 +117,10 @@ On Windows, managed commands and the Gateway test instance use a retained kernel
 Job. The launcher joins that Job before it can start the command. Cleanup waits
 for an empty Job, leader exit, and output closure; leader exit alone never proves
 descendant completion. Failed termination reports the observed surviving PIDs and
-retains resource claims while the Job remains unresolved. Existing callers with
+retains resource claims while the Job remains unresolved. Normal leader exit also
+terminates remaining Job members. Finalization records its outcome before closing
+the Job handle, including on failure; closing the handle alone does not verify
+termination or release resource claims. Existing callers with
 their own IPC channel keep the direct-launch contract; failed taskkill without an
 owned Job stays indeterminate even if the leader and its pipes have closed.
 

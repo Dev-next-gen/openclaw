@@ -23,7 +23,7 @@ vi.mock("../../scripts/lib/managed-windows-job.mts", async (original) => {
       const owned = actual.spawnWindowsJobChild(...args);
       if (owned) {
         Object.assign(fault, owned, { stop: owned.job.stop });
-        owned.job.stop = () => {};
+        owned.job.stop = vi.fn(() => {});
       }
       return owned;
     },
@@ -32,10 +32,10 @@ vi.mock("../../scripts/lib/managed-windows-job.mts", async (original) => {
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
 
-it.runIf(process.platform === "win32")(
-  "retains native Job descendants with independent output after failed taskkill",
+it.runIf(process.platform === "win32").each(["abort", "normal exit"])(
+  "joins native Job descendants with independent output after %s",
   { timeout: 30_000 },
-  async () => {
+  async (mode) => {
     const koffi = (await import("koffi")).default;
     createWindowsJobBindings(koffi).assertLayouts();
     createWindowsJobBindings(koffi).assertLayouts();
@@ -51,6 +51,7 @@ it.runIf(process.platform === "win32")(
     const abort = new AbortController();
     let commandPid = 0;
     let terminated = false;
+    let leaderClosed: Promise<unknown> | undefined;
     const command = runManagedCommand({
       bin: process.execPath,
       args: [
@@ -63,14 +64,18 @@ const descendant = spawn(process.execPath, ["-e", 'setInterval(() => process.std
 fs.closeSync(out);
 fs.writeFileSync(process.argv[1] + ".tmp", process.pid + " " + descendant.pid);
 fs.renameSync(process.argv[1] + ".tmp", process.argv[1]);
-setInterval(() => {}, 1000);
+${mode === "normal exit" ? 'process.stdin.once("data", () => process.exit(0));' : "setInterval(() => {}, 1000);"}
 `,
         ready,
       ],
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, TMPDIR: root, TMP: root, TEMP: root },
       shell: false,
       signal: abort.signal,
+      onReady: (child) => {
+        leaderClosed = once(child, "close");
+        void leaderClosed.catch(() => {});
+      },
       runTaskkill: () => {
         if (!terminated) {
           terminated = true;
@@ -97,8 +102,14 @@ setInterval(() => {}, 1000);
       if (!fault.child) {
         throw new Error("Windows Job launcher was not created");
       }
-      const leaderClosed = once(fault.child, "close");
-      abort.abort();
+      if (mode === "abort") {
+        abort.abort();
+      } else {
+        if (!fault.child.stdin) {
+          throw new Error("Native fixture control input is missing");
+        }
+        fault.child.stdin.end("exit\n");
+      }
       const observation = await Promise.race([
         warning.promise,
         outcome.then((error) => {
@@ -109,6 +120,7 @@ setInterval(() => {}, 1000);
       ]);
       await leaderClosed;
       expect(fault.child.stdout?.closed && fault.child.stderr?.closed).toBe(true);
+      expect(fault.job?.stop).toHaveBeenCalled();
       expect(fault.job?.inspect()).toContain(descendantPid);
       expect(observation).toMatchObject({
         processTreeState: "indeterminate",
@@ -120,10 +132,16 @@ setInterval(() => {}, 1000);
         fault.job.stop = fault.stop;
         fault.stop();
       }
-      abort.abort();
+      if (mode === "abort") {
+        abort.abort();
+      }
       await outcome;
     }
-    expect(await outcome).toMatchObject({ code: "ABORT_ERR" });
+    if (mode === "abort") {
+      expect(await outcome).toMatchObject({ code: "ABORT_ERR" });
+    } else {
+      expect(await outcome).toBe(0);
+    }
     owner.assertReleased();
   },
 );

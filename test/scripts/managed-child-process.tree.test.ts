@@ -3,6 +3,8 @@ import { once } from "node:events";
 import { PassThrough } from "node:stream";
 import { afterEach, expect, it, vi } from "vitest";
 import {
+  hasUnjoinedWork,
+  inspectManagedProcessGroup,
   runManagedCommand,
   terminateManagedChild,
   waitForManagedProcessGroupExit,
@@ -52,6 +54,112 @@ it.each(["returned false", "ESRCH"])(
     expect(terminateManagedChild(child, "SIGTERM", { platform: "darwin" })).toEqual({
       processTreeState: "indeterminate",
     });
+  },
+);
+
+it.each([
+  ["win32", true, true],
+  ["win32", false, true],
+  ["darwin", true, true],
+  ["darwin", false, true],
+  ["win32", true, false],
+] as const)(
+  "finalizes normal leader exit on %s (termination succeeds: %s, handle closes: %s)",
+  async (platform, terminates, closes) => {
+    const root = dirs.make("managed-normal-exit-");
+    const owner = createVitestResourceOwner(root);
+    const child = new ChildProcess();
+    Object.defineProperties(child, { pid: { value: 12345 }, exitCode: { value: 0 } });
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    const closed = Promise.all([once(child.stdout, "close"), once(child.stderr, "close")]);
+    child.stdout.destroy();
+    child.stderr.destroy();
+    await closed;
+    const descendantOutput = new PassThrough();
+    const stopSurvivor = () => {
+      if (!terminates) {
+        throw Object.assign(new Error("survivor termination denied"), { code: "EPERM" });
+      }
+      descendantOutput.destroy();
+    };
+    let jobClosed = false;
+    const job = {
+      inspect: vi.fn(() => {
+        if (jobClosed) {
+          throw new Error("Job handle is closed");
+        }
+        return descendantOutput.destroyed ? [] : [23456];
+      }),
+      beginStop: vi.fn(),
+      stop: vi.fn(stopSurvivor),
+      close: vi.fn(() => {
+        if (!closes) {
+          throw new Error("CloseHandle failed");
+        }
+        jobClosed = true;
+      }),
+    };
+    mocks.spawn.mockReturnValue(child);
+    mocks.spawnWindowsJobChild.mockReturnValue(platform === "win32" ? { child, job } : undefined);
+    vi.spyOn(child, "kill").mockReturnValue(false);
+    const signal = vi.spyOn(process, "kill").mockImplementation((pid, received) => {
+      expect(pid).toBe(-12345);
+      if (descendantOutput.destroyed) {
+        throw Object.assign(new Error("group gone"), { code: "ESRCH" });
+      }
+      if (received !== 0) {
+        stopSurvivor();
+      }
+      return true;
+    });
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const outcome = await runManagedCommand({
+        bin: "fixture",
+        platform,
+        shell: false,
+        stdio: "pipe",
+        requireProcessTreeExit: platform !== "win32",
+        cleanupDrainTimeoutMs: 0,
+        env: { TMPDIR: root },
+        onReady: () => {
+          child.emit("exit", 0, null);
+          child.emit("close", 0, null);
+        },
+      }).catch((error: unknown) => error);
+      if (platform === "win32") {
+        expect(job.stop).toHaveBeenCalledOnce();
+        expect(job.close).toHaveBeenCalledOnce();
+        if (!terminates) {
+          expect(outcome).toMatchObject({ survivingPids: [23456] });
+          expect(warning).toHaveBeenCalledWith(
+            expect.objectContaining({ survivingPids: [23456], processTreeState: "indeterminate" }),
+          );
+        }
+        expect(inspectManagedProcessGroup(child, { platform, errorPolicy: "indeterminate" })).toBe(
+          terminates ? "dead" : "indeterminate",
+        );
+      } else {
+        expect(signal).toHaveBeenCalledWith(-12345, "SIGKILL");
+      }
+      if (terminates && closes) {
+        expect(descendantOutput.destroyed).toBe(true);
+        owner.assertReleased();
+        // POSIX strict normal-exit policy still reports unexpected group survivors.
+        if (platform === "win32") {
+          expect(outcome).toBe(0);
+        } else {
+          expect(outcome).toMatchObject({ processTreeState: "terminated" });
+        }
+      } else {
+        expect(hasUnjoinedWork(outcome)).toBe(true);
+        expect(outcome).toMatchObject({ code: "EPROCESSGROUP_CLEANUP_FAILED" });
+        expect(() => owner.assertReleased()).toThrow("Unreleased Vitest resource claim");
+      }
+    } finally {
+      descendantOutput.destroy();
+    }
   },
 );
 
