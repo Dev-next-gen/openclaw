@@ -223,6 +223,7 @@ describe("tsdown config", () => {
       requireNativeHookRelayGraph(),
       requireStandaloneRuntimeGraph("infra/sqlite-readonly-location.worker"),
       requireStandaloneRuntimeGraph("agents/harness/native-hook-relay-client.worker"),
+      requireStandaloneRuntimeGraph("process/spawn-broker/worker"),
     ]);
 
     for (const config of configs) {
@@ -295,6 +296,11 @@ describe("tsdown config", () => {
       label: "native hook locator worker",
       entry: "agents/harness/native-hook-relay-client.worker",
       source: "src/agents/harness/native-hook-relay-client.worker.ts",
+    },
+    {
+      label: "spawn broker",
+      entry: "process/spawn-broker/worker",
+      source: "src/process/spawn-broker/worker.ts",
     },
   ])("emits the $label once without sealing its package loaders", ({ entry, source }) => {
     const child = requireStandaloneRuntimeGraph(entry);

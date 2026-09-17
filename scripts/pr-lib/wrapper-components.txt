@@ -943,6 +943,13 @@ src/process/exec-termination.ts
 src/process/exec.ts
 src/process/kill-tree.ts
 src/process/scoped-child-reaper.ts
+src/process/spawn-broker/child.ts
+src/process/spawn-broker/context.ts
+src/process/spawn-broker/execa-client.ts
+src/process/spawn-broker/execa-message.ts
+src/process/spawn-broker/execa-protocol.ts
+src/process/spawn-broker/pipe.ts
+src/process/spawn-broker/protocol.ts
 src/process/windows-command.ts
 src/proxy-capture/env.ts
 src/proxy-capture/header-redaction.ts
