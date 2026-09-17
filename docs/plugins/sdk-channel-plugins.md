@@ -562,8 +562,9 @@ Verified official installed plugins can delegate supported conversation, metadat
 reads to provider-owned access checks. Channel-origin requests need server-owned
 current provider, account, and conversation context. An authenticated dashboard user
 turn can also use those provider-owned checks without native channel context, including
-Incognito sessions and fresh messages after reconnect. This permission belongs only to
-that admitted turn; background work and scheduled jobs keep their separate authorization.
+Incognito sessions and fresh messages after reconnect. Ordinary transport loss does not
+cancel an already admitted turn. This permission belongs only to that turn; background
+work and scheduled jobs keep their separate authorization.
 Normal chat and tool permissions, along with provider account, destination, action,
 and requester policies, remain in force.
 

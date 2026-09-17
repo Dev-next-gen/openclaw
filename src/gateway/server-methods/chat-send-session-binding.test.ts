@@ -37,6 +37,7 @@ const admissionScenarios = [
   "queued",
   "dashboard",
   "dashboard-writer",
+  "dashboard-credential-revoked",
   "dashboard-unattested",
   "dashboard-internal",
 ] as const;
@@ -47,7 +48,7 @@ it.each(admissionScenarios)(
     const dashboard = scenario.startsWith("dashboard");
     const directDashboard = dashboard && scenario !== "dashboard-internal";
     const dashboardReadAllowed = directDashboard && scenario !== "dashboard-unattested";
-    const closure = dashboard ? "released" : scenario;
+    const closure = scenario === "dashboard-writer" ? "aborted" : dashboard ? "released" : scenario;
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const runId = "retained-preparation";
       const sessionKey = "agent:main:binding";
@@ -66,8 +67,11 @@ it.each(admissionScenarios)(
             entry.sessionId === "unrelated-session",
         ).length;
       const profile = ensureProfileForEmail("authoring-binding@example.test");
+      const connection = new AbortController();
+      const hasCurrentClientAuthority = vi.fn(() => true);
       const client: GatewayClient = {
         connId: "authoring-binding",
+        connectionSignal: connection.signal,
         ...(dashboard && scenario !== "dashboard-unattested"
           ? {
               internal: {
@@ -148,6 +152,7 @@ it.each(admissionScenarios)(
           respond,
           context,
           client,
+          hasCurrentClientAuthority,
           sessionMutationAuthorization: authorization.authorization,
           isWebchatConnect: () => false,
         });
@@ -209,6 +214,17 @@ it.each(admissionScenarios)(
         runStarted(runId);
         expect.soft(unrelatedCloneCount()).toBe(0);
         await expect(readLibrary()).resolves.toMatchObject({ profileId: profile.id });
+        if (dashboardRead) {
+          connection.abort();
+          expect(admission.activeRunAbort.controller.signal.aborted).toBe(false);
+          expect(dashboardRead.assertCurrent).not.toThrow();
+          if (scenario === "dashboard-credential-revoked") {
+            hasCurrentClientAuthority.mockReturnValue(false);
+            expect(dashboardRead.assertCurrent).toThrow(
+              "Dashboard message read admission is no longer active.",
+            );
+          }
+        }
 
         if (closure === "queued") {
           expect(original?.sessionId).toBe(binding.sessionId);

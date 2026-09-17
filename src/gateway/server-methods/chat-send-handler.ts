@@ -79,6 +79,7 @@ async function handleChatSendWithOptions(
     respond,
     context,
     client,
+    hasCurrentClientAuthority,
     sessionMutationAuthorization,
     sessionMutationCommitGuard,
   }: GatewayRequestHandlerOptions,
@@ -171,9 +172,10 @@ async function handleChatSendWithOptions(
     ? () => {
         admitted.value.assertWorkAdmissionCurrent();
         sessionMutationCommitGuard?.();
-        client?.connectionSignal?.throwIfAborted();
+        // Admitted runs survive transport loss; their caller authority must stay current.
         if (
           client?.invalidated ||
+          hasCurrentClientAuthority?.() === false ||
           !externalAuthorityAdmission.allowsDashboardReads(externalAdmissionParams)
         ) {
           throw new Error("Dashboard message read admission is no longer active.");
