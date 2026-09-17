@@ -24,6 +24,7 @@ export const runtimeProcessCoreBuildEntries = createRuntimeProcessBuildEntries(
 export const standaloneRuntimeProcessBuildEntries = createRuntimeProcessBuildEntries([
   runtimeProcessEntrypoints.sqliteReadOnly,
   runtimeProcessEntrypoints.nativeHookRelayClient,
+  runtimeProcessEntrypoints.spawnBroker,
 ]);
 
 export function shouldBundleRuntimeSqliteDependency(id: string): boolean {

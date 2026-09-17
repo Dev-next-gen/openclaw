@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import type { Duplex, Readable, Writable } from "node:stream";
@@ -13,7 +12,9 @@ import {
 import { createDeferredCore } from "../../shared/deferred.js";
 import { joinProcessCompletionAndOutput } from "../decoded-output.js";
 import { pipeProcessOutput } from "../pipe-output.js";
+import { BrokerChild } from "../spawn-broker/child.js";
 import { prepareSecretInputStdio } from "../spawn-secret-input.js";
+import { spawnProcess } from "../spawn-utils.js";
 import { createManagedChildStdin } from "./adapters/child-stdin.js";
 import { toStringEnv } from "./adapters/env.js";
 import { createProcessAdapterEvents } from "./adapters/process-events.js";
@@ -113,7 +114,7 @@ export async function createServiceChildRelayAdapter(
   }
   params.assertCurrent?.();
   params.beforeSpawn?.();
-  const child = spawn(process.execPath, resolveRuntimeWorkerArgv(workerUrl), {
+  const child = spawnProcess(process.execPath, resolveRuntimeWorkerArgv(workerUrl), {
     stdio,
     // A detached Windows Job owner survives host loss long enough to clean up.
     // Keep its child handle referenced so an idle host can finish admission and lineage cleanup.
@@ -124,6 +125,15 @@ export async function createServiceChildRelayAdapter(
   const extinctionCompletion = createDeferredCore();
   void extinctionCompletion.promise.catch(() => {});
   params.onSpawnCleanup?.(extinctionCompletion.promise);
+  const transportReady = child instanceof BrokerChild ? child.ready() : undefined;
+  if (transportReady) {
+    try {
+      await transportReady;
+    } catch (error) {
+      extinctionCompletion.reject(error);
+      throw error;
+    }
+  }
 
   // SAFETY: a defined controlFd was reserved as a pipe in this exact spawn stdio array.
   const control = controlFd === undefined ? null : (child.stdio[controlFd] as Duplex | null);

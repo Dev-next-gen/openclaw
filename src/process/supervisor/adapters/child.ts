@@ -16,6 +16,7 @@ import { killProcessTree, signalProcessTree } from "../../kill-tree.js";
 import { prepareOomScoreAdjustedSpawn } from "../../linux-oom-score.js";
 import { pipeProcessOutput } from "../../pipe-output.js";
 import { scheduleAdoptedChildZombieReapAfterExit } from "../../scoped-child-reaper.js";
+import { SpawnBrokerError } from "../../spawn-broker/protocol.js";
 import { prepareSecretInputStdio, type SpawnStdioEntry } from "../../spawn-secret-input.js";
 import { spawnWithFallback } from "../../spawn-utils.js";
 import {
@@ -444,7 +445,7 @@ export async function createChildAdapter(
   // Worker IPC failures close authority; ordinary post-spawn errors are nonterminal.
   child.on("error", (error) => {
     events.emitError(error, "process");
-    if (params.ownedWorker) {
+    if (params.ownedWorker || error instanceof SpawnBrokerError) {
       rejectPendingWait(error);
     }
   });
