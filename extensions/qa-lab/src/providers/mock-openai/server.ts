@@ -1907,11 +1907,17 @@ async function buildResponsesPayload(
     }
     return buildAssistantEvents(buildStrandedFinalRecoveryText());
   }
-  if (QA_A2A_MESSAGE_TOOL_MIRROR_PROMPT_RE.test(prompt)) {
+  // Finalization must preserve the source fixture's empty reply so the gateway
+  // owns denial warnings; a new user or target turn ends that fixture instead.
+  const a2aPrompt = extractLatestScenarioFamilyPrompt(
+    allUserTexts.map((text) => splitMockConversationContext(text).current),
+    QA_A2A_MESSAGE_TOOL_MIRROR_PROMPT_RE,
+  );
+  if (a2aPrompt) {
     if (hasCompletedToolOutput) {
       return buildAssistantEvents("");
     }
-    const sessionsSendArgs = buildQaA2aMessageToolMirrorSessionsSendArgs(prompt);
+    const sessionsSendArgs = buildQaA2aMessageToolMirrorSessionsSendArgs(a2aPrompt);
     if (sessionsSendArgs && hasDeclaredTool(body, "sessions_send")) {
       return buildToolCallEventsWithArgs("sessions_send", sessionsSendArgs);
     }
