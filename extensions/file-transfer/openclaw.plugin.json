@@ -1,18 +1,13 @@
 {
   "id": "file-transfer",
   "activation": {
-    "onStartup": true
+    "onStartup": true,
+    "onCommands": ["file-transfer"]
   },
   "enabledByDefault": true,
   "name": "File Transfer",
   "description": "Fetch, list, and write files on paired nodes via dedicated node commands. Bypasses bash stdout truncation by using base64 over node.invoke for binaries up to 16 MB.",
-  "cliCommands": [
-    {
-      "name": "file-transfer",
-      "description": "Review file-transfer standing approvals",
-      "hasSubcommands": true
-    }
-  ],
+  "commandAliases": [{ "name": "file-transfer" }],
   "doctorContract": {
     "configRepair": true
   },
