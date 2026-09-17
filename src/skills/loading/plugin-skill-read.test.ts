@@ -423,7 +423,7 @@ describe("complete plugin skill bundles", () => {
     await fs.writeFile(after, "Not read after the aggregate budget is spent.");
     const reads: Promise<number>[] = [];
     __setFsSafeTestHooksForTest({
-      afterOpenedPathIdentityCheck: async (filePath, handle) => {
+      beforeRootReadFinalFence: async (filePath, handle) => {
         if (growing.has(filePath)) {
           // Grow after the pinned stat. The dependency must perform its real
           // bounded read and overflow probe, not an early stat-size rejection.
