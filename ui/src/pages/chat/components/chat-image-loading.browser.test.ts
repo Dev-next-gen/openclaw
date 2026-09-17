@@ -2,7 +2,9 @@ import { html, nothing, render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../../test/helpers/promise.js";
 import { renderAssistantAttachments } from "./chat-message-attachments.ts";
+import { renderGroupedMessage } from "./chat-message-bubble.ts";
 import { renderMessageImages } from "./chat-message-images.ts";
+import { prepareChatMessageRender } from "./chat-message-markdown.ts";
 import { releaseChatMediaResourceSubscriber } from "./chat-message-media.ts";
 import "../../../test-helpers/load-styles.ts";
 
@@ -56,6 +58,173 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
   afterEach(async () => {
     const { page } = await import("vitest/browser");
     await page.viewport(originalViewport.width, originalViewport.height);
+  });
+
+  const preview =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAHElEQVR4nGP4z8DwnxLMMGrAsDCAQv2jBgwPAwAxtf4Q24P5oAAAAABJRU5ErkJggg==";
+  const canonical = { url: preview, contentType: "image/png", width: 320, height: 120 };
+  it.each([
+    {
+      name: "complete inline dimensions",
+      content: [{ type: "image", url: preview, width: 240, height: 160 }],
+      media: [canonical],
+      expected: [[240, 160]],
+      count: 1,
+    },
+    {
+      name: "partial inline dimensions",
+      content: [{ type: "image", url: preview, width: 240 }],
+      media: [canonical],
+      expected: [[320, 120]],
+      count: 1,
+    },
+    {
+      name: "agreeing duplicate URLs",
+      content: [{ type: "image", url: preview }],
+      media: [canonical, canonical],
+      expected: [[320, 120]],
+      count: 1,
+    },
+    {
+      name: "invalid inline dimensions",
+      content: [{ type: "image", url: preview, width: 0, height: 120 }],
+      media: [canonical],
+      expected: [[320, 120]],
+      count: 1,
+    },
+    {
+      name: "conflicting duplicate URLs",
+      content: [{ type: "image", url: preview }],
+      media: [canonical, { ...canonical, width: 120, height: 320 }],
+      expected: [[400, 400 / 1.5]],
+      count: 1,
+    },
+    {
+      name: "sparse reordered fact positions",
+      content: [
+        { type: "image", url: preview },
+        { type: "text", text: "Between images" },
+        { type: "image", url: `${preview}#second` },
+      ],
+      media: [
+        null,
+        { ...canonical, url: `${preview}#canonical-one`, width: 240, height: 160 },
+        {},
+        { ...canonical, url: `${preview}#canonical-two` },
+      ],
+      slots: [
+        { kind: "inline", factIndex: 3 },
+        { kind: "inline", factIndex: 1 },
+      ],
+      expected: [
+        [320, 120],
+        [240, 160],
+      ],
+      count: 2,
+    },
+    {
+      name: "incomplete inline binding",
+      content: [{ type: "image", url: preview }],
+      media: [
+        { ...canonical, url: `${preview}#canonical-one` },
+        { ...canonical, url: `${preview}#canonical-two` },
+      ],
+      slots: [
+        { kind: "inline", factIndex: 0 },
+        { kind: "inline", factIndex: 1 },
+      ],
+      expected: [[400, 400 / 1.5]],
+      count: 3,
+    },
+  ])(
+    "reserves persisted image geometry with $name",
+    ({ content, media, slots, expected, count }) => {
+      const container = mount(500);
+      render(
+        html`<div class="chat-group assistant">
+          ${renderGroupedMessage(
+            prepareChatMessageRender({
+              role: "assistant",
+              content: [...content, { type: "text", text: "Image caption." }],
+              __openclaw: { media, ...(slots ? { mediaImageLayout: { slots } } : {}) },
+            }),
+            "persisted-dimensions",
+            { isStreaming: false, showReasoning: false },
+          )}
+        </div>`,
+        container,
+      );
+      const frames = [...container.querySelectorAll(".chat-image-frame")];
+      expect(frames).toHaveLength(count);
+      const inlineFrames = [...container.querySelectorAll(".chat-text .chat-image-frame")];
+      expect(inlineFrames).toHaveLength(expected.length);
+      for (const [index, dimensions] of expected.entries()) {
+        const measured = inlineFrames[index]!.getBoundingClientRect();
+        expect(measured.width).toBeCloseTo(dimensions[0]!, 1);
+        expect(measured.height).toBeCloseTo(dimensions[1]!, 1);
+      }
+    },
+  );
+
+  it("retains presented geometry when dimensions arrive and resets it for a different image", () => {
+    const container = mount(500);
+    const paint = (url: string, dimensions?: { width: number; height: number }) => {
+      render(
+        html`${renderGroupedMessage(
+          prepareChatMessageRender({
+            role: "assistant",
+            content: [
+              { type: "image", url },
+              { type: "text", text: "Image caption." },
+            ],
+            __openclaw: { media: [{ url, contentType: "image/png", ...dimensions }] },
+          }),
+          "late-dimensions",
+          { isStreaming: false, showReasoning: false },
+        )}`,
+        container,
+      );
+      return container.querySelector(".chat-image-frame")!.getBoundingClientRect();
+    };
+    const before = paint(preview);
+    const image = container.querySelector("img");
+    expect(image).not.toBeNull();
+    const after = paint(preview, { width: 320, height: 120 });
+    expect(container.querySelector("img")).toBe(image);
+    expect(after.width).toBe(before.width);
+    expect(after.height).toBe(before.height);
+    const replacement = paint(`${preview}#replacement`, { width: 240, height: 160 });
+    expect(replacement.width).toBe(240);
+    expect(replacement.height).toBe(160);
+  });
+
+  it("keeps a pending inline frame when its canonical source gains dimensions", () => {
+    const container = mount(500);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>(() => {})),
+    );
+    const paint = (
+      url: string,
+      factIndex: number,
+      dimensions?: { width: number; height: number },
+    ) => {
+      render(
+        html`${renderMessageImages([{ url, factIndex, ...dimensions }], {
+          sessionKey: "pending-handoff",
+          canonicalMessageKey: "pending-message",
+        })}`,
+        container,
+      );
+      return frame(container).getBoundingClientRect();
+    };
+    const before = paint(preview, 0);
+    const after = paint("media://inbound/pending.png", 0, { width: 320, height: 120 });
+    expect(after.width).toBe(before.width);
+    expect(after.height).toBe(before.height);
+    const replacement = paint("media://inbound/replacement.png", 0, { width: 240, height: 160 });
+    expect(replacement.width).toBe(240);
+    expect(replacement.height).toBe(160);
   });
 
   it.each(

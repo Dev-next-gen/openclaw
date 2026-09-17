@@ -66,6 +66,7 @@ class MessageImageResourceDirective extends AsyncDirective {
   private managed = false;
   private pendingPreview: Promise<string | null> | undefined;
   private presentationKey = Symbol("image-presentation");
+  private frameStyle: string | undefined;
   private retained: RetainedInlineImage | { status: "unavailable" } | undefined;
   // Resource updates stay in this part; row ResizeObserver owns layout changes.
   private readonly refreshImage = () => {
@@ -105,12 +106,14 @@ class MessageImageResourceDirective extends AsyncDirective {
       this.releaseRetainedImage();
       // The gallery binds the exact submission/slot. Retain only pixels this
       // mounted IMG has loaded, never another pane's cached preview.
-      this.retained =
+      const canonicalHandoff =
         image.factIndex !== undefined &&
-        previous &&
+        previous !== undefined &&
         isInlineImageSource(previous.url) &&
         previous.artifactId === image.artifactId &&
-        isCanonicalInboundMediaSource(image.url) &&
+        isCanonicalInboundMediaSource(image.url);
+      this.retained =
+        canonicalHandoff &&
         this.element?.getAttribute("src") === previous.url &&
         this.element.naturalWidth > 0
           ? { status: "retaining", previewUrl: previous.url }
@@ -123,6 +126,9 @@ class MessageImageResourceDirective extends AsyncDirective {
       if (!this.retained && !inlineReplacement) {
         this.element = undefined;
         this.presentationKey = Symbol("image-presentation");
+        if (!canonicalHandoff) {
+          this.frameStyle = undefined;
+        }
       }
       releaseChatMediaResourceSubscriber(this.refreshImage);
     }
@@ -290,23 +296,25 @@ class MessageImageResourceDirective extends AsyncDirective {
     content: TemplateResult | typeof nothing,
     loading = false,
   ) {
-    const sized =
-      Number.isFinite(img.width) &&
-      img.width! > 0 &&
-      Number.isFinite(img.height) &&
-      img.height! > 0;
-    const ratio = sized ? img.width! / img.height! : 3 / 2;
-    const width = sized
-      ? img.width! < MIN_CHAT_IMAGE_PREVIEW_WIDTH
-        ? MIN_CHAT_IMAGE_PREVIEW_WIDTH
-        : Math.min(img.width!, 400, 360 * ratio)
-      : 400;
-    const height = Math.min(360, width / ratio);
-    // Frame geometry survives metadata, fetch, and IMG decode. CSS gallery
-    // dimensions still override these single-image presentation values.
+    if (this.frameStyle === undefined) {
+      const sized =
+        Number.isFinite(img.width) &&
+        img.width! > 0 &&
+        Number.isFinite(img.height) &&
+        img.height! > 0;
+      const ratio = sized ? img.width! / img.height! : 3 / 2;
+      const width = sized
+        ? img.width! < MIN_CHAT_IMAGE_PREVIEW_WIDTH
+          ? MIN_CHAT_IMAGE_PREVIEW_WIDTH
+          : Math.min(img.width!, 400, 360 * ratio)
+        : 400;
+      const height = Math.min(360, width / ratio);
+      // Late facts and canonical handoff must not resize already presented pixels.
+      this.frameStyle = `--chat-image-width: ${width}px; --chat-image-ratio: ${width} / ${height}`;
+    }
     return html`<span
       class="chat-image-frame chat-image-frame--image ${this.managed ? "chat-image-frame--managed" : ""}"
-      style=${`--chat-image-width: ${width}px; --chat-image-ratio: ${width} / ${height}`}
+      style=${this.frameStyle}
       aria-busy=${loading ? "true" : "false"}
       role=${loading ? "status" : nothing}
       aria-label=${loading ? t("common.loading") : nothing}

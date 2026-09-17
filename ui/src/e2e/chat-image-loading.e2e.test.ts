@@ -10,108 +10,140 @@ const suite = createControlUiE2eSuite({
 });
 
 suite.define(() => {
-  it("keeps delayed images and adjacent rows stable through a transcript remount", async () => {
-    await suite.withPage(
-      { reducedMotion: "reduce", viewport: { width: 1440, height: 900 } },
-      async ({ page }) => {
-        const imageUrl = `${suite.server.baseUrl}sizing-image.png`;
-        const imageData = await page.evaluate(() => {
-          const canvas = document.createElement("canvas");
-          canvas.width = 480;
-          canvas.height = 240;
-          canvas.getContext("2d")!.fillRect(0, 0, canvas.width, canvas.height);
-          return canvas.toDataURL("image/png").split(",")[1]!;
-        });
-        let releaseImage!: () => void;
-        const imageReady = new Promise<void>((resolve) => {
-          releaseImage = resolve;
-        });
-        await page.route(imageUrl, async (route) => {
-          await imageReady;
-          await route.fulfill({ contentType: "image/png", body: Buffer.from(imageData, "base64") });
-        });
-        await installMockGateway(page, {
-          historyMessages: Array.from({ length: 60 }, (_, index) => ({
+  it.each(["unknown inline", "canonical facts", "inline with facts"] as const)(
+    "keeps delayed %s images and adjacent rows stable through a transcript remount",
+    async (source) => {
+      await suite.withPage(
+        { reducedMotion: "reduce", viewport: { width: 1440, height: 900 } },
+        async ({ page }) => {
+          const imageUrl = `${suite.server.baseUrl}sizing-image.png`;
+          const imageData = await page.evaluate(() => {
+            const canvas = document.createElement("canvas");
+            canvas.width = 480;
+            canvas.height = 240;
+            canvas.getContext("2d")!.fillRect(0, 0, canvas.width, canvas.height);
+            return canvas.toDataURL("image/png").split(",")[1]!;
+          });
+          let releaseImage!: () => void;
+          const imageReady = new Promise<void>((resolve) => {
+            releaseImage = resolve;
+          });
+          await page.route(imageUrl, async (route) => {
+            await imageReady;
+            await route.fulfill({
+              contentType: "image/png",
+              body: Buffer.from(imageData, "base64"),
+            });
+          });
+          const historyMessages = Array.from({ length: 60 }, (_, index) => ({
             role: index % 2 ? "assistant" : "user",
             content:
               index === 1
                 ? [
                     { type: "text", text: "Delayed image." },
-                    { type: "image", url: imageUrl, alt: "Intrinsic size proof" },
+                    ...(source === "canonical facts" ? [] : [{ type: "image", url: imageUrl }]),
                   ]
                 : `Image fixture message ${index}.`,
             timestamp: index + 1,
-            __openclaw: { id: `image-message-${index}`, seq: index + 1 },
-          })),
-        });
-        await page.goto(`${suite.server.baseUrl}chat`);
-        const thread = page.locator(".chat-pane-cache__pane--active .chat-thread");
-        await page.getByText("Image fixture message 59.", { exact: false }).waitFor();
-        await thread.hover();
-        await page.mouse.wheel(0, -100_000);
-        const image = thread.getByRole("img", { name: "Intrinsic size proof" });
-        await image.waitFor({ state: "attached" });
-        const geometry = () =>
-          image.evaluate((element) => {
-            const row = element.closest<HTMLElement>(".chat-virtual-row")!;
-            const next = row
-              .closest(".chat-thread")!
-              .querySelector('.chat-bubble[data-entry-id="image-message-2"]')!
-              .closest<HTMLElement>(".chat-virtual-row")!;
-            const frame = element.closest(".chat-image-frame")!.getBoundingClientRect();
-            return {
-              height: row.offsetHeight,
-              top: row.getBoundingClientRect().top,
-              nextTop: next.getBoundingClientRect().top,
-              imageWidth: frame.width,
-              imageHeight: frame.height,
-            };
-          });
-        await waitForChatScrollIdle(page);
-        const before = await geometry();
-        expect(before.imageWidth).toBeGreaterThan(0);
-        expect(before.imageHeight).toBeGreaterThan(0);
-        expect(await image.evaluate((element) => (element as HTMLImageElement).naturalHeight)).toBe(
-          0,
-        );
-        releaseImage();
-        await image.evaluate((element) => (element as HTMLImageElement).decode());
-        expect(await image.evaluate((element) => (element as HTMLImageElement).naturalHeight)).toBe(
-          240,
-        );
-        await waitForChatScrollIdle(page);
-        expect(await geometry()).toEqual(before);
-        const gap = () =>
-          image.evaluate((element) => {
-            const row = element.closest<HTMLElement>(".chat-virtual-row")!;
-            const next = row
-              .closest(".chat-thread")!
-              .querySelector('.chat-bubble[data-entry-id="image-message-2"]')!
-              .closest<HTMLElement>(".chat-virtual-row")!;
-            return next.getBoundingClientRect().top - row.getBoundingClientRect().bottom;
-          });
-        expect(Math.abs(await gap())).toBeLessThanOrEqual(1);
-        await page.locator(".chat-scroll-to-bottom").click();
-        await expect.poll(() => image.count()).toBe(0);
-        await expect
-          .poll(() =>
-            thread.evaluate((element) =>
-              Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop),
-            ),
-          )
-          .toBeLessThanOrEqual(2);
-        await thread.hover();
-        await page.mouse.wheel(0, -100_000);
-        await image.waitFor({ state: "visible" });
-        await expect.poll(async () => (await geometry()).height).toBe(before.height);
-        await image.evaluate((element) => (element as HTMLImageElement).decode());
-        const returned = await geometry();
-        expect(returned.imageWidth).toBe(before.imageWidth);
-        expect(returned.imageHeight).toBe(before.imageHeight);
-        expect(Math.abs(await gap())).toBeLessThanOrEqual(1);
-      },
-    );
-  });
+            __openclaw: {
+              id: `image-message-${index}`,
+              seq: index + 1,
+              ...(index === 1 && source !== "unknown inline"
+                ? {
+                    media: [{ url: imageUrl, contentType: "image/png", width: 480, height: 240 }],
+                  }
+                : {}),
+            },
+          }));
+          const gateway = await installMockGateway(page, { historyMessages });
+          await page.goto(`${suite.server.baseUrl}chat`);
+          const thread = page.locator(".chat-pane-cache__pane--active .chat-thread");
+          await page.getByText("Image fixture message 59.", { exact: false }).waitFor();
+          await thread.hover();
+          await page.mouse.wheel(0, -100_000);
+          const image = thread.locator(
+            '.chat-bubble[data-entry-id="image-message-1"] img.chat-message-image',
+          );
+          await image.waitFor({ state: "attached" });
+          const geometry = () =>
+            image.evaluate((element) => {
+              const row = element.closest<HTMLElement>(".chat-virtual-row")!;
+              const next = row
+                .closest(".chat-thread")!
+                .querySelector('.chat-bubble[data-entry-id="image-message-2"]')!
+                .closest<HTMLElement>(".chat-virtual-row")!;
+              const frame = element.closest(".chat-image-frame")!.getBoundingClientRect();
+              return {
+                height: row.offsetHeight,
+                top: row.getBoundingClientRect().top,
+                nextTop: next.getBoundingClientRect().top,
+                imageWidth: frame.width,
+                imageHeight: frame.height,
+              };
+            });
+          await waitForChatScrollIdle(page);
+          const before = await geometry();
+          expect(before.imageWidth).toBeGreaterThan(0);
+          expect(before.imageHeight).toBeGreaterThan(0);
+          expect(
+            await image.evaluate((element) => (element as HTMLImageElement).naturalHeight),
+          ).toBe(0);
+          releaseImage();
+          if (source !== "unknown inline") {
+            expect(before.imageWidth).toBe(400);
+            expect(before.imageHeight).toBe(200);
+          }
+          await image.evaluate((element) => (element as HTMLImageElement).decode());
+          expect(
+            await image.evaluate((element) => (element as HTMLImageElement).naturalHeight),
+          ).toBe(240);
+          await waitForChatScrollIdle(page);
+          expect(await geometry()).toEqual(before);
+          const gap = () =>
+            image.evaluate((element) => {
+              const row = element.closest<HTMLElement>(".chat-virtual-row")!;
+              const next = row
+                .closest(".chat-thread")!
+                .querySelector('.chat-bubble[data-entry-id="image-message-2"]')!
+                .closest<HTMLElement>(".chat-virtual-row")!;
+              return next.getBoundingClientRect().top - row.getBoundingClientRect().bottom;
+            });
+          expect(Math.abs(await gap())).toBeLessThanOrEqual(1);
+          await page.locator(".chat-scroll-to-bottom").click();
+          await expect.poll(() => image.count()).toBe(0);
+          await expect
+            .poll(() =>
+              thread.evaluate((element) =>
+                Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop),
+              ),
+            )
+            .toBeLessThanOrEqual(2);
+          await thread.hover();
+          await page.mouse.wheel(0, -100_000);
+          await image.waitFor({ state: "visible" });
+          await expect.poll(async () => (await geometry()).height).toBe(before.height);
+          await image.evaluate((element) => (element as HTMLImageElement).decode());
+          const returned = await geometry();
+          expect(returned.imageWidth).toBe(before.imageWidth);
+          expect(returned.imageHeight).toBe(before.imageHeight);
+          expect(Math.abs(await gap())).toBeLessThanOrEqual(1);
+          if (source === "unknown inline") {
+            historyMessages[1]!["__openclaw"].media = [
+              { url: imageUrl, contentType: "image/png", width: 480, height: 240 },
+            ];
+            await gateway.setHistoryMessages(historyMessages);
+            await gateway.emitGatewayEvent("sessions.changed", {
+              sessionKey: "agent:main:main",
+              phase: "message",
+            });
+            await expect.poll(() => image.getAttribute("width")).toBe("480");
+            await waitForChatScrollIdle(page);
+            expect(await geometry()).toEqual(returned);
+          }
+        },
+      );
+    },
+  );
   it.each([
     { colorScheme: "light", reducedMotion: "no-preference" },
     { colorScheme: "dark", reducedMotion: "no-preference" },

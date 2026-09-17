@@ -1,3 +1,4 @@
+import { asPositiveFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { asNonArrayRecord } from "@openclaw/normalization-core/record-coerce";
 import type { GatewaySessionRow } from "../../../api/types.ts";
 import type { ImageLightboxItem } from "../../../components/image-lightbox.ts";
@@ -574,6 +575,33 @@ export function projectMessageMedia(
       delete image.factIndex;
     }
   }
+  const mediaEntries = readTranscriptMediaEntries(message);
+  const imageFacts = mediaEntries.filter(
+    (entry) =>
+      isImageMediaPath(entry.path, entry.mediaType) &&
+      !isSvgImageMediaPath(entry.path, entry.mediaType),
+  );
+  for (const image of images) {
+    if (asPositiveFiniteNumber(image.width) && asPositiveFiniteNumber(image.height)) {
+      continue;
+    }
+    const matches = imageFacts.filter((entry) =>
+      image.factIndex !== undefined
+        ? entry.factIndex === image.factIndex
+        : entry.path === image.url,
+    );
+    const dimensions = matches[0];
+    if (
+      dimensions?.width !== undefined &&
+      dimensions.height !== undefined &&
+      matches.every(
+        (entry) => entry.width === dimensions.width && entry.height === dimensions.height,
+      )
+    ) {
+      image.width = dimensions.width;
+      image.height = dimensions.height;
+    }
+  }
   for (const {
     path: mediaPath,
     mediaType,
@@ -583,7 +611,7 @@ export function projectMessageMedia(
     width,
     height,
     factIndex,
-  } of readTranscriptMediaEntries(message)) {
+  } of mediaEntries) {
     const image = isImageMediaPath(mediaPath, mediaType);
     const svg = image && isSvgImageMediaPath(mediaPath, mediaType);
     if (image && !svg) {
@@ -591,6 +619,8 @@ export function projectMessageMedia(
         url: mediaPath,
         fileName,
         sizeBytes,
+        ...(width !== undefined ? { width } : {}),
+        ...(height !== undefined ? { height } : {}),
         ...(validLayout && factIndexes.has(factIndex) ? { factIndex } : {}),
       };
       if (appendImageBlock(images, projected) && !positionedSources.has(mediaPath)) {
