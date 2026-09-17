@@ -72,9 +72,15 @@ function renderWorktreeFields(params: {
   onConfirm: () => void;
   repository?: boolean;
 }) {
-  const confirmOnEnter = (event: KeyboardEvent) => {
+  const handleFieldKeydown = (event: KeyboardEvent) => {
     const target = event.currentTarget;
     if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      target.closest("wa-popover")?.removeAttribute("open");
       return;
     }
     const liveWorktreeName =
@@ -119,7 +125,7 @@ function renderWorktreeFields(params: {
         params.onBaseRefInput(event.currentTarget.value);
       }
     }}
-    @keydown=${confirmOnEnter}
+    @keydown=${handleFieldKeydown}
     @pointerdown=${handleFieldPointer}
     @pointerup=${handleFieldPointer}
     @pointercancel=${handleFieldPointer}
@@ -171,7 +177,7 @@ function renderWorktreeFields(params: {
                     params.onWorktreeNameInput(event.currentTarget.value);
                   }
                 }}
-                @keydown=${confirmOnEnter}
+                @keydown=${handleFieldKeydown}
                 @pointerdown=${handleFieldPointer}
                 @pointerup=${handleFieldPointer}
                 @pointercancel=${handleFieldPointer}
