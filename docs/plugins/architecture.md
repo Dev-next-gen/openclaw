@@ -221,6 +221,14 @@ Runtime and setup retirement remove captured artifacts asynchronously and wait
 for removal to finish. Plugin callback deadlines do not end custody of those
 files; synchronous source inspection and failed capture still clean up before returning.
 
+Gateway startup and source acquisition also schedule one asynchronous cleanup pass
+per temporary root. New capture directories include their creator's process ID.
+Captures at least one hour old can be reclaimed when that process is known to
+have exited. Live or uncertain process owners, symlinks, and older directory names
+without a creator ID are preserved. A forced exit can therefore leave files until
+a later start after that grace period; existing captures from older versions are
+not automatically removed.
+
 Model-catalog workers keep their captured plugin files in a directory owned by
 one worker. The parent removes any remaining captures after that worker exits,
 including cancellation and crashes. Files remain available while the worker is

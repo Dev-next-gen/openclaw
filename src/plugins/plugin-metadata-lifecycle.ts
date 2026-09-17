@@ -20,6 +20,7 @@ import {
   type PluginCache,
 } from "./plugin-cache.js";
 import type { PluginMetadataSnapshot } from "./plugin-metadata-snapshot.types.js";
+import { sweepPluginSourceCaptureDirectories } from "./plugin-source-capture-directory.js";
 import { PluginRuntimeCloseRetainedError } from "./runtime-close-error.js";
 
 const pluginMetadataProcessMemoClears = new Map<() => void, "process" | "operation">();
@@ -51,6 +52,7 @@ export function retainGatewayPluginMetadata() {
       "Gateway plugin metadata is shutting down; finish cleanup before starting another Gateway. If cleanup failed, resolve the failure and restart.",
     );
   }
+  void sweepPluginSourceCaptureDirectories();
   const owner: GatewayMetadataOwner = {
     cache: bootstrapCache,
     phase: "booting",

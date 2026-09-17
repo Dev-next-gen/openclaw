@@ -10,6 +10,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { openRootFileSync } from "../infra/boundary-file-read.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { escapeRegExp } from "../shared/regexp.js";
+import { createPluginSourceCaptureDirectory } from "./plugin-source-capture-directory.js";
 
 export function createPluginSourceLinkCapture() {
   const links = new Set<string>();
@@ -651,12 +652,9 @@ export function withPluginSourceCaptureDirectory<T>(directory: string, run: () =
 
 /** Admissions and failed-input receipts belong to one source acquisition lifetime. */
 export function createPluginSourceCapture(execute?: <T>(run: () => T) => T) {
-  const directory = fs.realpathSync(
-    fs.mkdtempSync(
-      path.join(sourceCaptureDirectory.getStore() ?? tmpdir(), "openclaw-plugin-build-"),
-    ),
+  const directory = createPluginSourceCaptureDirectory(
+    sourceCaptureDirectory.getStore() ?? tmpdir(),
   );
-  fs.chmodSync(directory, 0o700);
   const inputs = new Map<string, PluginSourceInput>();
   const pendingInputs = new Set<string>();
   const additions = new Set<string>();
