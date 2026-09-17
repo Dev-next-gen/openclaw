@@ -693,10 +693,10 @@ const COMPACT_PUSH_EXCLUDED_SHARDS = new Set([
   ),
   "core-tooling-isolated",
 ]);
-// Serial or worker-pinned owners exceeded their intended job walls in run
-// 33676780376. Reuse file splitting on Blacksmith without raising worker counts.
 const COMPACT_BLACKSMITH_SPLIT_OWNERS = new Set([
   "agentic-control-plane-agent-chat",
+  "agentic-gateway-core-1",
+  "agentic-gateway-core-2",
   "agentic-gateway-core-3",
   "core-runtime-infra-storage-state",
 ]);
