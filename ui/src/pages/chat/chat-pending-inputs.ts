@@ -103,8 +103,6 @@ export function buildPendingInputItems(
   inputs: ChatPendingInputsPage["items"],
   searchQuery?: string,
   browserInputs: readonly ChatQueueItem[] = [],
-  workspaceSyncPendingRunIds: readonly string[] = [],
-  workerSetupPending = false,
   messageRecovery?: ChatMessageRecovery,
 ): ChatItem[] {
   // Custody records stay outside active-run ordering until the writer promotes them.
