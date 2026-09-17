@@ -568,7 +568,7 @@ export async function modelsStatusCommand(
         cfg,
         catalog: catalog.entries,
         defaultProvider: resolved.provider,
-        defaultModel: resolved.model,
+        defaultModel: resolved,
         agentId: workspaceAgentId,
         ...DISPLAY_MODEL_PARSE_OPTIONS,
       });

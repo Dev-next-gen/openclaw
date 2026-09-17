@@ -234,7 +234,7 @@ export async function resolveCronModelSelection(
     cfg: owner.config,
     catalog: owner.modelCatalog.entries,
     defaultProvider: resolvedDefault.provider,
-    defaultModel: resolvedDefault.model,
+    defaultModel: resolvedDefault,
     agentId: ownerAgentId,
     manifestPlugins: owner.metadataSnapshot,
   };

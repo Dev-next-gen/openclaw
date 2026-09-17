@@ -2,13 +2,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { retainLegacyDefaultAgentId } from "../config/legacy.default-agent-owner.js";
 import { migratePersistedImplicitMainRoster } from "../config/legacy.roster.js";
+import { captureRuntimeConfig } from "../config/runtime-source-projection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { freezeJsonSnapshot } from "../shared/immutable-data.js";
 import {
   AgentSelectionRequiredError,
   listAgentEntriesWithSource,
   listAgentIds,
   resolveConfiguredAgentId,
   resolveAgentConfig,
+  resolveAgentEntry,
   resolveAgentOperationAgentId,
   resolveAgentWorkspaceDir,
   resolveAmbientOwnerAgentId,
@@ -19,7 +22,9 @@ import {
   tryResolveAgentOperationAgentId,
   tryResolveDefaultAgentId,
   tryResolveLegacyCompatibilityAgentId,
+  tryResolveLegacyDataOwnerAgentId,
   tryResolveSoleAgentId,
+  withAgentRosterFactsBatch,
 } from "./agent-scope-config.js";
 
 vi.unmock("./agent-scope-config.js");
@@ -322,6 +327,63 @@ describe("agent roster resolution", () => {
 
     expect(resolveAgentConfig(config, "main")?.name).toBe("Primary");
     expect(unrelatedEntryReads).toBe(0);
+  });
+
+  it.each([false, true])("prepares one immutable fleet roster (captured: %s)", (captured) => {
+    const prepare = captured ? captureRuntimeConfig : freezeJsonSnapshot;
+    const config = prepare({
+      agents: {
+        ownership: "explicit" as const,
+        defaults: { systemAgent: { agentId: "agent-0" } },
+        entries: Object.fromEntries(
+          Array.from({ length: 200 }, (_, index) => [`agent-${index}`, { name: `${index}` }]),
+        ),
+      },
+    });
+    const entries = vi.spyOn(Object, "entries");
+    try {
+      for (let index = 0; index < 200; index += 1) {
+        withAgentRosterFactsBatch(config, () => {
+          expect(resolveAgentConfig(config, `agent-${index}`)?.name).toBe(`${index}`);
+          expect(tryResolveLegacyCompatibilityAgentId(config)).toBe("agent-0");
+        });
+      }
+      // One point-lookup index and one configured-owner membership projection.
+      expect(entries.mock.calls.filter(([value]) => value === config.agents?.entries)).toHaveLength(
+        2,
+      );
+    } finally {
+      entries.mockRestore();
+    }
+  });
+
+  it("retains first-match and keyed clone semantics on immutable rosters", () => {
+    const config = captureRuntimeConfig({
+      agents: { entries: { " OPS ": { name: "first" }, ops: { name: "second" } } },
+    });
+    const first = resolveAgentEntry(config, "ops");
+    expect(first).toEqual({ id: " OPS ", name: "first" });
+    if (first) {
+      first.name = "caller change";
+    }
+    expect(resolveAgentEntry(config, "OPS")?.name).toBe("first");
+  });
+
+  it("refreshes immutable roster facts when retained migration ownership changes", () => {
+    const config = captureRuntimeConfig({ agents: { entries: { ops: {}, research: {} } } });
+    retainLegacyDefaultAgentId(config, "ops");
+    expect(tryResolveLegacyDataOwnerAgentId(config)).toBe("ops");
+    retainLegacyDefaultAgentId(config, "research");
+    expect(tryResolveLegacyDataOwnerAgentId(config)).toBe("research");
+    retainLegacyDefaultAgentId(config, undefined);
+    expect(tryResolveLegacyDataOwnerAgentId(config)).toBeUndefined();
+  });
+
+  it("reads mutations below a shallow-frozen roster owner", () => {
+    const config = Object.freeze({ agents: { entries: { ops: { name: "before" } } } });
+    expect(resolveAgentConfig(config, "ops")?.name).toBe("before");
+    config.agents.entries.ops.name = "after";
+    expect(resolveAgentConfig(config, "ops")?.name).toBe("after");
   });
 
   it("keeps the retained legacy owner on the inherited workspace before config write", () => {

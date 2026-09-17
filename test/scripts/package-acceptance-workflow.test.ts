@@ -9903,6 +9903,14 @@ describe("package artifact reuse", () => {
         "${{ inputs.use_github_hosted_runners && 'ubuntu-24.04' || 'blacksmith-32vcpu-ubuntu-2404' }}",
       );
     }
+    const repoE2eHarnessCheckout = workflowStep(
+      workflowJob(".github/workflows/openclaw-repo-e2e-reusable.yml", "build"),
+      "Checkout trusted artifact harness",
+    );
+    expect(repoE2eHarnessCheckout.with).toMatchObject({
+      "sparse-checkout": "scripts\nsrc/shared/non-packaged-plugin-dirs.ts\n",
+      "sparse-checkout-cone-mode": false,
+    });
     expect(workflow).toContain("suite_id: native-live-src-gateway-core");
     expect(workflow).toContain("suite_id: native-live-src-gateway-backends");
     expect(workflow).toContain(

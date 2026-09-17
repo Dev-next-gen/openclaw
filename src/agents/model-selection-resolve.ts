@@ -45,7 +45,7 @@ export function resolveAllowedModelRefCore(
     catalog: ModelCatalogEntry[];
     raw: string;
     defaultProvider: string;
-    defaultModel?: string;
+    defaultModel?: string | ModelRef;
     agentId?: string;
   } & ModelManifestNormalizationContext,
 ):
