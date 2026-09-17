@@ -40,7 +40,6 @@ export function renderForwardedAttribution(group: MessageGroup, opts: ForwardedA
   const sourceMainLabel = sourceIsMainSession ? sourceAgentDisplayName : undefined;
   const sourceAgentPrefix =
     !sourceIsMainSession && sourceIsOtherAgent ? sourceAgentDisplayName : undefined;
-  // The titler keeps this label node and its navigation contract when decorating it.
   const sourceLink = html`<a
     class="markdown-session-link${sourceMainLabel ? " markdown-session-link--titled" : ""}${
       sourceIsOtherAgent && sourceMainLabel ? " markdown-session-link--agent" : ""
