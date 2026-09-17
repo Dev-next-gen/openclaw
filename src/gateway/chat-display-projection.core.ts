@@ -31,7 +31,7 @@ import {
 import {
   filterVisibleProjectedHistoryMessages,
   mergeTtsSupplementMessages,
-  projectSessionsSendInterSessionMessages,
+  projectForwardedMessages,
   toProjectedMessages,
 } from "./chat-display-projection.history.js";
 import { createMessageToolVisibleReplyProjection } from "./chat-display-projection.message-tool.js";
@@ -48,7 +48,8 @@ import type {
   CurrentUserProfileDisplayResolver,
 } from "./current-user-profile-display.js";
 
-type ChatDisplayProjectionOptions = {
+export type ChatDisplayProjectionOptions = {
+  resolveCronJobName?: (jobId: string) => string | undefined;
   includeCommentaryFallbacks?: boolean;
   maxChars?: number;
   resolveCurrentUserProfileDisplay?: CurrentUserProfileDisplayResolver;
@@ -524,7 +525,7 @@ export function projectChatDisplayMessagesWithState(
       (message) => asOptionalRecord(message.openclawStreamFallback)?.source === "segment",
     );
   const filtered = filterVisibleProjectedHistoryMessages(
-    projectSessionsSendInterSessionMessages(sanitizedMessages),
+    projectForwardedMessages(sanitizedMessages, options?.resolveCronJobName),
     options?.turnBoundaryPending,
   );
   const displayMessages = sanitizeChatHistoryMessages(

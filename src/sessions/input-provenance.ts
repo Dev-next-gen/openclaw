@@ -16,6 +16,9 @@ export type InputProvenance = {
   sourceSessionKey?: string;
   sourceChannel?: string;
   sourceTool?: string;
+  sourcePromptPrefix?: string;
+  jobId?: string;
+  runId?: string;
 };
 
 export const MAIN_SESSION_RESTART_RECOVERY_SOURCE_TOOL = "main_session_restart_recovery" as const;
@@ -53,6 +56,9 @@ export function normalizeInputProvenance(value: unknown): InputProvenance | unde
     "sourceSessionKey",
     "sourceChannel",
     "sourceTool",
+    "sourcePromptPrefix",
+    "jobId",
+    "runId",
   ] as const) {
     const normalized = normalizeOptionalString(record[key]);
     if (normalized) {

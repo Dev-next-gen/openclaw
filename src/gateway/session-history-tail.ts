@@ -6,6 +6,7 @@ import { resolveTranscriptPageEnd } from "../sessions/transcript-anchor-page.js"
 import type { TranscriptReadWindow } from "../sessions/transcript-read-window.js";
 import {
   projectChatDisplayMessagesWithState,
+  type ChatDisplayProjectionOptions,
   createChatHistoryRecoveryProjection,
 } from "./chat-display-projection.core.js";
 import {
@@ -180,6 +181,7 @@ export async function readIncrementalChatHistoryTail(params: {
   readOnly?: boolean;
   deferProfileDisplay?: boolean;
   resolveCurrentUserProfileDisplay?: CurrentUserProfileDisplayResolver;
+  resolveCronJobName?: ChatDisplayProjectionOptions["resolveCronJobName"];
 }): Promise<IncrementalChatHistoryTail> {
   const { resolveCurrentUserProfileDisplay } = params;
   let offset = params.offset ?? 0;
@@ -272,6 +274,7 @@ export async function readIncrementalChatHistoryTail(params: {
       {
         includeCommentaryFallbacks: true,
         maxChars: params.effectiveMaxChars,
+        resolveCronJobName: params.resolveCronJobName,
         ...(resolveProfileDisplay && !params.deferProfileDisplay
           ? { resolveCurrentUserProfileDisplay }
           : {}),

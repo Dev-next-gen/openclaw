@@ -154,6 +154,7 @@ serveWorkerTasks(
                 }),
                 readOnly: true,
                 deferProfileDisplay: true,
+                resolveCronJobName: () => undefined,
               };
               if (request.request.kind === "rpc") {
                 const { readChatHistoryPageKernel } =
