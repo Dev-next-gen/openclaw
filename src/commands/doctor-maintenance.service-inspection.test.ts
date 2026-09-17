@@ -5,6 +5,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { printDaemonStatus } from "../cli/daemon-cli/status.print.js";
 import { maybeStopManagedServiceBeforeMutableUpdate } from "../cli/update-cli/update-command-service-maintenance.js";
 import { execFileUtf8 } from "../daemon/exec-file.js";
+import { decodeLaunchAgentPlistFixture } from "../daemon/launchd-plist.test-support.js";
 import { inspectSystemLaunchDaemonOwnership } from "../daemon/launchd-system.js";
 import { readGatewayServiceState, resolveGatewayService } from "../daemon/service.js";
 import { mockSystemAccountHome } from "../daemon/service.test-helpers.js";
@@ -24,6 +25,19 @@ vi.mock("../daemon/systemd-peer-native.js", async (importOriginal) => ({
     .mockRejectedValue(new Error("Unexpected private-peer opening in unavailable-broker fixture")),
 }));
 vi.mock("../daemon/exec-file.js", () => ({ execFileUtf8: vi.fn() }));
+vi.mock("../process/exec.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../process/exec.js")>()),
+  runExec: vi.fn<typeof import("../process/exec.js").runExec>(async (command, _args, options) => {
+    if (
+      command !== "/usr/bin/plutil" ||
+      typeof options !== "object" ||
+      options.input === undefined
+    ) {
+      throw new Error("Unexpected subprocess in service-inspection fixture");
+    }
+    return decodeLaunchAgentPlistFixture(options.input);
+  }),
+}));
 vi.mock("./doctor-service-repair-policy.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./doctor-service-repair-policy.js")>()),
   shouldManageGatewayService: async () => true,
