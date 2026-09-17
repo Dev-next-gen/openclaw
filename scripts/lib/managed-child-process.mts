@@ -1,9 +1,16 @@
 // Runs child commands with process-group signal forwarding and Windows shell normalization.
 import { spawn, spawnSync } from "node:child_process";
-import type { ChildProcess, StdioOptions } from "node:child_process";
+import type {
+  ChildProcess,
+  ChildProcessByStdio,
+  SpawnOptions,
+  SpawnOptionsWithStdioTuple,
+  StdioOptions,
+} from "node:child_process";
 import { constants as osConstants, tmpdir } from "node:os";
-import { Writable } from "node:stream";
+import { Writable, type Readable } from "node:stream";
 import { buildCmdExeCommandLine, resolveWindowsCmdExePath } from "../windows-cmd-helpers.mjs";
+import { spawnWindowsJobChild, type ManagedWindowsJob } from "./managed-windows-job.mts";
 import { findVitestResourceOwner } from "./vitest-resource-ownership.mts";
 import { resolveWindowsTaskkillPath } from "./windows-taskkill.mjs";
 
@@ -16,8 +23,9 @@ type ProcessTreeState = "indeterminate" | "live" | "signaled" | "terminated";
 type ManagedChildTermination = {
   processTreeState: Exclude<ProcessTreeState, "live">;
   error?: Error;
+  survivingPids?: number[];
 };
-type ManagedProcessGroupErrorPolicy = "alive-on-eperm" | "indeterminate" | "verify-leader";
+type ManagedProcessGroupErrorPolicy = "alive-on-eperm" | "indeterminate";
 type ManagedProcessGroupChild = {
   exitCode?: number | null;
   pid?: number;
@@ -89,6 +97,50 @@ type ManagedCommandOutcome =
 
 const managedChildren = new Set<(signal: NodeJS.Signals) => void>();
 const signalHandlers = new Map<NodeJS.Signals, () => void>();
+const windowsJobs = new WeakMap<object, ManagedWindowsJob>();
+const windowsTerminations = new WeakMap<object, ManagedChildTermination>();
+
+export function spawnManagedChild(
+  command: string,
+  args: string[],
+  options: SpawnOptionsWithStdioTuple<"ignore", "pipe", "pipe">,
+): ChildProcessByStdio<null, Readable, Readable>;
+export function spawnManagedChild(
+  command: string,
+  args: string[],
+  options: SpawnOptions,
+): ChildProcess;
+export function spawnManagedChild(
+  command: string,
+  args: string[],
+  options: SpawnOptions,
+): ChildProcess {
+  const owned = spawnWindowsJobChild(command, args, options);
+  if (!owned) {
+    return spawn(command, args, options);
+  }
+  windowsJobs.set(owned.child, owned.job);
+  return owned.child;
+}
+
+function observeWindowsTree(child: ManagedProcessGroupChild): ManagedChildTermination {
+  const job = windowsJobs.get(child);
+  if (!job) {
+    return windowsTerminations.get(child) ?? { processTreeState: "indeterminate" };
+  }
+  try {
+    const survivingPids = job.inspect();
+    return {
+      processTreeState: survivingPids.length === 0 ? "terminated" : "indeterminate",
+      survivingPids,
+    };
+  } catch (error) {
+    return {
+      processTreeState: "indeterminate",
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+}
 
 /** Nested command failures retain their owner's inputs until process cleanup is verified. */
 export function hasUnjoinedWork(value: unknown): boolean {
@@ -152,13 +204,17 @@ export function terminateManagedChild(
     return platform === "win32" ? { processTreeState: "indeterminate" } : undefined;
   }
 
+  const job = platform === "win32" ? windowsJobs.get(child) : undefined;
+  job?.beginStop();
+
+  let processGroupIsMissing = false;
   try {
     if (platform !== "win32" && useProcessGroup) {
       process.kill(-child.pid, signal);
       return { processTreeState: "signaled" };
     }
   } catch (error) {
-    const processGroupIsMissing = isMissingProcessError(error);
+    processGroupIsMissing = isMissingProcessError(error);
     if (!processGroupIsMissing) {
       onProcessGroupSignalError?.(error);
     }
@@ -171,19 +227,28 @@ export function terminateManagedChild(
   }
 
   if (platform !== "win32" || !useWindowsTaskkill) {
+    const missingLeaderState =
+      useProcessGroup && !processGroupIsMissing ? "indeterminate" : "terminated";
     try {
       const delivered = child.kill(signal);
-      return { processTreeState: delivered === false ? "terminated" : "signaled" };
+      return { processTreeState: delivered === false ? missingLeaderState : "signaled" };
     } catch (error) {
       onChildSignalError?.(error);
-      return isMissingProcessError(error) ? { processTreeState: "terminated" } : undefined;
+      return isMissingProcessError(error) ? { processTreeState: missingLeaderState } : undefined;
     }
   }
 
   // After exit this PID can name another process. Keep descendant cleanup
   // unverified instead of targeting that potentially unrelated owner.
   if (child.exitCode != null || child.signalCode != null) {
-    return { processTreeState: "indeterminate" };
+    if (job) {
+      try {
+        job.stop();
+      } catch (error) {
+        onChildSignalError?.(error);
+      }
+    }
+    return observeWindowsTree(child);
   }
   const taskkillPath = resolveWindowsTaskkillPath();
   const args = ["/PID", String(child.pid), "/T"];
@@ -195,19 +260,30 @@ export function terminateManagedChild(
       ? { stdio: ["ignore", "pipe", "pipe"] }
       : { killSignal: "SIGKILL", stdio: ["ignore", "pipe", "pipe"], timeout: taskkillTimeoutMs };
   const result = runTaskkill(taskkillPath, args, taskkillOptions);
-  if ((!result?.error && result?.status === 0) || hasManagedChildExited(child)) {
-    return { processTreeState: "terminated" };
-  }
   const attempts = [result];
-  if (signal !== "SIGKILL") {
-    const forceResult = runTaskkill(taskkillPath, [...args, "/F"], taskkillOptions);
-    if ((!forceResult?.error && forceResult?.status === 0) || hasManagedChildExited(child)) {
-      return { processTreeState: "terminated" };
+  if (
+    (result?.error || result?.status !== 0) &&
+    signal !== "SIGKILL" &&
+    !hasManagedChildExited(child)
+  ) {
+    attempts.push(runTaskkill(taskkillPath, [...args, "/F"], taskkillOptions));
+  }
+  // Taskkill enumerates a tree; the retained Job also owns children created during that walk.
+  if (job && observeWindowsTree(child).processTreeState !== "terminated") {
+    try {
+      job.stop();
+    } catch (error) {
+      onChildSignalError?.(error);
     }
-    attempts.push(forceResult);
+  }
+  if (attempts.some((attempt) => !attempt?.error && attempt?.status === 0)) {
+    windowsTerminations.set(child, { processTreeState: "terminated" });
+    return job ? observeWindowsTree(child) : { processTreeState: "terminated" };
   }
   try {
-    child.kill(signal);
+    if (!hasManagedChildExited(child)) {
+      child.kill(signal);
+    }
   } catch (error) {
     onChildSignalError?.(error);
     // The leader may already be gone, but failed taskkill leaves descendants unverified.
@@ -219,21 +295,28 @@ export function terminateManagedChild(
     stderr: attempt?.stderr?.toString() ?? "",
     error: attempt?.error?.message,
   }));
-  return {
-    processTreeState: "indeterminate",
+  const observation: ManagedChildTermination = job
+    ? observeWindowsTree(child)
+    : { processTreeState: "indeterminate" };
+  const termination: ManagedChildTermination = {
+    ...observation,
     error: Object.assign(
       createManagedCommandCleanupError(
         `Windows taskkill failed: ${JSON.stringify(taskkill)}`,
         child,
         platform,
         "indeterminate",
+        observation.error,
       ),
-      { taskkill },
+      { taskkill, survivingPids: observation.survivingPids },
     ),
   };
+  windowsTerminations.set(child, termination);
+  return termination;
 }
 
 function hasManagedChildExited(child: ManagedProcessGroupChild): boolean {
+  // Leader facts only retire PID signaling authority; they never certify the tree.
   if (child.exitCode != null || child.signalCode != null) {
     return true;
   }
@@ -258,6 +341,9 @@ export function inspectManagedProcessGroup(
     useProcessGroup = platform !== "win32",
   }: ManagedProcessGroupOptions,
 ): "dead" | "indeterminate" | "live" {
+  if (platform === "win32" && !inspectLeaderWhenNoGroup) {
+    return observeWindowsTree(child).processTreeState === "terminated" ? "dead" : "indeterminate";
+  }
   if (!useProcessGroup) {
     return inspectLeaderWhenNoGroup &&
       child.pid &&
@@ -285,24 +371,9 @@ export function inspectManagedProcessGroup(
     if (isMissingProcessError(error)) {
       return "dead";
     }
-    if (errorPolicy === "indeterminate") {
-      return "indeterminate";
-    }
-    if (!hasProcessErrorCode(error, "EPERM")) {
-      return "dead";
-    }
-    if (errorPolicy === "alive-on-eperm") {
-      return "live";
-    }
-    if (child.exitCode != null || child.signalCode != null) {
-      return "dead";
-    }
-    try {
-      process.kill(pid, 0);
-      return "live";
-    } catch {
-      return "dead";
-    }
+    return errorPolicy === "alive-on-eperm" && hasProcessErrorCode(error, "EPERM")
+      ? "live"
+      : "indeterminate";
   }
 }
 
@@ -353,7 +424,7 @@ export async function waitForManagedProcessGroupExit(
   const deadlineAt = Math.min(Date.now() + timeoutMs, groupOptions.deadlineAt ?? Infinity);
   const boundedGroupOptions = { ...groupOptions, deadlineAt };
   while (Date.now() < deadlineAt) {
-    if (inspectManagedProcessGroup(child, boundedGroupOptions) !== "live") {
+    if (inspectManagedProcessGroup(child, boundedGroupOptions) === "dead") {
       return true;
     }
     const remainingMs = deadlineAt - Date.now();
@@ -365,7 +436,7 @@ export async function waitForManagedProcessGroupExit(
       setTimeout(resolve, waitMs);
     });
   }
-  return inspectManagedProcessGroup(child, boundedGroupOptions) !== "live";
+  return inspectManagedProcessGroup(child, boundedGroupOptions) === "dead";
 }
 
 /** Run a child command while forwarding termination signals to its process group. */
@@ -429,7 +500,7 @@ export async function runManagedCommand({
   installSignalHandlers();
   let child: ChildProcess;
   try {
-    child = spawn(spawnSpec.command, spawnSpec.args, spawnSpec.options);
+    child = spawnManagedChild(spawnSpec.command, spawnSpec.args, spawnSpec.options);
   } catch (error) {
     removeSignalHandlersIfIdle();
     releaseOwnership();
@@ -479,7 +550,11 @@ export async function runManagedCommand({
   try {
     child.once("error", (error) => {
       clearTimeout(timeoutTimer);
-      notifyOutcome({ type: "failed", error });
+      if (windowsJobs.has(child)) {
+        void stop({ type: "failed", error }, "SIGKILL");
+      } else {
+        notifyOutcome({ type: "failed", error });
+      }
     });
     // The wall deadline includes output drainage, but not group verification after close.
     child.once("close", () => clearTimeout(timeoutTimer));
@@ -524,7 +599,7 @@ export async function runManagedCommand({
       throw error;
     }
     let outcome = await completion;
-    if (outcome.type === "completed" && requireProcessTreeExit) {
+    if (outcome.type === "completed" && (requireProcessTreeExit || windowsJobs.has(child))) {
       // Preserve actual signal cleanup; numeric 143 must still reject lingering descendants.
       const exitSignal = typeof outcome.exit === "string" ? outcome.exit : undefined;
       void finalize(exitSignal);
@@ -534,7 +609,7 @@ export async function runManagedCommand({
     outcome = cleanup ?? cancellation ?? outcome;
     // Preserve the ordinary API's close-based contract. Cancellation and strict
     // commands release only at the finalizer's positive termination boundary.
-    if (outcome.type === "completed" && !requireProcessTreeExit && !cancellation) {
+    if (outcome.type === "completed" && !requireProcessTreeExit && !cancellation && !finalization) {
       releaseOwnership();
     }
     if (outcome.type === "failed") {
@@ -563,7 +638,7 @@ export async function runManagedCommand({
   }
 }
 
-async function finalizeManagedChild(
+export async function finalizeManagedChild(
   child: ChildProcess,
   signal: NodeJS.Signals | undefined,
   {
@@ -572,14 +647,16 @@ async function finalizeManagedChild(
     forceKillDelayMs = FORCE_KILL_DELAY_MS,
     forceKillOnLeaderExit = false,
     drainTimeoutMs = PROCESS_GROUP_DRAIN_TIMEOUT_MS,
-    onTerminated,
+    retainOutputOnFailure = false,
+    onTerminated = () => {},
   }: {
     platform: NodeJS.Platform;
     runTaskkill: TaskkillRunner;
     forceKillDelayMs?: number;
     forceKillOnLeaderExit?: boolean;
     drainTimeoutMs?: number;
-    onTerminated: () => void;
+    retainOutputOnFailure?: boolean;
+    onTerminated?: () => void;
   },
 ) {
   // Nested wrappers own detached groups. Let them forward the signal before
@@ -599,16 +676,19 @@ async function finalizeManagedChild(
     onChildSignalError: recordSignalError,
     onProcessGroupSignalError: recordSignalError,
   };
+  const job = windowsJobs.get(child);
   const termination: ManagedChildTermination | undefined =
-    !signal &&
-    inspectManagedProcessGroup(child, {
-      deadlineAt: startedAt + forceDelay + drainTimeoutMs,
-      errorPolicy: "indeterminate",
-      platform,
-    }) === "dead"
-      ? { processTreeState: "terminated" }
-      : terminateManagedChild(child, signal ?? "SIGKILL", terminationOptions);
-  if (platform === "win32" && termination?.processTreeState !== "terminated") {
+    !signal && job
+      ? observeWindowsTree(child)
+      : !signal &&
+          inspectManagedProcessGroup(child, {
+            deadlineAt: startedAt + forceDelay + drainTimeoutMs,
+            errorPolicy: "indeterminate",
+            platform,
+          }) === "dead"
+        ? { processTreeState: "terminated" }
+        : terminateManagedChild(child, signal ?? "SIGKILL", terminationOptions);
+  if (platform === "win32" && termination?.processTreeState !== "terminated" && !job) {
     throw createManagedCommandCleanupError(
       "Windows taskkill could not verify managed process tree exit",
       child,
@@ -623,6 +703,9 @@ async function finalizeManagedChild(
   const deadline = forceAt + drainTimeoutMs;
   let forced = !signal || platform === "win32";
   let groupState: "dead" | "indeterminate" | "live" = "indeterminate";
+  let survivingPids: number[] | undefined;
+  let observationError: Error | undefined;
+  let warned = false;
   while (true) {
     const exited = child.exitCode !== null || child.signalCode !== null;
     // A snapshot cannot spend drainage time before escalation is due. Forced
@@ -632,19 +715,43 @@ async function finalizeManagedChild(
       : forceKillOnLeaderExit && exited
         ? Math.min(forceAt, Date.now())
         : forceAt;
-    groupState =
-      platform === "win32"
-        ? "dead"
-        : inspectManagedProcessGroup(child, {
-            deadlineAt: probeDeadline,
-            errorPolicy: "indeterminate",
-            platform,
-          });
+    if (platform === "win32") {
+      const observed = observeWindowsTree(child);
+      survivingPids = observed.survivingPids;
+      observationError = observed.error;
+      groupState = observed.processTreeState === "terminated" ? "dead" : "indeterminate";
+      if (!warned && groupState !== "dead") {
+        warned = true;
+        process.emitWarning(
+          Object.assign(
+            createManagedCommandCleanupError(
+              `Windows process tree unresolved: ${JSON.stringify({ survivingPids: survivingPids ?? null, observationError: observed.error?.message })}`,
+              child,
+              platform,
+              "indeterminate",
+              termination?.error ?? observed.error,
+            ),
+            { survivingPids },
+          ),
+        );
+      }
+    } else {
+      groupState = inspectManagedProcessGroup(child, {
+        deadlineAt: probeDeadline,
+        errorPolicy: "indeterminate",
+        platform,
+      });
+    }
     const pipesClosed = [child.stdout, child.stderr].every((pipe) => !pipe || pipe.closed);
     if (groupState === "dead" && exited && pipesClosed) {
+      if (job) {
+        job.close();
+        windowsJobs.delete(child);
+        windowsTerminations.set(child, { processTreeState: "terminated" });
+      }
       onTerminated();
       // A missing group at signal time supersedes the earlier racy liveness probe.
-      if (!signal && termination?.processTreeState !== "terminated") {
+      if (!signal && platform !== "win32" && termination?.processTreeState !== "terminated") {
         throw createManagedCommandCleanupError(
           "Managed command exited while its process group remained active",
           child,
@@ -672,16 +779,24 @@ async function finalizeManagedChild(
   }
   // Stop owning pipe handles only after recording failure; never disguise an
   // escaped descendant holding stdio as successful completion or cancellation.
-  child.stdout?.destroy();
-  child.stderr?.destroy();
-  throw createManagedCommandCleanupError(
-    "Managed command cleanup could not verify child, process group, and output closure",
-    child,
-    platform,
-    groupState === "live" ? "live" : "indeterminate",
-    signalErrors.length
-      ? new AggregateError(signalErrors, "Managed process signaling failed")
-      : undefined,
+  if (!retainOutputOnFailure) {
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+  }
+  throw Object.assign(
+    createManagedCommandCleanupError(
+      `Managed command cleanup could not verify child, process group, and output closure${platform === "win32" ? `: ${JSON.stringify({ survivingPids: survivingPids ?? null })}` : ""}`,
+      child,
+      platform,
+      groupState === "live" ? "live" : "indeterminate",
+      new AggregateError(
+        [termination?.error, observationError, ...signalErrors].filter(
+          (error) => error !== undefined,
+        ),
+        "Managed process termination or observation failed",
+      ),
+    ),
+    { survivingPids },
   );
 }
 

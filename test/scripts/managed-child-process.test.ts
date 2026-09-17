@@ -658,7 +658,7 @@ setInterval(() => {}, 1_000);
     }
   });
 
-  it("preserves distinct group permission policies and verifies the leader when requested", () => {
+  it("preserves indeterminate group state after the leader exits", () => {
     const permissionError = Object.assign(new Error("group signal denied"), { code: "EPERM" });
     const child = { exitCode: null, pid: 12345, signalCode: null };
     const kill = vi.spyOn(process, "kill").mockImplementation((pid) => {
@@ -676,15 +676,12 @@ setInterval(() => {}, 1_000);
         inspectManagedProcessGroup(child, { errorPolicy: "indeterminate", platform: "linux" }),
       ).toBe("indeterminate");
       expect(
-        inspectManagedProcessGroup(child, { errorPolicy: "verify-leader", platform: "linux" }),
-      ).toBe("live");
-      expect(kill).toHaveBeenCalledWith(12345, 0);
-      expect(
         inspectManagedProcessGroup(
           { ...child, exitCode: 0 },
-          { errorPolicy: "verify-leader", platform: "linux" },
+          { errorPolicy: "indeterminate", platform: "linux" },
         ),
-      ).toBe("dead");
+      ).toBe("indeterminate");
+      expect(kill).not.toHaveBeenCalledWith(12345, 0);
     } finally {
       kill.mockRestore();
     }
@@ -695,7 +692,7 @@ setInterval(() => {}, 1_000);
 
     expect(
       inspectManagedProcessGroup(child, { errorPolicy: "alive-on-eperm", platform: "win32" }),
-    ).toBe("dead");
+    ).toBe("indeterminate");
     expect(
       inspectManagedProcessGroup(child, {
         errorPolicy: "alive-on-eperm",
@@ -736,14 +733,13 @@ setInterval(() => {}, 1_000);
       policy: "indeterminate",
       expected: "indeterminate",
     },
-    { snapshot: "empty", afterSnapshot: "EPERM", policy: "verify-leader", expected: "dead" },
     {
       snapshot: "empty",
       afterSnapshot: "EIO",
       policy: "indeterminate",
       expected: "indeterminate",
     },
-    { snapshot: "empty", afterSnapshot: "EIO", expected: "dead" },
+    { snapshot: "empty", afterSnapshot: "EIO", expected: "indeterminate" },
     { snapshot: "zombie", afterSnapshot: null, platform: "darwin", expected: "live" },
     { snapshot: "zombie", afterSnapshot: null, running: true, expected: "live" },
     {

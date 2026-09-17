@@ -71,7 +71,7 @@ describe("managed child termination facts", () => {
   );
 
   it.each(["exit", "missing PID", "alive"] as const)(
-    "joins output after taskkill status 255 only with verified termination (%s)",
+    "retains an unowned Windows tree after taskkill status 255 (%s)",
     async (state) => {
       const { child, exit } = createChild();
       child.stdout = new PassThrough();
@@ -118,8 +118,10 @@ describe("managed child termination facts", () => {
             child.stderr?.destroy();
             child.emit("close", 0, null);
           });
-          await expect(completed).rejects.toMatchObject({ code: "ABORT_ERR" });
-          expect(child.stdout.closed && child.stderr.closed).toBe(true);
+          await expect(completed).rejects.toMatchObject({
+            code: "EPROCESSGROUP_CLEANUP_FAILED",
+            processTreeState: "indeterminate",
+          });
           expect(runTaskkill).toHaveBeenCalledOnce();
           expect(kill).not.toHaveBeenCalled();
         } else {

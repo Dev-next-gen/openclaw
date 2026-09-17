@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { readRootJsonObjectSync } from "@openclaw/fs-safe/json";
-import { isBunRuntime } from "../daemon/runtime-binary.js";
+import { isBunRuntime } from "../daemon/runtime-binary.ts";
 
 /** Resolve an explicit installed root, source sibling, or stable packaged worker path. */
 export function resolveRuntimeWorkerUrl(params: {
