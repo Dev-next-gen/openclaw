@@ -1970,6 +1970,10 @@ async function verifyCodexNativeSubagentBridgeProbe(params: {
       `After the subagent result returns, reply exactly ${parentToken} ${childToken} and nothing else.`,
     ].join("\n"),
   });
+  recordCodexAttemptIdentity({
+    events: events.filter((event) => event.sessionKey === params.sessionKey),
+    sessionKey: params.sessionKey,
+  });
   logCodexLiveStep("native-subagent-bridge-probe:initial-reply", { text });
   expect(
     events.some((event) => event.stream === "codex_app_server.lifecycle"),
@@ -2073,6 +2077,18 @@ async function verifyCodexSessionDeletion(params: {
     sessionKey,
     command: `/codex resume ${siblingThreadId}`,
     expectedText: "owned by another OpenClaw session or conversation",
+  });
+  await requestAgentText({
+    client,
+    sessionKey,
+    expectedReply: "OWNER-STILL-ATTACHED",
+    message: "Reply with exactly OWNER-STILL-ATTACHED and nothing else.",
+  });
+  await requestAgentText({
+    client,
+    sessionKey: siblingKey,
+    expectedReply: "SIBLING-STILL-ATTACHED",
+    message: "Reply with exactly SIBLING-STILL-ATTACHED and nothing else.",
   });
   expect(observedCodexThreadIds.get(sessionKey)).toBe(threadId);
   expect(observedCodexThreadIds.get(siblingKey)).toBe(siblingThreadId);
