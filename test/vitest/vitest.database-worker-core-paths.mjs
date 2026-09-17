@@ -1,6 +1,7 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
   "src/state/openclaw-agent-worker-store.test.ts",
+  "src/sessions/session-state-events.test.ts",
   "packages/memory-host-sdk/src/host/session-memory-sync.test.ts",
   "src/agents/harness/native-hook-relay-store.test.ts",
   "src/agents/harness/native-hook-relay.approval-binding.test.ts",
@@ -93,8 +94,10 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugins/doctor-contract-registry.load-paths.test.ts",
   "src/state/openclaw-memory-write-admission.test.ts",
   "src/state/openclaw-state-db.test.ts",
+  "src/state/openclaw-state-db-read-admission.test.ts",
   "src/state/openclaw-state-maintenance-resources.test.ts",
   "src/tasks/task-registry.test.ts",
+  "test/cron-message-read.integration.test.ts",
   "test/imessage-reply-alias.integration.test.ts",
   "test/matrix-channel-read-authority.integration.test.ts",
   "test/plugins/beam-http-identity.test.ts",

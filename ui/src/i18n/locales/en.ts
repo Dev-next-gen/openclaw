@@ -47,6 +47,7 @@ export const en: TranslationMap & {
   devices: TranslationMap;
   desktop: TranslationMap &
     Record<"title" | "openWindow" | "unavailable" | "toggle" | "reconnect" | "connecting", string>;
+  filePreview: TranslationMap & { bundle: TranslationMap };
   updates: TranslationMap;
   login: TranslationMap;
   newSession: TranslationMap;
@@ -250,6 +251,7 @@ export const en: TranslationMap & {
     openInControlUi: "Open links in Control UI browser",
   },
   filePreview: {
+    bundle: {},
     label: "Support files",
     listLabel: "Files",
     searchPlaceholder: "Search files…",
@@ -1845,6 +1847,8 @@ export const en: TranslationMap & {
       "Settings restoration could not be confirmed. Your draft is kept. Check {path} before saving again.",
     recoveryBackup: "Inspect the recovery backup at {path}.",
     recoveryReload: "Discard draft and reload",
+    discardUnconfirmed:
+      "The last save could not be confirmed. Your draft is kept. Reload configuration before discarding this setting.",
     autoSaveConflict: "Settings changed elsewhere",
     retry: "Retry",
     applyChanges: "Apply changes",

@@ -587,6 +587,32 @@ describe("scripts/lib/plugin-npm-security-scan.mts", () => {
     },
   );
 
+  it.each([
+    ["codex", "@openclaw/codex", "src/session-catalog-native.test.ts", 1],
+    ["logbook", "@openclaw/logbook", "src/analyze.test.ts", 1],
+    ["onepassword", "@openclaw/onepassword", "src/secret-ref-resolver.test.ts", 4],
+  ] as const)(
+    "reviews exact current process-test counts for %s",
+    async (extensionId, packageName, fixturePath, expectedCount) => {
+      const spawnProbe =
+        'import { spawn } from "node:child_process";\n' +
+        "spawn(process.execPath, []);\n".repeat(expectedCount);
+      const { artifact } = writePluginArtifact({
+        extensionId,
+        packageName,
+        files: { [fixturePath]: spawnProbe },
+      });
+      const current = await scanPublishablePluginPackages([artifact]);
+      expect(current.scanErrors).toEqual([]);
+      expect(current.packageResults[0]?.unexpectedCriticalFindings).toEqual([]);
+      expect(current.packageResults[0]?.reviewedCriticalFindings).toEqual(
+        Array.from({ length: expectedCount }, () => `${packageName}:dangerous-exec:${fixturePath}`),
+      );
+      const frozen = await scanPublishablePluginPackages([artifact], "release/2026.9.4");
+      expect(frozen.packageResults[0]?.unexpectedCriticalFindings).toHaveLength(expectedCount);
+    },
+  );
+
   it.each([null, 0, 1, 2])(
     "reviews exactly one packed composition fixture for current and 9.5 only: %s",
     async (count) => {
