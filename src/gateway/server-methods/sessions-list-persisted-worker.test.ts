@@ -1,18 +1,19 @@
 import { expect, it, vi } from "vitest";
 import { notifyPreparedModelRuntimePublication } from "../../agents/prepared-model-runtime.publication-events.js";
-import {
-  clearSubagentRunsReadCacheForTest,
-  persistSubagentRunsToDiskOrThrow,
-} from "../../agents/subagents/registry/subagent-registry-state.js";
+import { persistRegistryFixture } from "../../agents/subagents/registry/subagent-registry-state.fixture.test-support.js";
+import { clearSubagentRunsReadCacheForTest } from "../../agents/subagents/registry/subagent-registry-state.js";
 import type { SubagentRunRecord } from "../../agents/subagents/registry/subagent-registry.types.js";
+import { createEmbeddedCallGateway } from "../../agents/tools/embedded-gateway-stub.js";
 import { setRuntimeConfigSnapshot } from "../../config/config.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { createSqliteWorkerWriteAdmission } from "../../infra/sqlite-worker-store.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { runOpenClawStateWorkerOperation } from "../../state/openclaw-state-worker-store.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { EmbeddedTuiBackend } from "../../tui/embedded-backend.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
 import { sessionByKeyReadHandlers } from "./sessions-read-by-key.js";
 import {
@@ -41,13 +42,13 @@ function run(runId: string, overrides: Partial<SubagentRunRecord> = {}): Subagen
   };
 }
 it.each(["replaced", "made private"])(
-  "describes current session metadata after projection readiness while the session is %s",
+  "describes current session metadata without waiting for catalog readiness when the session is %s",
   async (change) => {
     await withOpenClawTestState(
       { scenario: "minimal", env: { OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE: "1" } },
       async () => {
         const cfg: OpenClawConfig = {
-          agents: { list: [{ id: "main", default: true }] },
+          agents: { entries: { main: {} } },
           gateway: {
             roles: {
               default: "reader",
@@ -84,12 +85,12 @@ it.each(["replaced", "made private"])(
           swarmRequesterSessionKey: controller,
           collectorCompletion: { status: "done" },
         });
-        persistSubagentRunsToDiskOrThrow(
-          new Map([child, collector].map((entry) => [entry.runId, entry])),
-        );
+        persistRegistryFixture(new Map([child, collector].map((entry) => [entry.runId, entry])));
         clearSubagentRunsReadCacheForTest();
         const context = requestContext(cfg);
         await initializeSessionReadContext(context);
+        const projection = getSessionRowProjection(context)!;
+        await projection.ensureMaterialized();
         const catalog = createDeferredCore();
         const reading = createDeferredCore();
         context.readPreparedGatewayModelCatalog = async () => {
@@ -99,28 +100,24 @@ it.each(["replaced", "made private"])(
         };
         notifyPreparedModelRuntimePublication({ phase: "catalog-published" });
         const respond = vi.fn<RespondFn>();
-        const request = sessionByKeyReadHandlers["sessions.describe"]!({
-          req: { type: "req", id: "describe-projection", method: "sessions.describe" },
-          params: { key: controller },
-          client: identifiedClient(viewerId),
-          context,
-          isWebchatConnect: () => false,
-          respond,
-        });
+        let request: Promise<void> | void = undefined;
         try {
-          expect(
-            await Promise.race([
-              reading.promise.then(() => "catalog"),
-              Promise.resolve(request).then(() => "response"),
-            ]),
-          ).toBe("catalog");
+          await reading.promise;
           await upsertSessionEntryCore(
             { agentId: "main", sessionKey: controller },
             change === "replaced"
               ? { sessionId: "replacement-session", label: "Current conversation" }
               : { visibility: "draft" },
           );
-          catalog.resolve();
+          request = sessionByKeyReadHandlers["sessions.describe"]!({
+            req: { type: "req", id: "describe-projection", method: "sessions.describe" },
+            params: { key: controller },
+            client: identifiedClient(viewerId),
+            context,
+            isWebchatConnect: () => false,
+            respond,
+          });
+          // Row workers may yield; the unrelated catalog renewal stays held until cleanup.
           await request;
           expect(respond).toHaveBeenCalledTimes(1);
           expect(respond.mock.calls[0]?.[0]).toBe(true);
@@ -141,8 +138,8 @@ it.each(["replaced", "made private"])(
         } finally {
           vi.restoreAllMocks();
           catalog.resolve();
-          await Promise.allSettled([request]);
-          getSessionRowProjection(context)?.dispose();
+          await Promise.allSettled([request, projection.ensureMaterialized()]);
+          projection.dispose();
           clearSubagentRunsReadCacheForTest();
         }
       },
@@ -155,7 +152,11 @@ it("lists off-page controller links and deleted-collector totals while a sibling
     { scenario: "minimal", env: { OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE: "1" } },
     async () => {
       clearSubagentRunsReadCacheForTest();
-      const cfg = { agents: { list: [{ id: "main", default: true }] } };
+      const cfg = {
+        agents: { entries: { main: {} } },
+        // Session reads need the real embedded host, but no bundled plugin runtimes.
+        plugins: { enabled: false },
+      };
       setRuntimeConfigSnapshot(cfg);
       const controller = "agent:main:controller";
       const requester = "agent:main:requester";
@@ -179,12 +180,11 @@ it("lists off-page controller links and deleted-collector totals while a sibling
           { sessionId: key, updatedAt, visibility: "shared", spawnedBy },
         );
       }
-      persistSubagentRunsToDiskOrThrow(
-        new Map([child, collector].map((entry) => [entry.runId, entry])),
-      );
+      persistRegistryFixture(new Map([child, collector].map((entry) => [entry.runId, entry])));
       const key = { pluginId: "session-list-proof", namespace: "mixed-progress", key: "written" };
       const context = requestContext(cfg);
       await initializeSessionReadContext(context);
+      const workerContext = captureOpenClawStateWorkerContext();
       try {
         const [result, written] = await Promise.all([
           listSessions({
@@ -192,17 +192,24 @@ it("lists off-page controller links and deleted-collector totals while a sibling
             context,
             request: { limit: 1 },
           }),
-          runOpenClawStateWorkerOperation(captureOpenClawStateWorkerContext(), (worker) =>
-            worker.execute({
-              type: "pluginState.register",
-              input: {
-                ...key,
-                valueJson: "true",
-                maxEntries: 4,
-                maxPluginEntries: 4,
-                overflowPolicy: "reject-new",
-              },
-            }),
+          runOpenClawStateWorkerOperation(
+            workerContext,
+            (worker) =>
+              worker.execute({
+                type: "pluginState.register",
+                input: {
+                  ...key,
+                  valueJson: "true",
+                  maxEntries: 4,
+                  overflowPolicy: "reject-new",
+                },
+              }),
+            {
+              createAdmission: createSqliteWorkerWriteAdmission(
+                workerContext.admission.assertCurrent,
+                [workerContext.admission.databasePath],
+              ),
+            },
           ),
         ]);
         expect(written).toEqual({ ok: true, value: undefined });
@@ -219,9 +226,6 @@ it("lists off-page controller links and deleted-collector totals while a sibling
           ],
         });
         expect(JSON.stringify(result)).not.toContain("retained synthetic");
-        const { createEmbeddedCallGateway } =
-          await import("../../agents/tools/embedded-gateway-stub.js");
-        const { EmbeddedTuiBackend } = await import("../../tui/embedded-backend.js");
         const backend = new EmbeddedTuiBackend();
         backend.start();
         try {

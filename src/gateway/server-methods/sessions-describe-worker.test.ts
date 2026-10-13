@@ -3,14 +3,15 @@ import { expect, it, vi } from "vitest";
 import { subagentRuns } from "../../agents/subagents/registry/subagent-registry-memory.js";
 import * as registryRead from "../../agents/subagents/registry/subagent-registry-read.js";
 import {
-  clearSubagentRunsReadCacheForTest,
-  persistSubagentRunsToDisk,
-} from "../../agents/subagents/registry/subagent-registry-state.js";
-import { saveSubagentRegistryToSqlite } from "../../agents/subagents/registry/subagent-registry.store.sqlite.js";
+  persistRegistryFixture,
+  saveSubagentRegistryToSqlite,
+} from "../../agents/subagents/registry/subagent-registry-state.fixture.test-support.js";
+import { clearSubagentRunsReadCacheForTest } from "../../agents/subagents/registry/subagent-registry-state.js";
 import type { SubagentRunRecord } from "../../agents/subagents/registry/subagent-registry.types.js";
+import { getSubagentRunRuntimeKey } from "../../agents/subagents/registry/subagent-run-generation.js";
 import {
   bindSwarmRunReservation,
-  removeQueuedSwarmRun,
+  holdQueuedSwarmRun,
   reserveSwarmRun,
 } from "../../agents/subagents/swarm/swarm-scheduler.js";
 import { getRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../config/config.js";
@@ -28,10 +29,12 @@ import { claimAgentRunContext, releaseAgentRunContext } from "../../infra/agent-
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
-import { ensureProfileForEmail, linkEmail } from "../../state/user-profiles.js";
+import { linkEmail } from "../../state/user-profile-writes.worker.js";
+import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
 import { sharingPolicyClient } from "../session-sharing.test-utils.js";
+import { reportPlacementTransition } from "../worker-environments/placement-record.js";
 import { createWorkerSessionPlacementStore } from "../worker-environments/placement-store.js";
 import {
   identifiedClient,
@@ -90,6 +93,7 @@ async function withFixture(
     context: GatewayRequestContext;
     ownerId: string;
     viewer: GatewayClient;
+    retainedRunIds: string[];
   }) => Promise<void>,
 ) {
   await withOpenClawTestState(
@@ -142,7 +146,13 @@ async function withFixture(
       const context = requestContext(cfg);
       context.getRuntimeConfig = () => getRuntimeConfigSnapshot() ?? cfg;
       try {
-        await run({ cfg, context, ownerId, viewer });
+        await run({
+          cfg,
+          context,
+          ownerId,
+          viewer,
+          retainedRunIds: records.map((entry) => entry.runId),
+        });
       } finally {
         getSessionRowProjection(context)?.dispose();
         clearSubagentRunsReadCacheForTest();
@@ -158,19 +168,23 @@ async function whilePaused(
 ) {
   await initializeSessionReadContext(context);
   const projection = getSessionRowProjection(context)!;
-  const ensure = projection.ensureMaterialized.bind(projection);
+  const prepare = projection.prepareSelection.bind(projection);
   const paused = createDeferredCore();
   const released = createDeferredCore();
-  const readiness = vi.spyOn(projection, "ensureMaterialized").mockImplementationOnce(async () => {
-    await ensure();
-    paused.resolve();
-    await released.promise;
-  });
+  const readiness = vi
+    .spyOn(projection, "prepareSelection")
+    .mockImplementationOnce(async (...args) => {
+      const result = await prepare(...args);
+      paused.resolve();
+      await released.promise;
+      return result;
+    });
   const request = start();
   try {
     expect(
       await Promise.race([paused.promise.then(() => "paused"), request.then(() => "responded")]),
     ).toBe("paused");
+    expect(readiness).toHaveBeenCalledOnce();
     await change();
     released.resolve();
     return await request;
@@ -181,10 +195,29 @@ async function whilePaused(
   }
 }
 
-it.each(["describe", "list"] as const)(
-  "captures current registry facts after %s projection readiness",
-  async (method) => {
-    await withFixture(async ({ context, viewer }) => {
+async function afterCommittedChange(
+  context: GatewayRequestContext,
+  start: () => Promise<unknown>,
+  change: () => Promise<void> | void,
+) {
+  await initializeSessionReadContext(context);
+  const projection = getSessionRowProjection(context)!;
+  await projection.ensureMaterialized();
+  await change();
+  const readiness = vi.spyOn(projection, "ensureMaterialized").mockImplementation(() => {
+    throw new Error("describe must not join bulk readiness");
+  });
+  try {
+    return await start();
+  } finally {
+    readiness.mockRestore();
+  }
+}
+
+it.each(["list"] as const)(
+  "captures current registry facts after %s owner publications",
+  async () => {
+    await withFixture(async ({ context, viewer, retainedRunIds }) => {
       await describeSession(context, viewer);
       const current = retainedRun("current-memory", {
         childSessionKey: targetKey,
@@ -194,13 +227,9 @@ it.each(["describe", "list"] as const)(
         const response = await whilePaused(
           context,
           () =>
-            method === "describe"
-              ? describeSession(context, viewer)
-              : listSessions({ client: viewer, context, request: { limit: 100 } }).then(
-                  (result) => ({
-                    session: result.sessions.find((row) => row.key === targetKey),
-                  }),
-                ),
+            listSessions({ client: viewer, context, request: { limit: 100 } }).then((result) => ({
+              session: result.sessions.find((row) => row.key === targetKey),
+            })),
           () => {
             const published = retainedRun("current-persisted", {
               collect: true,
@@ -208,8 +237,12 @@ it.each(["describe", "list"] as const)(
               swarmRequesterSessionKey: targetKey,
               collectorCompletion: { status: "done" },
             });
-            persistSubagentRunsToDisk(new Map([[published.runId, published]]));
+            persistRegistryFixture(new Map([[published.runId, published]]), [
+              ...retainedRunIds,
+              published.runId,
+            ]);
             subagentRuns.set(current.runId, current);
+            subagentRuns.commitOwnership(current);
           },
         );
         expect(response).toMatchObject({
@@ -226,7 +259,7 @@ it.each(["describe", "list"] as const)(
   },
 );
 
-it("projects current target, lineage, children and placement after projection readiness", async () => {
+it("projects current target, lineage, children and placement after committed changes", async () => {
   await withFixture(async ({ context, viewer }) => {
     const childKey = "agent:main:direct-child";
     const removedKey = "agent:main:removed-child";
@@ -253,7 +286,7 @@ it("projects current target, lineage, children and placement after projection re
     );
     const placements = createWorkerSessionPlacementStore();
     context.workerSessionPlacementService = placements;
-    const response = await whilePaused(
+    const response = await afterCommittedChange(
       context,
       () => describeSession(context, viewer),
       async () => {
@@ -275,11 +308,14 @@ it("projects current target, lineage, children and placement after projection re
           target: { canonicalKey: removedKey, storeKeys: [removedKey] },
           archiveTranscript: false,
         });
-        placements.startDispatch({
-          sessionId: "replacement",
-          agentId: "main",
-          sessionKey: targetKey,
-        });
+        reportPlacementTransition(
+          undefined,
+          await placements.startDispatch({
+            sessionId: "replacement",
+            agentId: "main",
+            sessionKey: targetKey,
+          }),
+        );
       },
     );
     expect(response).toMatchObject({
@@ -306,11 +342,11 @@ it("projects current target, lineage, children and placement after projection re
   });
 });
 
-it.each(["draft", "role", "creator alias"] as const)(
-  "rechecks sharing visibility after a %s change during projection readiness",
+it.each(["role", "creator alias"] as const)(
+  "rechecks sharing visibility after a %s change before the synchronous read",
   async (change) => {
     await withFixture(async ({ cfg, context, viewer }) => {
-      const response = await whilePaused(
+      const response = await afterCommittedChange(
         context,
         () => describeSession(context, viewer),
         async () => {
@@ -348,7 +384,7 @@ it.each(["draft", "role", "creator alias"] as const)(
   },
 );
 
-it("resolves the current agent store and main alias after projection readiness", async () => {
+it("resolves the current agent store and main alias after committed changes", async () => {
   for (const route of ["agent", "main alias"] as const) {
     await withFixture(async ({ cfg, context, viewer }) => {
       const initial: OpenClawConfig = {
@@ -408,7 +444,7 @@ it("resolves the current agent store and main alias after projection readiness",
         session: { agentId: "main", thinkingLevels: [] },
       });
       catalogs.mockClear();
-      const response = await whilePaused(
+      const response = await afterCommittedChange(
         context,
         () => describeSession(context, viewer, key),
         async () => {
@@ -436,7 +472,7 @@ it("resolves the current agent store and main alias after projection readiness",
   }
 });
 
-it("projects elapsed runtime, status expiry and budget time after projection readiness", async () => {
+it("projects elapsed runtime, status expiry and budget time after committed changes", async () => {
   await withFixture(async ({ context, viewer }) => {
     const startedAt = Date.now() - 1000;
     const clock = vi.spyOn(Date, "now").mockReturnValue(startedAt + 1000);
@@ -481,7 +517,7 @@ it("projects elapsed runtime, status expiry and budget time after projection rea
           agentStatus: { note: "Working" },
         },
       });
-      const response = await whilePaused(
+      const response = await afterCommittedChange(
         context,
         () => describeSession(context, viewer),
         () => {
@@ -509,7 +545,7 @@ it("projects elapsed runtime, status expiry and budget time after projection rea
   });
 });
 
-it("refreshes retained control ownership after projection readiness", async () => {
+it("refreshes retained control ownership after committed changes", async () => {
   await withFixture(async ({ context, viewer }) => {
     const now = Date.now();
     const clock = vi.spyOn(Date, "now").mockReturnValue(now);
@@ -533,7 +569,7 @@ it("refreshes retained control ownership after projection readiness", async () =
       expect(await describeSession(context, viewer)).toMatchObject({
         session: { controlOwnerSessionKey: older.controllerSessionKey },
       });
-      const response = await whilePaused(
+      const response = await afterCommittedChange(
         context,
         () => describeSession(context, viewer),
         () => {
@@ -550,7 +586,7 @@ it("refreshes retained control ownership after projection readiness", async () =
 });
 
 it.each(["executor", "reservation"] as const)(
-  "rechecks the sole %s owner after projection readiness",
+  "rechecks the sole %s owner after committed changes",
   async (owner) => {
     await withFixture(async ({ context, viewer }) => {
       const old = Date.now() - 3 * 60 * 60 * 1000;
@@ -565,6 +601,7 @@ it.each(["executor", "reservation"] as const)(
       });
       subagentRuns.set(run.runId, run);
       let claim: string | undefined;
+      const reservationReleases: Promise<void>[] = [];
       if (owner === "executor") {
         claim = claimAgentRunContext(
           run.runId,
@@ -580,7 +617,7 @@ it.each(["executor", "reservation"] as const)(
             activeRunIds: [],
           }),
         ).toBe(true);
-        bindSwarmRunReservation(run.runId, run);
+        bindSwarmRunReservation(run.runId, getSubagentRunRuntimeKey(run));
       }
       try {
         expect(registryRead.isSubagentRunLive(run)).toBe(owner === "executor");
@@ -588,22 +625,32 @@ it.each(["executor", "reservation"] as const)(
         expect(await describeSession(context, viewer)).toMatchObject({
           session: { hasActiveSubagentRun: true },
         });
-        const response = await whilePaused(
+        const response = await afterCommittedChange(
           context,
           () => describeSession(context, viewer),
           () => {
             if (owner === "executor") {
               releaseAgentRunContext(run.runId, claim);
             } else {
-              expect(removeQueuedSwarmRun(run.runId)).toBe(true);
+              const hold = holdQueuedSwarmRun(run.runId);
+              const withdrawn = hold?.withdraw();
+              if (hold) {
+                reservationReleases.push(hold.release());
+              }
+              expect(withdrawn).toBe(true);
             }
           },
         );
         expect(response).toMatchObject({ session: { hasActiveSubagentRun: undefined } });
       } finally {
         releaseAgentRunContext(run.runId, claim);
-        removeQueuedSwarmRun(run.runId);
+        const hold = holdQueuedSwarmRun(run.runId);
+        if (hold) {
+          hold.withdraw();
+          reservationReleases.push(hold.release());
+        }
         subagentRuns.delete(run.runId);
+        await Promise.all(reservationReleases);
       }
     });
   },

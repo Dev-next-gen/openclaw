@@ -9,7 +9,7 @@ import {
   clearNativeGatewayTestState,
   setNativeGatewayTestState,
 } from "../test-helpers/native-gateways.ts";
-import "./app-sidebar.ts";
+import "./app-sidebar.tsx";
 
 setupSidebarTest();
 afterEach(clearNativeGatewayTestState);
@@ -31,10 +31,12 @@ describe("AppSidebar native Gateway menu", () => {
       ],
       currentId: "profile:team",
     };
-    const publish = () =>
+    const publish = () => {
+      Object.assign(window, { __OPENCLAW_NATIVE_GATEWAYS__: snapshot });
       window.dispatchEvent(
         new CustomEvent("openclaw:native-gateways-changed", { detail: snapshot }),
       );
+    };
     publish();
     const { sidebar } = await mountSidebar(
       createGatewayHarness({ instanceId: "self-instance" } as GatewayBrowserClient).gateway,
@@ -73,11 +75,11 @@ describe("AppSidebar native Gateway menu", () => {
     expect(
       rows.map((row) => row.querySelector(".sidebar-gateway-health")?.getAttribute("aria-label")),
     ).toEqual(["Connected", "Unreachable", "Unknown status"]);
-    expect(rows.map((row) => row.querySelector('[slot="details"] kbd')?.textContent)).toEqual([
-      "⌘1",
-      undefined,
-      "⌘3",
-    ]);
+    expect(
+      rows.map((row) =>
+        row.querySelector('[slot="details"] kbd')?.textContent?.replace(/\s+/gu, "").trim(),
+      ),
+    ).toEqual(["⌘1", undefined, "⌘3"]);
     for (const shortcut of menu.querySelectorAll("kbd")) {
       expect(shortcut.getAttribute("aria-hidden")).toBe("true");
     }
@@ -127,7 +129,9 @@ describe("AppSidebar native Gateway menu", () => {
     await sidebar.updateComplete;
     const manyRows = sidebar.querySelectorAll('wa-dropdown-item[value^="gateway:"]');
     expect(manyRows).toHaveLength(10);
-    expect(manyRows[8]!.querySelector('[slot="details"] kbd')?.textContent).toBe("⌘9");
+    expect(
+      manyRows[8]!.querySelector('[slot="details"] kbd')?.textContent?.replace(/\s+/gu, "").trim(),
+    ).toBe("⌘9");
     expect(manyRows[9]!.querySelector("kbd")).toBeNull();
   });
 });

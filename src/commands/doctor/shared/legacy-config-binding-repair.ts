@@ -1,6 +1,6 @@
 // Repairs canonical binding references after agent config migration.
 import { asNullableRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
-import { AgentSelectionRequiredError, listAgentIds } from "../../../agents/agent-scope-config.js";
+import { AgentSelectionRequiredError } from "../../../agents/agent-scope-config.js";
 import { resolveReadOnlyChannelPluginsForConfig } from "../../../channels/plugins/read-only.js";
 import { projectLegacyAgentRosterEntries } from "../../../config/legacy.roster.js";
 import type { AgentRouteBinding } from "../../../config/types.agents.js";
@@ -13,27 +13,27 @@ import {
   normalizeAgentId,
 } from "../../../routing/session-key.js";
 import type { DoctorConfigMutationResult } from "./config-mutation-state.js";
+import { resolveChannelAccountBindingRepairInput } from "./legacy-config-binding-repair-input.js";
 
-export function pruneBindingsForMissingAgents(
-  cfg: OpenClawConfig,
-  changes: string[],
-): OpenClawConfig {
-  const agents = cfg.agents?.list;
-  const bindings = cfg.bindings;
-  if (!Array.isArray(agents) || agents.length === 0 || !Array.isArray(bindings)) {
+export function pruneBindingsForMissingAgents<T extends object>(cfg: T, changes: string[]): T {
+  const root = asNullableRecord(cfg);
+  const roster = asNullableRecord(root?.agents)?.list;
+  if (!root || !Array.isArray(roster) || roster.length === 0 || !Array.isArray(root.bindings)) {
     return cfg;
   }
+  const agents: unknown[] = roster;
+  const bindings: unknown[] = root.bindings;
 
-  const validAgents = agents.filter((agent): agent is { id: string } => {
-    return agent !== null && typeof agent === "object" && typeof agent.id === "string";
-  });
+  const validAgents = agents.filter(
+    (agent): agent is { id: string } => isRecord(agent) && typeof agent.id === "string",
+  );
   if (validAgents.length !== agents.length) {
     return cfg;
   }
 
   const agentIds = new Set(validAgents.map((agent) => normalizeAgentId(agent.id)));
   const nextBindings = bindings.filter((binding) => {
-    const agentId = binding && typeof binding === "object" ? binding.agentId : undefined;
+    const agentId = asNullableRecord(binding)?.agentId;
     return (
       typeof agentId !== "string" ||
       agentId === DEFAULT_AGENT_ID ||
@@ -50,7 +50,7 @@ export function pruneBindingsForMissingAgents(
   );
   return {
     ...cfg,
-    ...(nextBindings.length > 0 ? { bindings: nextBindings } : { bindings: undefined }),
+    bindings: nextBindings.length > 0 ? nextBindings : undefined,
   };
 }
 
@@ -62,27 +62,13 @@ export function repairUnownedChannelAccountBindings({
   config: OpenClawConfig;
   sourceConfigBeforeMigrations: unknown;
 }): DoctorConfigMutationResult & { warnings?: string[] } {
-  const agentIds = new Set(listAgentIds(cfg));
-  const additions: AgentRouteBinding[] = [];
-  const warnings: string[] = [];
-  const bindings = cfg.bindings === undefined ? [] : cfg.bindings;
-  // Malformed or ownerless bindings cannot establish an explicit repair owner.
-  if (
-    agentIds.size < 2 ||
-    cfg.plugins?.enabled === false ||
-    !Array.isArray(bindings) ||
-    !bindings.every(
-      (binding) =>
-        isRecord(binding) &&
-        isRecord(binding.match) &&
-        typeof binding.agentId === "string" &&
-        binding.agentId.trim().length > 0 &&
-        typeof binding.match.channel === "string" &&
-        (binding.match.accountId === undefined || typeof binding.match.accountId === "string"),
-    )
-  ) {
+  const input = resolveChannelAccountBindingRepairInput(cfg);
+  if (!input) {
     return { config: cfg, changes: [] };
   }
+  const { agentIds, bindings } = input;
+  const additions: AgentRouteBinding[] = [];
+  const warnings: string[] = [];
   const sourceAgents = asNullableRecord(asNullableRecord(sourceConfigBeforeMigrations)?.agents);
   const sourceList = sourceAgents?.list;
   // The shipped list fallback used source array order, which keyed rosters cannot recover.
@@ -125,10 +111,9 @@ export function repairUnownedChannelAccountBindings({
       if (asNullableRecord(account)?.enabled === false) {
         continue;
       }
-      const routeInput = { cfg, channel: channelId, accountId };
       let missingOwner: AgentSelectionRequiredError | undefined;
       try {
-        const route = resolveAgentRoute(routeInput);
+        const route = resolveAgentRoute({ cfg, channel: channelId, accountId });
         if (!legacyDefaultAgentId || route.matchedBy !== "default") {
           continue;
         }

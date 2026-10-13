@@ -39,11 +39,6 @@ vi.mock("./chat-display-projection.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./chat-display-projection.js")>();
   return { ...actual, projectChatDisplayMessage: projectChatDisplayMessageMock };
 });
-vi.mock("./session-utils.js", () => ({
-  attachOpenClawTranscriptMeta: (message: unknown) => message,
-  loadSessionEntry: () => ({ entry: undefined, storePath: "" }),
-  loadGatewaySessionEntryReadOnly: loadGatewaySessionEntryReadOnlyMock,
-}));
 vi.mock("./session-transcript-readers.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./session-transcript-readers.js")>();
   return {
@@ -68,15 +63,26 @@ const {
   createTranscriptUpdateBroadcastHandler: createTranscriptHandler,
 } = await import("./server-session-events.js");
 const { createGatewayBroadcaster } = await import("./server-broadcast.js");
-const { subscribePluginSessionsChanged } = await import("../plugins/gateway-events.js");
+const { subscribePluginSessionsChanged } = await import("../plugins/services.test-support.js");
 
 const projection = {
   get state() {
     return { rowContext: { projectedAgentRuns: buildProjectedAgentRunIndex() } };
   },
   ensureMaterialized: async () => {},
+  ancestorRows: () => [],
+  prepareMembership: async () => {},
+  needsMembershipPreparation: () => false,
+  withPreparedExactRows: (async (queries, consume) => {
+    queries(runtimeConfigState.value);
+    return { kind: "complete", value: consume(projection) };
+  }) satisfies SessionRowProjection["withPreparedExactRows"],
   isCurrent: () => true,
-  select(query: { key?: string; agentId?: string; storePath?: string }) {
+  observeGeneration: (() => ({
+    isCurrent: (row) => projection.isCurrent(row),
+    dispose() {},
+  })) satisfies SessionRowProjection["observeGeneration"],
+  selectEntries(query: { key?: string; agentId?: string; storePath?: string }) {
     if (!query.key) {
       return (
         listAccessorSessionEntriesReadOnlyMock({
@@ -112,15 +118,22 @@ const projection = {
       : [];
   },
   capture(query: { key: string; agentId: string; storePath?: string }) {
-    return projection.select(query)[0];
+    return projection.selectEntries(query)[0];
   },
   findBySessionId(query: { sessionId: string; agentId?: string; storePath?: string }) {
     return projection
-      .select({ agentId: query.agentId, storePath: query.storePath })
+      .selectEntries({ agentId: query.agentId, storePath: query.storePath })
       .filter(({ entry }) => entry.sessionId === query.sessionId);
   },
   snapshot(query: { key: string; agentId: string }) {
     return { row: loadGatewaySessionRowMock(query.key, { agentId: query.agentId }) };
+  },
+  describe(query: { key: string; agentId: string }) {
+    const row = projection.snapshot(query).row;
+    return row ? { materialized: { row } } : undefined;
+  },
+  present(record: Parameters<SessionRowProjection["present"]>[0]) {
+    return record.materialized.row;
   },
 } as unknown as SessionRowProjection;
 

@@ -1,4 +1,5 @@
 import { html, nothing, type TemplateResult } from "lit";
+import type { DirectiveResult } from "lit/directive.js";
 import { t } from "../i18n/index.ts";
 import {
   summarizeSidebarSessionAttention,
@@ -7,7 +8,7 @@ import {
 } from "./app-sidebar-session-types.ts";
 import { formatWebUiIconErrorText } from "./error-presentation.ts";
 import { icons } from "./icons.ts";
-import { resolveSessionAttentionIcon } from "./session-attention-icon-registry.ts";
+import { SESSION_ATTENTION_ICON_NAMES } from "./session-attention-icon-registry.ts";
 import { renderSessionGlyph } from "./session-glyph.ts";
 
 function keepAttentionFocusOnTooltip(event: FocusEvent) {
@@ -20,22 +21,39 @@ function revealAttentionWithoutNavigation(event: MouseEvent) {
   event.stopPropagation();
 }
 
-export function renderSessionAttentionIcon(
-  attention: SidebarSessionAttention,
-  showTooltip = false,
-) {
+export function sessionAttentionIconName(attention: SidebarSessionAttention) {
+  return attention.kind === "question"
+    ? "hand"
+    : attention.kind === "approval"
+      ? "shieldQuestion"
+      : attention.kind === "agent"
+        ? SESSION_ATTENTION_ICON_NAMES[attention.icon]
+        : "alertTriangle";
+}
+
+export function resolveSessionIdleBadge(status: SidebarRecentSession["status"], translate = t) {
+  switch (status) {
+    case "done":
+      return { icon: "check", label: translate("sessionsView.statusDone") } as const;
+    case "killed":
+      return { icon: "stop", label: translate("sessionsView.statusKilled") } as const;
+    case "timeout":
+      return { icon: "alertTriangle", label: translate("sessionsView.statusTimeout") } as const;
+    case "interrupted":
+      return { icon: "pause", label: translate("sessionsView.statusInterrupted") } as const;
+    case "failed":
+      return { icon: "alertTriangle", label: translate("sessionsView.statusFailed") } as const;
+    default:
+      return undefined;
+  }
+}
+
+export function renderSessionAttentionIcon(attention: SidebarSessionAttention) {
   if (attention.kind === "none") {
     return nothing;
   }
-  const label = showTooltip ? sessionAttentionTooltipLabel(attention) : undefined;
-  const icon =
-    attention.kind === "question"
-      ? icons.hand
-      : attention.kind === "approval"
-        ? icons.shieldQuestion
-        : attention.kind === "agent"
-          ? resolveSessionAttentionIcon(attention.icon)
-          : icons.alertTriangle;
+  const label = sessionAttentionTooltipLabel(attention);
+  const icon = icons[sessionAttentionIconName(attention)];
   const content = html`<span
     class="sidebar-session-attention__icon sidebar-session-attention__icon--${attention.kind}"
     data-session-attention=${attention.kind}
@@ -47,17 +65,20 @@ export function renderSessionAttentionIcon(
     @click=${label ? revealAttentionWithoutNavigation : nothing}
     >${icon}</span
   >`;
-  return showTooltip && label ? renderSessionAttentionTooltip(attention, content) : content;
+  return label ? renderSessionAttentionTooltip(attention, content) : content;
 }
 
-export function sessionAttentionSubtitle(attention: SidebarSessionAttention): string | undefined {
+export function sessionAttentionSubtitle(
+  attention: SidebarSessionAttention,
+  translate = t,
+): string | undefined {
   switch (attention.kind) {
     case "question":
-      return t("sessionsView.waitingForAnswer");
+      return translate("sessionsView.waitingForAnswer");
     case "approval":
-      return t("sessionsView.waitingForApproval");
+      return translate("sessionsView.waitingForApproval");
     case "error":
-      return t(
+      return translate(
         attention.childLabel === undefined
           ? "sessionsView.runFailedReason"
           : "sessionsView.childRunFailedReason",
@@ -75,8 +96,8 @@ export function sessionAttentionSubtitle(attention: SidebarSessionAttention): st
   }
 }
 
-function sessionAttentionTooltipParts(attention: SidebarSessionAttention) {
-  const subtitle = sessionAttentionSubtitle(attention);
+export function sessionAttentionTooltipParts(attention: SidebarSessionAttention, translate = t) {
+  const subtitle = sessionAttentionSubtitle(attention, translate);
   if (attention.kind !== "question" && attention.kind !== "approval") {
     return { status: subtitle };
   }
@@ -85,7 +106,7 @@ function sessionAttentionTooltipParts(attention: SidebarSessionAttention) {
   return {
     status:
       count > 1
-        ? t(
+        ? translate(
             attention.kind === "question"
               ? "sessionsView.questionsNeedAnswer"
               : "sessionsView.approvalsNeedApproval",
@@ -93,13 +114,12 @@ function sessionAttentionTooltipParts(attention: SidebarSessionAttention) {
           )
         : subtitle,
     preview: requests[0]?.preview,
-    more: count > 1 ? t("sessionsView.attentionMore", { count: String(count - 1) }) : undefined,
+    more:
+      count > 1 ? translate("sessionsView.attentionMore", { count: String(count - 1) }) : undefined,
   };
 }
 
-export function sessionAttentionTooltipLabel(
-  attention: SidebarSessionAttention,
-): string | undefined {
+function sessionAttentionTooltipLabel(attention: SidebarSessionAttention): string | undefined {
   const { status, preview, more } = sessionAttentionTooltipParts(attention);
   return [status, preview, more].filter(Boolean).join("\n") || undefined;
 }
@@ -137,23 +157,14 @@ export function renderSessionIdleState(session: SidebarRecentSession) {
   if (!status) {
     return nothing;
   }
-  const statusBadge =
-    status === "done"
-      ? { icon: icons.check, label: t("sessionsView.statusDone") }
-      : status === "killed"
-        ? { icon: icons.stop, label: t("sessionsView.statusKilled") }
-        : status === "timeout"
-          ? { icon: icons.alertTriangle, label: t("sessionsView.statusTimeout") }
-          : status === "failed"
-            ? { icon: icons.alertTriangle, label: t("sessionsView.statusFailed") }
-            : null;
+  const statusBadge = resolveSessionIdleBadge(status);
   return statusBadge
     ? html`<span
         class="sidebar-child-session__status sidebar-child-session__status--${status}"
         role="img"
         aria-label=${statusBadge.label}
         title=${statusBadge.label}
-        >${statusBadge.icon}</span
+        >${icons[statusBadge.icon]}</span
       >`
     : nothing;
 }
@@ -164,37 +175,34 @@ export function renderTeamSessionSlots(
   includeChildren: boolean,
   childCount: number,
   groupConflicts = 0,
+  runVisibility?: DirectiveResult,
 ) {
   const attention = summarizeSidebarSessionAttention(
-    rows.flatMap((row) => [
-      row.ownAttention ?? row.attention,
-      ...(includeChildren ? (row.childAttention ?? []) : []),
-    ]),
+    rows.flatMap((row) =>
+      includeChildren
+        ? [row.attention]
+        : [
+            row.ownAttention ?? row.attention,
+            ...(row.subagentSummary ? [row.subagentSummary.attention] : []),
+          ],
+    ),
   );
-  const active = rows.reduce(
-    (n, row) => n + Number(row.hasActiveRun) + (includeChildren ? row.runningChildCount : 0),
-    0,
-  );
-  const queued = rows.reduce(
-    (n, row) =>
-      n +
-      Number(row.hasActiveRun && row.status === "queued") +
-      (includeChildren ? (row.queuedChildCount ?? 0) : 0),
-    0,
-  );
-  const unread = rows.reduce(
-    (n, row) => n + Number(row.unread) + (includeChildren ? (row.unreadChildCount ?? 0) : 0),
-    0,
-  );
-  const failed = rows.some(
-    (row) =>
-      row.status === "failed" ||
-      row.status === "timeout" ||
-      (includeChildren && row.failedChildCount > 0),
-  );
+  let active = 0;
+  let queued = 0;
+  let unread = 0;
+  let failed = false;
+  for (const row of rows) {
+    const children = includeChildren ? row : row.subagentSummary;
+    active += Number(row.hasActiveRun) + (children?.runningChildCount ?? 0);
+    queued +=
+      Number(row.hasActiveRun && row.status === "queued") + (children?.queuedChildCount ?? 0);
+    unread += Number(row.unread) + (children?.unreadChildCount ?? 0);
+    failed ||=
+      row.status === "failed" || row.status === "timeout" || (children?.failedChildCount ?? 0) > 0;
+  }
   const state =
-    attention && attention.kind !== "none"
-      ? renderSessionAttentionIcon(attention, true)
+    attention.kind !== "none"
+      ? renderSessionAttentionIcon(attention)
       : failed
         ? html`<span
             class="sidebar-child-session__status--failed"
@@ -209,7 +217,12 @@ export function renderTeamSessionSlots(
               >${icons.globe}</span
             >`
           : active
-            ? renderSessionGlyph({ content: nothing, running: true, queued: active === queued })
+            ? renderSessionGlyph({
+                content: nothing,
+                running: true,
+                queued: active === queued,
+                runVisibility,
+              })
             : rows.length === 1 && rows[0]?.isChild
               ? renderSessionIdleState(rows[0])
               : nothing;

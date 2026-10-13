@@ -7,17 +7,9 @@ vi.mock("node:child_process", async (original) => ({
   ...(await original<typeof import("node:child_process")>()),
   spawn: mocks.spawn,
 }));
-vi.mock("node:module", () => ({
-  createRequire: () => () => ({}),
-}));
-vi.mock("../../src/process/supervisor/service-child-windows-job-native.ts", () => ({
-  createWindowsJobBindings: () => ({
-    assertLayouts: () => {},
-    CreateJobObjectW: () => 1n,
-    requireHandle: (value: bigint) => value,
-    SetExtendedLimits: () => true,
-    CloseHandle: () => true,
-  }),
+vi.mock("@openclaw/proc-safe/windows-job", () => ({
+  isSupported: () => true,
+  WindowsJob: { create: () => ({ close: () => {} }) },
 }));
 afterEach(() => vi.restoreAllMocks());
 
@@ -37,7 +29,7 @@ it("snapshots command inputs before admission and excludes every NODE_OPTIONS ca
     const owned = spawnWindowsJobChild("fixture", args, { env, stdio: "pipe" });
     args[0] = "mutated";
     env.VALUE = "mutated";
-    child.emit("message", "job-ready");
+    child.emit("message", { job: mocks.spawn.mock.calls[0]?.[1][1], type: "ready" });
     expect(send).toHaveBeenCalledWith(
       expect.objectContaining({
         command: "fixture",

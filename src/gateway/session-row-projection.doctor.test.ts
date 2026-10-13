@@ -14,7 +14,7 @@ afterEach(() => vi.restoreAllMocks());
 
 it("admits a Doctor-renamed legacy key into an already resident store without reloading it", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const cfg = { agents: { list: [{ id: "main", default: true }] } };
+    const cfg = { agents: { entries: { main: {} } } };
     const oldKey = "agent:main:dashboard:incognito-legacy";
     const newKey = "agent:main:dashboard:legacy-incognito-legacy";
     const existingKey = "agent:main:existing";
@@ -36,7 +36,8 @@ it("admits a Doctor-renamed legacy key into an already resident store without re
     const originalEntry = storedEntry.get(oldKey);
     const projection = await createSessionRowProjection({ cfg });
     try {
-      expect(projection.select().map((row) => row.key)).toEqual([existingKey]);
+      await projection.ensureMaterialized();
+      expect(projection.selectEntries().map((row) => row.key)).toEqual([existingKey]);
       const scans = vi.spyOn(entryReaders, "listSessionEntriesReadOnly");
 
       await expect(
@@ -48,7 +49,7 @@ it("admits a Doctor-renamed legacy key into an already resident store without re
       expect(storedEntry.get(newKey)).toEqual(originalEntry);
       expect(scans).not.toHaveBeenCalled();
       const prepares = vi.spyOn(DatabaseSync.prototype, "prepare");
-      expect(projection.select().map((row) => row.key)).toEqual([newKey, existingKey]);
+      expect(projection.selectEntries().map((row) => row.key)).toEqual([newKey, existingKey]);
       expect(projection.snapshot({ agentId: "main", key: newKey }).row).toMatchObject({
         sessionId: "legacy",
         label: "Recovered conversation",
