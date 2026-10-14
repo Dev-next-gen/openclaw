@@ -1,89 +1,30 @@
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db-contract.js";
+import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
+import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { withMockedPlatform } from "../../test-utils/vitest-spies.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
-import type { DeleteSessionEntryLifecycleParams } from "./session-accessor.lifecycle-types.js";
-import {
-  deleteDiskBudgetSessionEntryLifecycle,
-  deleteSessionEntryLifecycle,
-} from "./session-accessor.sqlite-lifecycle.js";
-import type { ResolvedSqliteScope } from "./session-accessor.sqlite-scope.js";
+import { withSqliteTranscriptArchiveSession } from "./session-accessor.sqlite-archive-session.js";
+import { captureLifecycleDatabaseScope } from "./session-accessor.sqlite-scope.js";
 
 const boundary = vi.hoisted(() => ({
-  queue: vi.fn(async (_scope: ResolvedSqliteScope, _run: () => Promise<unknown>) => null),
   state: vi.fn((databasePath: string) => ({
     assertCurrent() {},
     databasePath,
     identity: { key: databasePath },
   })),
-  agentPath: (options: OpenClawAgentDatabaseOptions) =>
-    options.path ?? `${options.env?.OPENCLAW_STATE_DIR}/${options.agentId}.sqlite`,
 }));
 
-// This suite exercises the lifecycle and archive-session captures without opening a database.
-vi.mock("../../routing/session-key.js", () => ({ parseAgentSessionKey: () => undefined }));
-vi.mock("../../sessions/agent-harness-session-key.js", () => ({}));
-vi.mock("../../sessions/session-lifecycle-events.js", () => ({}));
-vi.mock("../../state/github-personal-publication-lifecycle.js", () => ({}));
-vi.mock("../../state/openclaw-agent-db-readonly.js", () => ({}));
-vi.mock("../../state/openclaw-agent-db.js", () => ({
-  deferOpenClawAgentPostCommitPublication: vi.fn(),
-  openOpenClawAgentDatabase: vi.fn(),
-  resolveOpenClawAgentSqlitePath: boundary.agentPath,
-}));
-vi.mock("../../state/openclaw-agent-db.paths.js", () => ({
-  resolveOpenClawAgentSqlitePath: boundary.agentPath,
-}));
-vi.mock("../../state/openclaw-agent-db-resources.js", () => ({
-  registerOpenClawAgentDatabaseAsyncResource: () => () => {},
-}));
-vi.mock("../../state/openclaw-state-db-cache.js", () => ({
+// The archive session admits the state database it captured; record that path without opening it.
+vi.mock("../../state/openclaw-state-db-cache.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../state/openclaw-state-db-cache.js")>()),
   captureOpenClawStateDatabaseReadAdmission: boundary.state,
   registerOpenClawStateDatabaseAsyncResource: () => () => {},
 }));
-vi.mock("../../state/openclaw-state-db.paths.js", () => ({
-  resolveOpenClawStateSqlitePath: (env?: NodeJS.ProcessEnv) =>
-    `${env?.OPENCLAW_STATE_DIR}/state/openclaw.sqlite`,
+vi.mock("../../state/openclaw-agent-db-resources.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../state/openclaw-agent-db-resources.js")>()),
+  registerOpenClawAgentDatabaseAsyncResource: () => () => {},
 }));
-vi.mock("./session-accessor.sqlite-archive-store.js", () => ({
-  publishSessionStateArchives: async () => [],
-}));
-vi.mock("./session-accessor.sqlite-archive.js", () => ({}));
-vi.mock("./session-accessor.sqlite-deletion.js", () => ({}));
-vi.mock("./session-accessor.sqlite-entry-equality.js", () => ({}));
-vi.mock("./session-accessor.sqlite-entry-store.js", () => ({}));
-vi.mock("./session-accessor.sqlite-events.js", () => ({}));
-vi.mock("./session-accessor.sqlite-lifecycle-artifacts.js", () => ({}));
-vi.mock("./session-accessor.sqlite-lifecycle-state.js", () => ({}));
-vi.mock("./session-accessor.sqlite-maintenance.js", () => ({}));
-vi.mock("./session-accessor.sqlite-reclamation.js", () => ({}));
-vi.mock("./session-accessor.sqlite-reset-boundary.js", () => ({}));
-vi.mock("./session-accessor.sqlite-scope.js", () => ({
-  resolveSqliteAgentId: (params: { scopedAgentId?: string; storeAgentId?: string }) =>
-    params.scopedAgentId ?? params.storeAgentId,
-  resolveSqliteStoreScope: (_storePath: string, options: { agentId?: string }) => ({
-    agentId: options.agentId ?? "main",
-    sessionKey: "",
-  }),
-  runExclusiveSqliteSessionWrite: boundary.queue,
-  toDatabaseOptions: (scope: ResolvedSqliteScope) => ({
-    agentId: scope.databaseAgentId ?? scope.agentId,
-    ...(scope.env ? { env: scope.env } : {}),
-    ...(scope.path ? { path: scope.path } : {}),
-  }),
-}));
-vi.mock("./session-history-eviction.js", () => ({
-  collectAdmissionProtectedSessionIds: () => new Set(),
-  kickSessionHistoryDiskBudgetMaintenance: () => {},
-}));
-
-const deleteParams: DeleteSessionEntryLifecycleParams = {
-  agentId: "main",
-  archiveTranscript: false,
-  storePath: "/synthetic/store",
-  target: { canonicalKey: "agent:main:capture", storeKeys: [] },
-};
 
 const fixtures = [
   { platform: "win32", key: "OpenClaw_State_Dir", readonlyKey: "OpenClaw_Config_Readonly" },
@@ -99,21 +40,43 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function expectCapturedRoot(fixture: (typeof fixtures)[number]) {
+function expectedRootFor(fixture: (typeof fixtures)[number]) {
   const caseSensitiveMiss = fixture.platform === "linux" && fixture.key !== "OPENCLAW_STATE_DIR";
-  const expectedRoot = caseSensitiveMiss ? path.join(home, ".openclaw") : root;
-  const queued = boundary.queue.mock.calls[0]?.[0];
-  expect(queued?.path).toBe(`${expectedRoot}/main.sqlite`);
-  expect(queued?.env?.OPENCLAW_STATE_DIR).toBe(expectedRoot);
-  expect(queued?.env?.OPENCLAW_CONFIG_READONLY).toBe(caseSensitiveMiss ? undefined : "1");
+  return {
+    caseSensitiveMiss,
+    expectedRoot: caseSensitiveMiss ? path.join(home, ".openclaw") : root,
+  };
+}
+
+async function expectCapturedRoot(
+  fixture: (typeof fixtures)[number],
+  env: NodeJS.ProcessEnv | undefined,
+) {
+  const { caseSensitiveMiss, expectedRoot } = expectedRootFor(fixture);
+  const captured = captureLifecycleDatabaseScope({ agentId: "main", ...(env ? { env } : {}) });
+  expect(captured.env.OPENCLAW_STATE_DIR).toBe(expectedRoot);
+  expect(captured.env.OPENCLAW_CONFIG_READONLY).toBe(caseSensitiveMiss ? undefined : "1");
+  expect(captured.path).toBe(
+    resolveOpenClawAgentSqlitePath({
+      agentId: "main",
+      env: { OPENCLAW_STATE_DIR: expectedRoot },
+    }),
+  );
+
   // The archive session must pin the same state database as the lifecycle owner.
-  expect(boundary.state).toHaveBeenCalledWith(`${expectedRoot}/state/openclaw.sqlite`);
+  await withSqliteTranscriptArchiveSession(
+    { agentId: "main", ...(env ? { env } : {}) },
+    async () => {},
+  );
+  expect(boundary.state).toHaveBeenCalledWith(
+    resolveOpenClawStateSqlitePath({ OPENCLAW_STATE_DIR: expectedRoot }),
+  );
 }
 
 it.each([
   ...fixtures.map((fixture) => ({ ...fixture, input: "plain" })),
   { ...fixtures[0], input: "precloned" },
-])("retains $input disk-budget delete environment on $platform with $key", async (fixture) => {
+])("retains $input supplied environment on $platform with $key", async (fixture) => {
   await withMockedPlatform(fixture.platform, async () => {
     const rawEnv = {
       [fixture.key]: root,
@@ -122,16 +85,13 @@ it.each([
       OPENCLAW_TEST_FAST: "1",
     };
     const env = fixture.input === "precloned" ? cloneEnvWithPlatformSemantics(rawEnv) : rawEnv;
-    await expect(
-      deleteDiskBudgetSessionEntryLifecycle(deleteParams, { agentId: "main", env, sessionKey: "" }),
-    ).resolves.toMatchObject({ deleted: false });
-    expectCapturedRoot(fixture);
+    await expectCapturedRoot(fixture, env);
     expect(env[fixture.key]).toBe(root);
     expect(Object.keys(env)).toEqual(Object.keys(rawEnv));
   });
 });
 
-it.each(fixtures)("retains process delete environment on $platform with $key", async (fixture) => {
+it.each(fixtures)("retains process environment on $platform with $key", async (fixture) => {
   await withMockedPlatform(fixture.platform, async () => {
     vi.stubEnv("OPENCLAW_STATE_DIR", undefined);
     vi.stubEnv("OPENCLAW_CONFIG_READONLY", undefined);
@@ -140,10 +100,7 @@ it.each(fixtures)("retains process delete environment on $platform with $key", a
     vi.stubEnv(fixture.readonlyKey, "1");
     vi.stubEnv("HOME", home);
     vi.stubEnv("OPENCLAW_TEST_FAST", "1");
-    await expect(deleteSessionEntryLifecycle(deleteParams)).resolves.toMatchObject({
-      deleted: false,
-    });
-    expectCapturedRoot(fixture);
+    await expectCapturedRoot(fixture, undefined);
     expect(process.env[fixture.key]).toBe(root);
   });
 });
